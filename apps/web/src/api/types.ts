@@ -30,20 +30,38 @@ export interface Status {
   ticket?: string
 }
 
+export interface SyncReport {
+  sent?: number
+  received: number
+  blobs: number
+}
+
+/** First-run choices on hosts that own their journal (desktop, iOS). */
+export interface SetupApi {
+  state(): Promise<'ready' | 'empty'>
+  initFresh(): Promise<void>
+  joinTicket(ticket: string): Promise<SyncReport>
+}
+
 /**
  * The one seam between the shared UI and its host. The browser build talks HTTP
  * to the server peer; the Tauri build implements the same interface with
  * commands against the embedded core.
  */
 export interface JournalApi {
+  /** Browser needs the passcode; a host with its own core is already trusted. */
+  needsAuth: boolean
   checkPasscode(passcode: string): Promise<boolean>
   captureText(text: string): Promise<Entry>
   capturePhoto(file: Blob): Promise<Entry>
   captureAudio(file: Blob): Promise<Entry>
   feed(before?: number): Promise<FeedPage>
-  mediaUrl(media: MediaRef): string
+  mediaBlob(media: MediaRef): Promise<Blob>
   redact(eventId: string): Promise<void>
   trash(): Promise<Entry[]>
   search(q: string): Promise<Entry[]>
   status(): Promise<Status>
+  /** Present only on hosts that dial peers themselves (desktop). */
+  setup?: SetupApi
+  syncNow?(ticket?: string): Promise<SyncReport>
 }

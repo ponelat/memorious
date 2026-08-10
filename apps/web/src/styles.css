@@ -410,3 +410,5 @@ h2 {
     font-size: 1.8rem;
   }
 }
+.setup textarea { width: min(24rem, 80vw); }
+.sync-now input { width: 100%; margin-bottom: 0.3rem; }

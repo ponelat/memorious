@@ -12,9 +12,10 @@ use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use journal_core::api_json::entry_json;
 use journal_core::event::{EventKind, MediaKind, Payload};
 use journal_core::media::{normalize_photo, sniff_audio, AudioContainer};
-use journal_core::{Event, Node};
+use journal_core::Node;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
@@ -197,33 +198,6 @@ struct FeedParams {
     limit: Option<usize>,
 }
 
-fn entry_json(e: &Event) -> serde_json::Value {
-    let mut v = json!({
-        "event_id": e.event_id,
-        "device_id": e.device_id,
-        "recorded_at": e.recorded_at,
-    });
-    let obj = v.as_object_mut().unwrap();
-    match &e.payload {
-        Payload::Text { text } => {
-            obj.insert("kind".into(), "text".into());
-            obj.insert("text".into(), text.clone().into());
-        }
-        Payload::Photo { hash, size } => {
-            obj.insert("kind".into(), "photo".into());
-            obj.insert("media".into(), json!({"hash": hash, "size": size, "url": format!("/api/media/{hash}")}));
-        }
-        Payload::Audio { hash, size } => {
-            obj.insert("kind".into(), "audio".into());
-            obj.insert("media".into(), json!({"hash": hash, "size": size, "url": format!("/api/media/{hash}")}));
-        }
-        other => {
-            obj.insert("kind".into(), "other".into());
-            obj.insert("detail".into(), format!("{other:?}").into());
-        }
-    }
-    v
-}
 
 async fn feed(State(state): State<SharedState>, Query(p): Query<FeedParams>) -> Response {
     let limit = p.limit.unwrap_or(50).min(500);

@@ -1,5 +1,21 @@
 # LOG
 
+## 2026-08-10 (M3)
+- M3 complete: Tauri 2 desktop shell (`apps/desktop`), its own peer with core embedded —
+  not a server client. Bundle: `target/release/bundle/macos/Infinite Journal.app`.
+- Same React UI as M2; the only difference is the adapter (`src/api/tauri.ts` vs
+  `http.ts`), picked at runtime by `__TAURI_INTERNALS__`. Desktop adapter: no passcode
+  (possession of the device = trust), setup screen on first run (start fresh / paste
+  ticket), sync-now + pairing in the sync view (last ticket remembered in journal meta).
+- Media over IPC: photos normalized to JPEG in the command layer; audio accepted only as
+  mp4-family (macOS WKWebView records AAC/mp4 natively — no ffmpeg dependency on desktop).
+- Verified via Tauri mock-runtime IPC tests (real command routing incl. ACL + camelCase
+  arg mapping): setup→capture→feed→media→sync; three peers (desktop + 2 core peers)
+  converge; wrong-journal ticket refused. App binary launches; screen-recording permission
+  unavailable to this session, so pixel-level check of the desktop window is owner-verified.
+- Gotcha for later shells: mock IPC tests need `tauri://localhost` as the invoke origin on
+  macOS and commands generic over `tauri::Runtime`.
+
 ## 2026-08-10 (M2)
 - M2 complete: axum server peer (`apps/server`) + React web client (`apps/web`), live at
   the dev app (devhost, port block 4390, release binary; dev journal

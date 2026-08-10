@@ -48,6 +48,8 @@ function upload(path: string, file: Blob): Promise<Entry> {
 }
 
 export const httpApi: JournalApi = {
+  needsAuth: true,
+
   async checkPasscode(passcode: string) {
     const resp = await fetch('/api/auth/check', {
       method: 'POST',
@@ -77,12 +79,8 @@ export const httpApi: JournalApi = {
     return json<FeedPage>(`/api/feed${q}`)
   },
 
-  mediaUrl(media: MediaRef) {
-    // Media requests can't carry headers from <img>/<audio>; the passcode rides
-    // along as a query param the server also accepts... it doesn't yet, so we
-    // fetch as blob where needed. For same-origin <img> this uses the URL and
-    // relies on the object-URL cache below instead.
-    return media.url
+  async mediaBlob(media: MediaRef) {
+    return (await request(media.url)).blob()
   },
 
   async redact(eventId: string) {
@@ -106,19 +104,3 @@ export const httpApi: JournalApi = {
   },
 }
 
-/**
- * <img src> / <audio src> can't send the Authorization header, so media is
- * fetched with it and handed out as object URLs, cached by hash.
- */
-const objectUrls = new Map<string, Promise<string>>()
-
-export function mediaObjectUrl(media: MediaRef): Promise<string> {
-  let p = objectUrls.get(media.hash)
-  if (!p) {
-    p = request(media.url)
-      .then((r) => r.blob())
-      .then((b) => URL.createObjectURL(b))
-    objectUrls.set(media.hash, p)
-  }
-  return p
-}
