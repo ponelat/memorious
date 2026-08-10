@@ -1,5 +1,24 @@
 # LOG
 
+## 2026-08-10 (M5)
+- M5 complete: enrichment as annotation events, scheduled per UNDERSTANDING (sync-first,
+  will_enrich intent flag, 15-min grace from local receipt via new local_received_at
+  column, latest-annotation-wins with event-id tiebreak).
+- Server sweeper (60s loop, env-tunable): whisper.cpp (`brew whisper-cpp`, ggml-base
+  model at ~/.cache/whisper/ggml-base.bin) for audio, tesseract for photos, both behind
+  an Engines trait so tests run with mocks. Server marks its own media captures
+  will_enrich=true and enriches them immediately; unflagged peers' media immediately;
+  flagged ones after grace.
+- Annotations attached to entries in feed/search on server, desktop, and iOS; all UIs
+  render them; FTS covers them (indexed since M1).
+- Live acceptance on the dev host: spoken m4a captured via API → sweeper
+  transcribed "Remember to buy oat milk and fix the kayak rudder." → search "kayak"
+  returns the audio entry with transcript. No user action.
+- Real-engine tests synthesize fixtures (macOS `say` + a committed rendered-text PNG)
+  and skip cleanly where tools are missing. iOS on-device enrichment (stretch) skipped.
+- Mid-milestone incident: disk hit 100% (20GB cargo target dir); a peer session ran
+  cargo clean to unblock. Keep an eye on target/ size.
+
 ## 2026-08-10 (M4)
 - M4 built and simulator-verified: SwiftUI app (`apps/ios`), UniFFI bindings from a new
   `crates/mobile` FFI crate (blocking calls over a private tokio runtime, JSON strings
