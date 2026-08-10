@@ -1,5 +1,21 @@
 # LOG
 
+## 2026-08-10 (M2)
+- M2 complete: axum server peer (`apps/server`) + React web client (`apps/web`), live at
+  the dev app (devhost, port block 4390, release binary; dev journal
+  in ./data, gitignored; passcode (redacted) for dev).
+- API: auth/check, capture text/photo/audio, feed (cursor pagination), media, redact,
+  trash, search, status (incl. pairing ticket). All /api behind bearer passcode; media
+  fetched as authed blobs → object URLs (media tags can't send headers).
+- Photos normalized to JPEG in core (`media.rs`, image crate); audio: mp4-family kept,
+  webm/ogg transcoded to AAC via system ffmpeg (Chrome MediaRecorder → webm; Safari
+  records mp4 natively).
+- UI: login, capture bar (text/photo/mic), stream with derived day headers, polaroid fan
+  for photo runs (30-min gap rule, render-time only), lightbox, trash, sync status, FTS
+  search. Adapter seam (`JournalApi`) is the single switch point for the Tauri build.
+- Verified end to end in headless Chrome (bdg): login → capture → stream, fan, lightbox.
+  Server↔CLI-peer convergence is a cargo test. Phone-browser pass still owner-verified.
+
 ## 2026-08-10 (M1)
 - M1 complete: core event log + SQLite/FTS5 store, iroh-blobs media store, custom sync
   protocol over iroh 1.0.3, journal-secret pairing tickets, `journal` CLI.
