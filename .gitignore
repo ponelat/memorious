@@ -8,3 +8,4 @@ dist/
 apps/ios/build/
 apps/ios/**/xcuserdata/
 *.xcframework
+data/
