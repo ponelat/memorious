@@ -1,0 +1,10 @@
+/target
+node_modules/
+dist/
+*.env
+.env.*
+!.env.example
+.DS_Store
+apps/ios/build/
+apps/ios/**/xcuserdata/
+*.xcframework

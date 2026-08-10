@@ -1,0 +1,11 @@
+[workspace]
+resolver = "2"
+members = ["crates/core"]
+
+[workspace.package]
+edition = "2021"
+license = "MIT"
+
+[profile.dev]
+# iroh + quinn are slow unoptimized; keep tests bearable
+opt-level = 1
