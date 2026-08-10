@@ -86,6 +86,19 @@ impl Store {
         payload: Payload,
         will_enrich: bool,
     ) -> Result<Event> {
+        self.append_local_at(device_id, kind, payload, will_enrich, now_ms())
+    }
+
+    /// append_local with an explicit `recorded_at` — for the import tool, which
+    /// must preserve original capture times.
+    pub fn append_local_at(
+        &self,
+        device_id: &str,
+        kind: EventKind,
+        payload: Payload,
+        will_enrich: bool,
+        recorded_at: i64,
+    ) -> Result<Event> {
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
         let head: u64 = tx
@@ -99,7 +112,7 @@ impl Store {
             event_id: uuid::Uuid::now_v7().to_string(),
             device_id: device_id.to_string(),
             seq: head + 1,
-            recorded_at: now_ms(),
+            recorded_at,
             kind,
             payload,
             will_enrich,

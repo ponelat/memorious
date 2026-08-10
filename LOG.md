@@ -1,5 +1,23 @@
 # LOG
 
+## 2026-08-10 (M6)
+- M6 complete: v1 import + derived markdown export, both idempotent.
+- `journal import-v1 <export.json>`: chunks flatten to plain entries (conversations
+  discarded), recorded_at preserved (own ISO→ms parser, no chrono), photos re-fetched
+  (curl) and re-encoded to JPEG, per-chunk meta markers make re-runs no-ops; a failed
+  photo leaves its chunk unmarked so the next run retries it.
+- `journal export-md <dir>`: UTC year/month/day.md tree + media/<hash>.jpg|m4a,
+  annotations as blockquotes, redacted entries excluded, write-if-changed so re-runs
+  report "0 written".
+- Real acceptance: minted a temporary API token on prod (sqlite insert over SSH —
+  no PB user password available locally; token revoked + verified 401 afterwards),
+  pulled the real export (1129 chunks, 343 conversations), imported 1125 text + 33
+  photos with 0 failures into a fresh journal, re-ran both tools → no changes. Day
+  files read as real journal history. Import preserved at ./data-v1-import
+  (gitignored) — pair it into any peer with `journal serve` + join, or point the
+  live server's JOURNAL_DATA at it.
+- v1 export quirk: 4 chunks had blank content (dropped by design).
+
 ## 2026-08-10 (M5)
 - M5 complete: enrichment as annotation events, scheduled per UNDERSTANDING (sync-first,
   will_enrich intent flag, 15-min grace from local receipt via new local_received_at

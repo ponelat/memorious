@@ -62,6 +62,15 @@ enum Cmd {
     Sync { ticket: String },
     /// Per-device heads and journal facts.
     Status,
+    /// Import a v1 export JSON (photos fetched from --base via curl).
+    ImportV1 {
+        file: PathBuf,
+        /// Base URL for relative photo_url values, e.g. https://v1 prod
+        #[arg(long, default_value = "https://v1 prod")]
+        base: String,
+    },
+    /// Write the derived year/month/day markdown tree + media files.
+    ExportMd { out: PathBuf },
 }
 
 #[tokio::main]
@@ -151,6 +160,43 @@ async fn main() -> Result<()> {
             println!(
                 "synced: sent {}, received {}, blobs fetched {}",
                 report.sent, report.received, report.blobs_fetched
+            );
+            node.shutdown().await;
+        }
+        Cmd::ImportV1 { file, base } => {
+            let export: journal_core::import_v1::V1Export =
+                serde_json::from_slice(&std::fs::read(&file)?).context("parse export json")?;
+            let node = Node::spawn(Journal::open(&data)?).await?;
+            let report = journal_core::import_v1::import_v1(&node, &export, |url| {
+                let full = if url.starts_with("http") {
+                    url.to_string()
+                } else {
+                    format!("{}{}", base.trim_end_matches('/'), url)
+                };
+                let out = std::process::Command::new("curl")
+                    .args(["-sf", "--max-time", "60", &full])
+                    .output()?;
+                if !out.status.success() {
+                    anyhow::bail!("curl failed for {full}");
+                }
+                Ok(out.stdout)
+            })
+            .await?;
+            println!(
+                "imported: {} text, {} photos; skipped {} (already imported); {} photo failures",
+                report.text_entries, report.photo_entries, report.skipped, report.photo_failures
+            );
+            node.shutdown().await;
+        }
+        Cmd::ExportMd { out } => {
+            let node = Node::spawn(Journal::open(&data)?).await?;
+            let report = journal_core::export_md::export_markdown(&node, &out).await?;
+            println!(
+                "export: {} day files written, {} unchanged; {} media written, {} unchanged",
+                report.day_files_written,
+                report.day_files_unchanged,
+                report.media_written,
+                report.media_unchanged
             );
             node.shutdown().await;
         }

@@ -256,6 +256,24 @@ impl Node {
         )
     }
 
+    /// Media capture with an explicit `recorded_at` (import tool).
+    pub async fn capture_blob_at(
+        &self,
+        kind: MediaKind,
+        bytes: Vec<u8>,
+        recorded_at: i64,
+    ) -> Result<Event> {
+        let size = bytes.len() as u64;
+        let tag = self.blobs.add_bytes(bytes).await?;
+        self.journal.store.append_local_at(
+            self.journal.device_id(),
+            crate::event::EventKind::Capture,
+            Payload::media(kind, tag.hash.to_hex().to_string(), size),
+            false,
+            recorded_at,
+        )
+    }
+
     /// Whole blob, by hex hash.
     pub async fn blob_bytes(&self, hash_hex: &str) -> Result<Vec<u8>> {
         let hash: Hash = hash_hex.parse().context("bad blob hash")?;
