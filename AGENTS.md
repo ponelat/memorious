@@ -31,6 +31,8 @@ central authority. There are only four event kinds: capture, redact, token-set, 
   = one active bearer passcode (hash stored in a token-set event, latest wins).
 - **One media format each:** AAC/m4a audio, JPEG photos. No originals kept.
 - **Minimalism is a feature.** When in doubt, leave it out.
+- **Failing test first.** Work test-driven: before implementing any behavior or bug fix,
+  write the test that fails for the right reason, watch it fail, then make it pass.
 
 ## Repository layout (target)
 
