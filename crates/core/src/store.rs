@@ -29,6 +29,9 @@ CREATE TABLE IF NOT EXISTS events (
   kind        TEXT NOT NULL,
   payload     TEXT NOT NULL,
   will_enrich INTEGER NOT NULL DEFAULT 0,
+  -- When THIS peer first saw the event. Local only, never syncs; the
+  -- enrichment grace period counts from here, not from recorded_at.
+  local_received_at INTEGER NOT NULL DEFAULT 0,
   UNIQUE(device_id, seq)
 );
 CREATE INDEX IF NOT EXISTS idx_events_recorded ON events(recorded_at, event_id);
@@ -41,6 +44,11 @@ impl Store {
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "synchronous", "NORMAL")?;
         conn.execute_batch(SCHEMA).context("create schema")?;
+        // Boring migration for pre-M5 databases; errors mean the column exists.
+        let _ = conn.execute(
+            "ALTER TABLE events ADD COLUMN local_received_at INTEGER NOT NULL DEFAULT 0",
+            [],
+        );
         Ok(Self {
             conn: Mutex::new(conn),
         })
@@ -222,6 +230,19 @@ impl Store {
         Ok(out)
     }
 
+    /// When this peer first saw the event (local clock; never syncs).
+    pub fn local_received_at(&self, event_id: &str) -> Result<Option<i64>> {
+        let conn = self.conn.lock().unwrap();
+        let v = conn
+            .query_row(
+                "SELECT local_received_at FROM events WHERE event_id = ?1",
+                [event_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(v)
+    }
+
     /// FTS search over entry text + annotations. Returns matching event ids.
     pub fn search(&self, query: &str) -> Result<Vec<String>> {
         let conn = self.conn.lock().unwrap();
@@ -242,8 +263,8 @@ fn insert_event(tx: &rusqlite::Transaction, event: &Event) -> Result<()> {
     let kind = kind.trim_matches('"');
     let payload = serde_json::to_string(&event.payload)?;
     tx.execute(
-        "INSERT INTO events (event_id, device_id, seq, recorded_at, kind, payload, will_enrich)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        "INSERT INTO events (event_id, device_id, seq, recorded_at, kind, payload, will_enrich, local_received_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
         params![
             event.event_id,
             event.device_id,
@@ -252,6 +273,7 @@ fn insert_event(tx: &rusqlite::Transaction, event: &Event) -> Result<()> {
             kind,
             payload,
             event.will_enrich,
+            now_ms(),
         ],
     )?;
     if let Some(text) = event.fts_text() {

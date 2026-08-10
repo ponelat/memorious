@@ -17,6 +17,8 @@ use journal_core::event::{EventKind, MediaKind, Payload};
 use journal_core::media::{normalize_photo, sniff_audio, AudioContainer};
 use journal_core::Node;
 use serde::{Deserialize, Serialize};
+
+pub mod sweeper;
 use serde_json::json;
 
 pub struct AppState {
@@ -139,7 +141,7 @@ async fn capture_photo(State(state): State<SharedState>, multipart: Multipart) -
         Ok(Err(e)) => return err(StatusCode::UNPROCESSABLE_ENTITY, &format!("{e:#}")),
         Err(e) => return internal(e.into()),
     };
-    match state.node.capture_blob(MediaKind::Photo, jpeg).await {
+    match state.node.capture_blob_with_intent(MediaKind::Photo, jpeg, true).await {
         Ok(e) => Json(entry_json(&e)).into_response(),
         Err(e) => internal(e),
     }
@@ -162,7 +164,7 @@ async fn capture_audio(State(state): State<SharedState>, multipart: Multipart) -
             return err(StatusCode::UNPROCESSABLE_ENTITY, "unrecognized audio container")
         }
     };
-    match state.node.capture_blob(MediaKind::Audio, m4a).await {
+    match state.node.capture_blob_with_intent(MediaKind::Audio, m4a, true).await {
         Ok(e) => Json(entry_json(&e)).into_response(),
         Err(e) => internal(e),
     }
@@ -199,8 +201,21 @@ struct FeedParams {
 }
 
 
+fn annotated_entry(journal: &journal_core::Journal, e: &journal_core::Event) -> serde_json::Value {
+    let mut v = entry_json(e);
+    if let Ok(map) = journal.annotations() {
+        if let Some(text) = map.get(&e.event_id) {
+            if !text.is_empty() {
+                v["annotation"] = text.clone().into();
+            }
+        }
+    }
+    v
+}
+
 async fn feed(State(state): State<SharedState>, Query(p): Query<FeedParams>) -> Response {
     let limit = p.limit.unwrap_or(50).min(500);
+    let annotations = state.journal().annotations().unwrap_or_default();
     match state.journal().list() {
         Ok(mut entries) => {
             entries.reverse(); // list() is oldest-first
@@ -208,7 +223,15 @@ async fn feed(State(state): State<SharedState>, Query(p): Query<FeedParams>) -> 
                 .iter()
                 .filter(|e| p.before.map(|b| e.recorded_at < b).unwrap_or(true))
                 .take(limit)
-                .map(entry_json)
+                .map(|e| {
+                    let mut v = entry_json(e);
+                    if let Some(text) = annotations.get(&e.event_id) {
+                        if !text.is_empty() {
+                            v["annotation"] = text.clone().into();
+                        }
+                    }
+                    v
+                })
                 .collect();
             let next_before = page.last().and_then(|e| e["recorded_at"].as_i64());
             Json(json!({"entries": page, "next_before": next_before})).into_response()
@@ -297,7 +320,7 @@ async fn search(State(state): State<SharedState>, Query(p): Query<SearchParams>)
                 };
                 if let Some(e) = display {
                     if e.kind == EventKind::Capture && !redacted.contains(&e.event_id) {
-                        out.push(entry_json(&e));
+                        out.push(annotated_entry(journal, &e));
                     }
                 }
             }

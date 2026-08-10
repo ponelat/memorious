@@ -235,13 +235,24 @@ impl Node {
 
     /// Store media bytes in the blob store and append a capture event referencing them.
     pub async fn capture_blob(&self, kind: MediaKind, bytes: Vec<u8>) -> Result<Event> {
+        self.capture_blob_with_intent(kind, bytes, false).await
+    }
+
+    /// `will_enrich` = "this peer intends to enrich this capture itself" — others
+    /// hold off for the grace period.
+    pub async fn capture_blob_with_intent(
+        &self,
+        kind: MediaKind,
+        bytes: Vec<u8>,
+        will_enrich: bool,
+    ) -> Result<Event> {
         let size = bytes.len() as u64;
         let tag = self.blobs.add_bytes(bytes).await?;
         self.journal.store.append_local(
             self.journal.device_id(),
             crate::event::EventKind::Capture,
             Payload::media(kind, tag.hash.to_hex().to_string(), size),
-            false,
+            will_enrich,
         )
     }
 

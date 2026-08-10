@@ -1,4 +1,5 @@
 pub mod api_json;
+pub mod enrich;
 pub mod event;
 pub mod journal;
 pub mod media;

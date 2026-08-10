@@ -1,9 +1,22 @@
 //! The JSON shape of an entry as the UIs consume it — shared by the HTTP server
 //! and the Tauri command layer so the web adapter sees one format everywhere.
 
+use std::collections::HashMap;
+
 use serde_json::json;
 
 use crate::event::{Event, Payload};
+
+/// entry_json plus the winning annotation, when one exists.
+pub fn entry_json_annotated(e: &Event, annotations: &HashMap<String, String>) -> serde_json::Value {
+    let mut v = entry_json(e);
+    if let Some(text) = annotations.get(&e.event_id) {
+        if !text.is_empty() {
+            v["annotation"] = text.clone().into();
+        }
+    }
+    v
+}
 
 pub fn entry_json(e: &Event) -> serde_json::Value {
     let mut v = json!({

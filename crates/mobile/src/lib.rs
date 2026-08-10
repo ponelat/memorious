@@ -5,7 +5,7 @@
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 
-use journal_core::api_json::entry_json;
+use journal_core::api_json::{entry_json, entry_json_annotated};
 use journal_core::event::MediaKind;
 use journal_core::node::JournalTicket;
 use journal_core::{Journal, Node};
@@ -112,13 +112,14 @@ impl MobileJournal {
     }
 
     pub fn feed(&self, before: Option<i64>, limit: u32) -> Result<String> {
+        let annotations = self.node.journal().annotations().map_err(JournalError::from)?;
         let mut entries = self.node.journal().list().map_err(JournalError::from)?;
         entries.reverse();
         let page: Vec<_> = entries
             .iter()
             .filter(|e| before.map(|b| e.recorded_at < b).unwrap_or(true))
             .take(limit.clamp(1, 500) as usize)
-            .map(entry_json)
+            .map(|e| entry_json_annotated(e, &annotations))
             .collect();
         let next_before = page.last().and_then(|e| e["recorded_at"].as_i64());
         Ok(json!({"entries": page, "next_before": next_before}).to_string())

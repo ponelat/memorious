@@ -38,7 +38,11 @@ async fn main() -> Result<()> {
     }
 
     let state = Arc::new(AppState { node });
-    let router = app(state, web_dist);
+    if let Some(engines) = journal_server::sweeper::SystemEngines::detect() {
+        journal_server::sweeper::spawn(state.clone(), Arc::new(engines));
+        tracing::info!("enrichment sweeper running");
+    }
+    let router = app(state.clone(), web_dist);
 
     // devhost proxies 127.0.0.1; bind IPv4 explicitly (Caddy won't reach [::1]).
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", port)).await?;
