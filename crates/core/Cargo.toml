@@ -17,6 +17,7 @@ anyhow = "1"
 blake3 = "1"
 clap = { version = "4", features = ["derive"] }
 data-encoding = "2"
+image = "0.25.10"
 iroh = "1"
 iroh-blobs = "0.103"
 postcard = { version = "1", features = ["alloc"] }

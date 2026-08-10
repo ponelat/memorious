@@ -1,5 +1,6 @@
 pub mod event;
 pub mod journal;
+pub mod media;
 pub mod node;
 pub mod store;
 

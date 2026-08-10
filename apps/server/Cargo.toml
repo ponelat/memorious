@@ -1,0 +1,30 @@
+[package]
+name = "journal-server"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "journal-server"
+path = "src/main.rs"
+
+[lib]
+name = "journal_server"
+path = "src/lib.rs"
+
+[dependencies]
+anyhow = "1"
+axum = { version = "0.8", features = ["multipart"] }
+journal-core = { path = "../../crates/core" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tempfile = "3"
+tokio = { version = "1", features = ["full"] }
+tower-http = { version = "0.6", features = ["fs", "cors"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[dev-dependencies]
+http-body-util = "0.1"
+image = "0.25"
+tower = { version = "0.5", features = ["util"] }
