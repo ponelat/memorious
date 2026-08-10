@@ -10,6 +10,14 @@ pub enum EventKind {
     Annotation,
 }
 
+/// The two media types. One stored format each: JPEG photos, AAC/m4a audio.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MediaKind {
+    Photo,
+    Audio,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Payload {
@@ -50,6 +58,15 @@ pub struct Event {
     /// "I intend to enrich this" (captures only).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub will_enrich: bool,
+}
+
+impl Payload {
+    pub fn media(kind: MediaKind, hash: String, size: u64) -> Self {
+        match kind {
+            MediaKind::Photo => Payload::Photo { hash, size },
+            MediaKind::Audio => Payload::Audio { hash, size },
+        }
+    }
 }
 
 impl Event {

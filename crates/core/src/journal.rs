@@ -164,20 +164,17 @@ impl Journal {
     }
 
     pub fn active_passcode_hash(&self) -> Result<Option<String>> {
-        let mut latest: Option<(i64, String, String)> = None; // (recorded_at, device_id, hash)
+        // Latest wins: recorded_at, then device_id, then seq (same-device same-ms sets).
+        let mut latest: Option<((i64, String, u64), String)> = None;
         for e in self.store.all_events()? {
             if let Payload::TokenSet { hash } = &e.payload {
-                let key = (e.recorded_at, e.device_id.clone());
-                if latest
-                    .as_ref()
-                    .map(|(t, d, _)| key > (*t, d.clone()))
-                    .unwrap_or(true)
-                {
-                    latest = Some((key.0, key.1, hash.clone()));
+                let key = (e.recorded_at, e.device_id.clone(), e.seq);
+                if latest.as_ref().map(|(k, _)| key > *k).unwrap_or(true) {
+                    latest = Some((key, hash.clone()));
                 }
             }
         }
-        Ok(latest.map(|(_, _, h)| h))
+        Ok(latest.map(|(_, h)| h))
     }
 }
 
