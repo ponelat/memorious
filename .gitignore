@@ -9,3 +9,6 @@ apps/ios/build/
 apps/ios/**/xcuserdata/
 *.xcframework
 data/
+apps/ios/Generated/
+apps/ios/Journal.xcodeproj/
+apps/ios/JournalCore.xcframework/
