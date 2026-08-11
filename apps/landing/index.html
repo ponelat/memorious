@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>journal — a quiet place for what happened</title>
+<meta name="description" content="A brutally minimalist journal for text, photos, and voice. Local-first, append-only, no accounts. Your devices sync directly with each other.">
+<meta property="og:title" content="journal">
+<meta property="og:description" content="A brutally minimalist journal for text, photos, and voice. Yours, on every device.">
+<meta property="og:image" content="https://journal.ponelat.com/poster.jpg">
+<style>
+:root {
+  --ink: #161616;
+  --paper: #fbfaf8;
+  --faint: #8a8781;
+  --line: #e4e1db;
+  --accent: #b3261e;
+}
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: ui-monospace, 'SF Mono', SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 16px;
+  line-height: 1.6;
+}
+main { max-width: 62rem; margin: 0 auto; padding: 0 1.2rem; }
+
+/* hero */
+.hero { padding: 4.5rem 0 3rem; text-align: center; }
+.hero h1 {
+  font-weight: 500;
+  font-size: clamp(2rem, 6vw, 3.2rem);
+  letter-spacing: 0.45em;
+  margin: 0 0 0.6rem;
+  text-indent: 0.45em; /* optically center despite tracking */
+}
+.hero p.tag {
+  color: var(--faint);
+  max-width: 34rem;
+  margin: 0 auto 2.8rem;
+}
+.video-frame {
+  border: 1px solid var(--line);
+  background: #fff;
+  padding: 0.6rem;
+  box-shadow: 0 18px 50px rgb(0 0 0 / 0.10);
+  border-radius: 2px;
+}
+.video-frame video { display: block; width: 100%; height: auto; }
+.hero .vo-note { color: var(--faint); font-size: 0.8rem; margin-top: 0.9rem; }
+
+/* manifesto */
+.manifesto { padding: 4rem 0 2rem; border-top: 1px solid var(--line); margin-top: 4rem; }
+.manifesto h2, .how h2 {
+  font-weight: 500;
+  letter-spacing: 0.25em;
+  text-transform: lowercase;
+  font-size: 1rem;
+  color: var(--faint);
+}
+.manifesto ul { list-style: none; margin: 0; padding: 0; max-width: 40rem; }
+.manifesto li { padding: 0.9rem 0; border-bottom: 1px solid var(--line); }
+.manifesto li strong { font-weight: 600; }
+.manifesto li span { color: var(--faint); }
+
+/* how it works */
+.how { padding: 3rem 0 2rem; }
+.how .cols { display: grid; grid-template-columns: repeat(3, 1fr); gap: 2.2rem; }
+.how h3 { font-weight: 600; font-size: 1rem; margin: 0 0 0.4rem; }
+.how p { color: var(--faint); font-size: 0.9rem; margin: 0; }
+@media (max-width: 640px) { .how .cols { grid-template-columns: 1fr; } }
+
+footer {
+  border-top: 1px solid var(--line);
+  margin-top: 4rem;
+  padding: 2.2rem 1.2rem 3rem;
+  text-align: center;
+  color: var(--faint);
+  font-size: 0.85rem;
+}
+footer a { color: inherit; }
+</style>
+</head>
+<body>
+<main>
+  <section class="hero">
+    <h1>journal</h1>
+    <p class="tag">A quiet place for what happened. Text, photos, and voice —
+    captured in seconds, kept forever, on your own devices.</p>
+    <div class="video-frame">
+      <!-- Silent ambient loop for now. When the voice-over cut lands, swap the
+           src, drop `muted`/`loop`, and add a play control (browsers block
+           autoplay with audio). -->
+      <video autoplay muted loop playsinline poster="poster.jpg" preload="metadata">
+        <source src="hero.mp4" type="video/mp4">
+      </video>
+    </div>
+  </section>
+
+  <section class="manifesto">
+    <h2>what it believes</h2>
+    <ul>
+      <li><strong>Append-only.</strong> <span>Nothing is ever overwritten. The past stays put.</span></li>
+      <li><strong>Local-first.</strong> <span>Every device holds the whole journal and works offline.</span></li>
+      <li><strong>No accounts.</strong> <span>Trust is a secret you carry, not a login you rent.</span></li>
+      <li><strong>Peer-to-peer.</strong> <span>Your devices sync directly with each other. No cloud in the middle.</span></li>
+      <li><strong>Nothing asked of you.</strong> <span>No tags, no folders, no filing. One stream, newest first.</span></li>
+    </ul>
+  </section>
+
+  <section class="how">
+    <h2>how it works</h2>
+    <div class="cols">
+      <div>
+        <h3>capture</h3>
+        <p>A text box, a camera, a microphone. Whatever happened goes in and
+        you get on with your day.</p>
+      </div>
+      <div>
+        <h3>sync</h3>
+        <p>Phone, laptop, desktop — each one a full peer. Pair once with a QR
+        code; they find each other from then on.</p>
+      </div>
+      <div>
+        <h3>find</h3>
+        <p>Voice notes transcribe themselves. Photos are read for text. Search
+        remembers everything so you don't have to.</p>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer>
+  made by <a href="https://ponelat.com">Josh Ponelat</a> · one person's journal at a time
+</footer>
+</body>
+</html>
