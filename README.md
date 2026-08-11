@@ -6,8 +6,9 @@ four faces: an always-on server peer (axum + React web client), a Tauri 2 deskto
 a SwiftUI iPhone app (UniFFI), and a CLI. Peers sync directly — union of append-only
 logs, no conflicts, no accounts.
 
-Read `UNDERSTANDING.md` (the founding document), then `MILESTONES.md` and `AGENTS.md`.
-`LOG.md` records decisions made while building.
+Read `UNDERSTANDING.md` (the founding document) and `AGENTS.md`, then `docs/BUILD.md` and
+`docs/DEPLOY.md` for how to work on it. `apps/landing/CONTEXT.md` covers memorious.app.
+`LOG.md` records decisions made while building; `MILESTONES.md` is historical.
 
 ## Layout
 

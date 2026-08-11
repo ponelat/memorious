@@ -1,23 +1,25 @@
-# Memorious (formerly Infinite Journal v2) — Agent Guide
+# Memorious — Agent Guide
 
-Start here. This file orients any AI agent (or human) building the project.
+Start here. This file orients any AI agent (or human) working on the project.
 
-## Read first, in order
+## Read first
 
-1. **`UNDERSTANDING.md`** — the founding document. Every design decision and its reasoning,
-   agreed with the owner on 2026-08-10. **It is the source of truth.** If an implementation
-   choice contradicts it, the doc wins; if the doc is silent, make the boring choice and note
-   it in `LOG.md`.
-2. **`MILESTONES.md`** — the build plan with acceptance criteria. Work strictly in milestone
-   order; each milestone must leave something working end to end before the next starts.
+1. **`UNDERSTANDING.md`** — the founding document (2026-08-10). Every design decision and its
+   reasoning. **It is the source of truth.** If an implementation choice contradicts it, the doc
+   wins; if the doc is silent, make the boring choice and note it in `LOG.md`.
+2. **`docs/BUILD.md`** — how to build and test every part.
+3. **`docs/DEPLOY.md`** — how everything is deployed and operated.
+4. **`apps/landing/CONTEXT.md`** — the memorious.app landing page.
+5. `MILESTONES.md` is historical (all six milestones shipped 2026-08-10); `LOG.md` is the
+   dated decision record — keep appending to it.
 
 ## One-paragraph brief
 
-The product is named **Memorious** (chosen 2026-08-11; domain memorious.app). "Journal" remains
+The product is **Memorious** (named 2026-08-11; public site memorious.app). "Journal" remains
 the domain noun for the data structure; Memorious is the product/brand.
 
 A brutally minimalist, append-only, local-first capture device for text, audio, and photos.
-One shared Rust core crate (event log, SQLite storage, custom sync protocol over Iroh,
+One shared Rust core crate (event log, SQLite storage, custom sync protocol over iroh,
 iroh-blobs for media) with four faces: a headless always-on server peer (axum, serves the web
 client), a Tauri 2 desktop app, a native SwiftUI iPhone app (UniFFI bindings), and a browser
 thin-client of the server. Peers sync directly, union-of-logs, no conflicts, no accounts, no
@@ -34,47 +36,54 @@ central authority. There are only four event kinds: capture, redact, token-set, 
   = one active bearer passcode (hash stored in a token-set event, latest wins).
 - **One media format each:** AAC/m4a audio, JPEG photos. No originals kept.
 - **Minimalism is a feature.** When in doubt, leave it out.
-- **Failing test first.** Work test-driven: before implementing any behavior or bug fix,
-  write the test that fails for the right reason, watch it fail, then make it pass.
+- **Failing test first.** Before implementing any behavior or bug fix, write the test that
+  fails for the right reason, watch it fail, then make it pass.
 
-## Repository layout (target)
+## Repository layout
 
 ```
-crates/core/      # the engine: events, storage, sync, enrichment scheduling (all logic here)
-apps/server/      # axum HTTP server wrapping core; serves apps/web build; always-on peer
-apps/desktop/     # Tauri 2 shell around core + shared web UI
-apps/web/         # React + Vite UI, shared by desktop shell and browser client
-apps/ios/         # Xcode project, SwiftUI, UniFFI-generated bindings to core
+crates/core/       the engine — events, storage, sync, enrichment scheduling; ALL logic here
+crates/mobile/     UniFFI face of core for iOS (JSON strings + bytes over blocking calls)
+apps/server/       axum HTTP peer; serves apps/web build; enrichment sweeper; /downloads
+apps/web/          React + Vite UI shared by the browser client and the Tauri shell
+apps/desktop/      Tauri 2 shell (its own peer, embeds core — never a client of the server)
+apps/ios/          SwiftUI app; build.sh makes MemoriousCore.xcframework; xcodegen project
+apps/landing/      memorious.app static landing page (see its CONTEXT.md)
+docs/              build + deploy context
+scripts/           make-downloads.sh (hosted app builds), stitch-hero.py (landing video)
 ```
 
-Rust side is one Cargo workspace at the repo root. Keep the core deep and the shells thin:
-if logic could live in `crates/core`, it must.
+Keep the core deep and the shells thin: if logic could live in `crates/core`, it must.
+The one UI seam is `apps/web/src/api/types.ts` (`JournalApi`) — browser implements it with
+HTTP, desktop with Tauri commands. The wire shape for entries is
+`crates/core/src/api_json.rs`, shared by server, desktop, and mobile.
 
-## Tech stack & versions (checked 2026-08-10 on crates.io)
+## Versioning rules that bite
 
-- **iroh 1.0.3** (1.0 is out — pin 1.x), **iroh-blobs 0.103.0**, **iroh-gossip 0.101.0**
-  (gossip optional; only if live-peer announcement earns its keep). iroh's API churned a lot
-  pre-1.0 — trust current docs.rs over training data or old blog posts.
-- **rusqlite** with FTS5 for the event log + search.
-- **axum** for the server; **uniffi** for Swift bindings; **Tauri 2** for desktop.
-- Web: React + Vite + TypeScript. Bun is the JS runtime/package manager on this machine.
-- Enrichment (milestone 5): whisper.cpp (or whisper-rs) for audio; OCR via a boring
-  well-maintained option (macOS Vision on Apple platforms, tesseract on the server).
+- **Protocol identifiers travel together.** `SYNC_ALPN`, the ticket prefix, and
+  `AUTH_CONTEXT` live in `crates/core/src/node.rs`. Changing any of them strands every
+  deployed peer — only do it with a plan to upgrade server, desktop, and phone in one go.
+- **iOS bundle id is still `the legacy bundle id`** (see docs/DEPLOY.md,
+  "iOS signing"). Don't "fix" it casually — it requires a live Xcode Apple ID session and
+  orphans the app's on-phone data.
+- iroh is pinned 1.x; its pre-1.0 API differs wildly from training data — trust docs.rs and
+  the vendored sources in `~/.cargo/registry`. Two local gotchas: iroh's `EndpointAddr` serde
+  needs `deserialize_any` (postcard can't — wire frames are JSON, tickets use `AddrWire`),
+  and nixpkgs must be new enough for rustc ≥ 1.91.
 
 ## Environment notes
 
-- Dev machine: macOS (Apple Silicon). Local dev domains via Caddy: the local dev domain
-  (see the `devhost` skill/CLI on this machine to register the server app's port).
-- v1 lives at `~/projects/infinite-journal` (PocketBase + React). Its `GET /api/export`
-  is the input for the milestone-6 import tool. Deployed v1: v1 prod.
-- Git identity for this repo is set locally (clawjungle). Commit style:
-  `type(scope): summary` (see v1's history for tone).
-- Keep a `LOG.md` in repo root: dated, terse entries for decisions made while building
-  (same habit as v1).
+- Dev machine: macOS (Apple Silicon). Dev hosting via the `devhost` CLI
+  (project `memorious` → the dev app).
+- v1 lives at `~/projects/infinite-journal` (PocketBase); deployed at v1 prod.
+  Its `GET /api/export` feeds `memorious import-v1`. The owner's real import sits in
+  `./data-v1-import/` (gitignored).
+- Git identity: clawjungle. Commit style: `type(scope): summary`.
+- Keep `LOG.md` current: dated, terse entries for decisions made while building.
 
 ## Definition of done, per change
 
-- `cargo test` green; core logic has tests (the sync protocol especially — two-peer
-  convergence tests are non-negotiable).
-- Each milestone's acceptance criteria in `MILESTONES.md` demonstrably pass.
-- No dead scaffolding: if a shell app exists, it runs.
+- `cargo test` green (run per-package — see docs/BUILD.md for the disk story); core logic has
+  tests, the sync protocol especially.
+- If a shell app exists, it runs. No dead scaffolding.
+- Deployed surfaces updated when behavior changes (docs/DEPLOY.md).
