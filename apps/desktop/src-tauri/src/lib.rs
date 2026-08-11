@@ -16,6 +16,30 @@ use tokio::sync::Mutex;
 
 const LAST_PEER_TICKET: &str = "last_peer_ticket";
 
+/// OS keychain slot for the master password: unlock once, then app launches
+/// are silent. Tests set MEMORIOUS_NO_KEYRING to stay off the real keychain.
+const KEYRING_SERVICE: &str = "com.ponelat.memorious";
+const KEYRING_USER: &str = "master-password";
+
+fn keyring_entry() -> Option<keyring::Entry> {
+    if std::env::var_os("MEMORIOUS_NO_KEYRING").is_some() {
+        return None;
+    }
+    keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER).ok()
+}
+
+fn cached_password() -> Option<String> {
+    keyring_entry()?.get_password().ok()
+}
+
+fn cache_password(password: &str) {
+    if let Some(entry) = keyring_entry() {
+        if let Err(e) = entry.set_password(password) {
+            log::warn!("could not cache master password in keychain: {e}");
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct NodeState(Arc<Mutex<Option<Arc<Node>>>>);
 
@@ -30,18 +54,34 @@ fn data_dir<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<PathBuf> {
         .join("journal"))
 }
 
+async fn open_with<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    state: &State<'_, NodeState>,
+    password: &str,
+) -> Result<Arc<Node>> {
+    let dir = data_dir(app)?;
+    let n = Arc::new(Node::spawn(Journal::open(&dir, password)?).await?);
+    *state.0.lock().await = Some(n.clone());
+    Ok(n)
+}
+
 async fn node<R: tauri::Runtime>(app: &AppHandle<R>, state: &State<'_, NodeState>) -> Result<Arc<Node>> {
-    let mut guard = state.0.lock().await;
-    if let Some(n) = guard.as_ref() {
-        return Ok(n.clone());
+    {
+        let guard = state.0.lock().await;
+        if let Some(n) = guard.as_ref() {
+            return Ok(n.clone());
+        }
     }
     let dir = data_dir(app)?;
     if !dir.join("db.sqlite").exists() {
         return Err(anyhow!("journal not set up yet"));
     }
-    let n = Arc::new(Node::spawn(Journal::open(&dir)?).await?);
-    *guard = Some(n.clone());
-    Ok(n)
+    let Some(password) = cached_password() else {
+        return Err(anyhow!("journal is locked — enter the master password"));
+    };
+    open_with(app, state, &password)
+        .await
+        .context("journal is locked — enter the master password")
 }
 
 fn estr(e: anyhow::Error) -> String {
@@ -51,21 +91,47 @@ fn estr(e: anyhow::Error) -> String {
 // ---- setup ----
 
 #[tauri::command]
-async fn setup_state<R: tauri::Runtime>(app: AppHandle<R>) -> Result<String, String> {
+async fn setup_state<R: tauri::Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, NodeState>,
+) -> Result<String, String> {
     let dir = data_dir(&app).map_err(estr)?;
-    Ok(if dir.join("db.sqlite").exists() {
+    if !dir.join("db.sqlite").exists() {
+        return Ok("empty".into());
+    }
+    // Auto-unlock from the keychain when possible; otherwise the UI asks.
+    Ok(if node(&app, &state).await.is_ok() {
         "ready".into()
     } else {
-        "empty".into()
+        "locked".into()
     })
 }
 
 #[tauri::command]
-async fn setup_init<R: tauri::Runtime>(app: AppHandle<R>, state: State<'_, NodeState>) -> Result<(), String> {
+async fn unlock<R: tauri::Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, NodeState>,
+    password: String,
+) -> Result<(), String> {
+    if state.0.lock().await.is_some() {
+        return Ok(());
+    }
+    open_with(&app, &state, &password).await.map_err(estr)?;
+    cache_password(&password);
+    Ok(())
+}
+
+#[tauri::command]
+async fn setup_init<R: tauri::Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, NodeState>,
+    password: String,
+) -> Result<(), String> {
     let dir = data_dir(&app).map_err(estr)?;
-    let journal = Journal::init(&dir).map_err(estr)?;
+    let journal = Journal::init(&dir, &password).map_err(estr)?;
     let n = Arc::new(Node::spawn(journal).await.map_err(estr)?);
     *state.0.lock().await = Some(n);
+    cache_password(&password);
     Ok(())
 }
 
@@ -74,9 +140,13 @@ async fn setup_join<R: tauri::Runtime>(
     app: AppHandle<R>,
     state: State<'_, NodeState>,
     ticket: String,
+    password: String,
 ) -> Result<Value, String> {
     let dir = data_dir(&app).map_err(estr)?;
-    let (n, report) = Node::join_from_ticket(&dir, &ticket).await.map_err(estr)?;
+    let (n, report) = Node::join_from_ticket(&dir, &ticket, &password)
+        .await
+        .map_err(estr)?;
+    cache_password(&password);
     n.journal()
         .store
         .meta_set(LAST_PEER_TICKET, ticket.trim().as_bytes())
@@ -270,6 +340,7 @@ pub fn handlers<R: tauri::Runtime>(
 ) -> impl Fn(tauri::ipc::Invoke<R>) -> bool + Send + Sync + 'static {
     tauri::generate_handler![
         setup_state,
+        unlock,
         setup_init,
         setup_join,
         capture_text,

@@ -1,5 +1,23 @@
 # LOG
 
+## 2026-08-11 (encryption at rest)
+- **Everything at rest is now encrypted** under a single master password per journal
+  (design in UNDERSTANDING.md §"Encryption at rest"): SQLCipher (community, vendored
+  OpenSSL) for the event log/FTS, and per-blob XChaCha20-Poly1305 (64 KiB STREAM chunks)
+  applied **before** iroh-blobs ingest — blob hashes are of ciphertext.
+- Key layers: password → Argon2id → master key; blake3-derived DB key + wrapping key;
+  fresh random content key per blob, wrapped into the capture event payload. The event
+  log *is* the manifest — no separate manifest file. Argon2id salt derives from the
+  journal secret and is mirrored in plaintext `keys.json` (with KDF params) so unlock
+  can precede opening the DB.
+- Password never rides in the pairing ticket: ticket = replicate, password = read.
+- Sync ALPN bumped to `memorious/sync/1` (payload shape + ciphertext identities are a
+  clean break; all peers owner-controlled, same precedent as the rename).
+- `memorious migrate-encrypt` rebuilds a plaintext journal in place (identity + event
+  ids/seqs preserved, media re-encrypted, old dir kept as `<dir>.pre-encryption`); other
+  devices re-pair fresh.
+- Enrichment temp files: 0700 tempdir + best-effort zero-overwrite before delete.
+
 ## 2026-08-11 (open source)
 - **Licensing decided: open-core.** This repo (engine, server, web, desktop, CLI,
   landing) is public under **MIT OR Apache-2.0**; the native mobile apps are a paid,

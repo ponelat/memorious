@@ -123,7 +123,9 @@ fn run(cmd: &mut std::process::Command) -> Result<std::process::Output> {
 
 impl Engines for SystemEngines {
     fn transcribe(&self, m4a: &[u8]) -> Result<String> {
-        let dir = tempfile::tempdir()?;
+        // Decrypted media touches disk for the subprocess; the ScrubDir zeroes
+        // it on the way out.
+        let dir = crate::ScrubDir::new()?;
         let in_path = dir.path().join("in.m4a");
         let wav = dir.path().join("in.wav");
         std::fs::write(&in_path, m4a)?;
@@ -147,7 +149,7 @@ impl Engines for SystemEngines {
     }
 
     fn ocr(&self, jpeg: &[u8]) -> Result<String> {
-        let dir = tempfile::tempdir()?;
+        let dir = crate::ScrubDir::new()?;
         let in_path = dir.path().join("in.jpg");
         std::fs::write(&in_path, jpeg)?;
         let out = run(std::process::Command::new("tesseract")

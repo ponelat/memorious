@@ -26,7 +26,7 @@ use crate::event::{Event, MediaKind, Payload};
 use crate::journal::{Journal, SECRET_LEN};
 use crate::store::Heads;
 
-pub const SYNC_ALPN: &[u8] = b"memorious/sync/0";
+pub const SYNC_ALPN: &[u8] = b"memorious/sync/1";
 const AUTH_CONTEXT: &[u8; 32] = b"memorious auth v0 context key 32";
 /// Close code used when the peer fails journal-secret auth.
 const CLOSE_BAD_AUTH: u32 = 1;
@@ -189,13 +189,29 @@ impl Node {
         })
     }
 
-    /// Redeem a ticket: create the local journal from its secret, then pull everything.
-    pub async fn join_from_ticket(root: &Path, ticket: &str) -> Result<(Self, SyncReport)> {
+    /// Redeem a ticket: create the local journal from its secret, then pull
+    /// everything. The ticket authorizes replication; the master password
+    /// (entered separately, never in the ticket) authorizes reading — after
+    /// the first sync we prove it by unwrapping a media key, so a typo can't
+    /// silently produce a journal whose media never decrypts.
+    pub async fn join_from_ticket(
+        root: &Path,
+        ticket: &str,
+        password: &str,
+    ) -> Result<(Self, SyncReport)> {
         let ticket = JournalTicket::decode(ticket)?;
         let peer_addr = ticket.addr()?;
-        let journal = Journal::init_with_secret(root, ticket.secret)?;
+        let journal = Journal::init_with_secret(root, ticket.secret, password)?;
         let node = Self::spawn(journal).await?;
         let report = node.sync_with(&peer_addr).await?;
+        for ev in node.journal.store.all_events()? {
+            if let Some(crypto) = ev.payload.blob_crypto() {
+                node.journal
+                    .unwrap_blob_keys(crypto)
+                    .context("master password doesn't match this journal")?;
+                break;
+            }
+        }
         Ok((node, report))
     }
 
@@ -246,12 +262,11 @@ impl Node {
         bytes: Vec<u8>,
         will_enrich: bool,
     ) -> Result<Event> {
-        let size = bytes.len() as u64;
-        let tag = self.blobs.add_bytes(bytes).await?;
+        let (payload, _) = self.seal_and_store(kind, bytes).await?;
         self.journal.store.append_local(
             self.journal.device_id(),
             crate::event::EventKind::Capture,
-            Payload::media(kind, tag.hash.to_hex().to_string(), size),
+            payload,
             will_enrich,
         )
     }
@@ -263,21 +278,47 @@ impl Node {
         bytes: Vec<u8>,
         recorded_at: i64,
     ) -> Result<Event> {
-        let size = bytes.len() as u64;
-        let tag = self.blobs.add_bytes(bytes).await?;
+        let (payload, _) = self.seal_and_store(kind, bytes).await?;
         self.journal.store.append_local_at(
             self.journal.device_id(),
             crate::event::EventKind::Capture,
-            Payload::media(kind, tag.hash.to_hex().to_string(), size),
+            payload,
             false,
             recorded_at,
         )
     }
 
-    /// Whole blob, by hex hash.
+    /// Encrypt-at-ingest: seal plaintext under a fresh content key, store the
+    /// ciphertext (the blob identity is the ciphertext hash), wrap the key
+    /// into the payload. The blob store never sees plaintext.
+    async fn seal_and_store(&self, kind: MediaKind, bytes: Vec<u8>) -> Result<(Payload, Hash)> {
+        let size = bytes.len() as u64;
+        let mut sealed = tokio::task::spawn_blocking(move || crate::crypto::seal(&bytes)).await??;
+        let envelope = self.journal.wrap_blob_keys(&sealed)?;
+        let ciphertext = std::mem::take(&mut sealed.ciphertext);
+        let tag = self.blobs.add_bytes(ciphertext).await?;
+        Ok((
+            Payload::media(kind, tag.hash.to_hex().to_string(), size, envelope),
+            tag.hash,
+        ))
+    }
+
+    /// Whole blob plaintext, by (ciphertext) hex hash: fetch, unwrap the
+    /// content key from the referencing capture event, decrypt.
     pub async fn blob_bytes(&self, hash_hex: &str) -> Result<Vec<u8>> {
         let hash: Hash = hash_hex.parse().context("bad blob hash")?;
-        Ok(self.blobs.get_bytes(hash).await?.to_vec())
+        let payload = self
+            .journal
+            .store
+            .capture_payload_for_hash(hash_hex)?
+            .context("no capture references this blob")?;
+        let envelope = payload
+            .blob_crypto()
+            .context("media predates encryption — run `memorious migrate-encrypt`")?;
+        let (ck, nonce_base) = self.journal.unwrap_blob_keys(envelope)?;
+        let ciphertext = self.blobs.get_bytes(hash).await?;
+        tokio::task::spawn_blocking(move || crate::crypto::open(&ciphertext, &ck, &nonce_base))
+            .await?
     }
 
     pub async fn has_blob(&self, hash_hex: &str) -> Result<bool> {

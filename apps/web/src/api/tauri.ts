@@ -50,9 +50,11 @@ export const tauriApi: JournalApi = {
   },
 
   setup: {
-    state: () => invoke<'ready' | 'empty'>('setup_state'),
-    initFresh: () => invoke('setup_init'),
-    joinTicket: (ticket: string) => invoke<SyncReport>('setup_join', { ticket }),
+    state: () => invoke<'ready' | 'empty' | 'locked'>('setup_state'),
+    initFresh: (password: string) => invoke('setup_init', { password }),
+    joinTicket: (ticket: string, password: string) =>
+      invoke<SyncReport>('setup_join', { ticket, password }),
+    unlock: (password: string) => invoke('unlock', { password }),
   },
 
   syncNow(ticket?: string) {

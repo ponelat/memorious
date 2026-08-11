@@ -24,6 +24,9 @@ iroh-blobs for media) with four faces: a headless always-on server peer (axum, s
 client), a Tauri 2 desktop app, a native SwiftUI iPhone app (UniFFI bindings), and a browser
 thin-client of the server. Peers sync directly, union-of-logs, no conflicts, no accounts, no
 central authority. There are only four event kinds: capture, redact, token-set, annotation.
+Everything is encrypted at rest under one master password per journal (SQLCipher database,
+per-blob AEAD sealed before ingest) — see UNDERSTANDING.md §"Encryption at rest" before
+touching storage, sync, or key handling.
 
 ## Hard rules (from the owner — do not renegotiate)
 

@@ -7,35 +7,69 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
 use rand::TryRngCore;
+use serde::{Deserialize, Serialize};
 
-use crate::event::{Event, EventKind, Payload};
+use crate::crypto::{self, KdfParams, KeySet};
+use crate::event::{BlobCrypto, Event, EventKind, Payload};
 use crate::store::Store;
 
 /// 32-byte shared journal secret, hex-encoded in tickets and storage.
 pub const SECRET_LEN: usize = 32;
+
+const KEYS_FILE: &str = "keys.json";
+
+/// Plaintext sidecar holding what unlock needs *before* the database opens:
+/// the Argon2id salt (derived from the journal secret, not sensitive) and the
+/// KDF parameters. Never key material.
+#[derive(Serialize, Deserialize)]
+struct KeysFile {
+    version: u32,
+    kdf: String,
+    /// base64, 16 bytes.
+    salt: String,
+    #[serde(flatten)]
+    params: KdfParams,
+}
 
 pub struct Journal {
     pub store: Store,
     root: PathBuf,
     device_id: String,
     secret: [u8; SECRET_LEN],
+    keys: KeySet,
 }
 
 impl Journal {
     /// Create a brand-new journal (fresh secret) in `root`. Fails if one exists.
-    pub fn init(root: &Path) -> Result<Self> {
+    pub fn init(root: &Path, password: &str) -> Result<Self> {
         let mut secret = [0u8; SECRET_LEN];
         rand::rngs::OsRng.try_fill_bytes(&mut secret)?;
-        Self::init_with_secret(root, secret)
+        Self::init_with_secret(root, secret, password)
     }
 
     /// Create a journal joined to an existing one (secret from a pairing ticket).
-    pub fn init_with_secret(root: &Path, secret: [u8; SECRET_LEN]) -> Result<Self> {
+    /// The password must be the journal's master password — media keys wrapped
+    /// by other devices won't unwrap otherwise (checked after the first sync).
+    pub fn init_with_secret(root: &Path, secret: [u8; SECRET_LEN], password: &str) -> Result<Self> {
         if root.join("db.sqlite").exists() {
             bail!("journal already exists at {}", root.display());
         }
         std::fs::create_dir_all(root.join("blobs")).context("create data dir")?;
-        let store = Store::open(&root.join("db.sqlite"))?;
+        let salt = crypto::salt_from_secret(&secret);
+        let params = KdfParams::default();
+        let keys_file = KeysFile {
+            version: 1,
+            kdf: "argon2id".into(),
+            salt: data_encoding::BASE64.encode(&salt),
+            params,
+        };
+        std::fs::write(
+            root.join(KEYS_FILE),
+            serde_json::to_vec_pretty(&keys_file)?,
+        )
+        .context("write keys.json")?;
+        let keys = KeySet::derive(password, &salt, &params)?;
+        let store = Store::open(&root.join("db.sqlite"), &keys.db_key_hex())?;
         let device_id = format!("dev-{}", uuid::Uuid::now_v7().simple());
         store.meta_set("device_id", device_id.as_bytes())?;
         store.meta_set("journal_secret", &secret)?;
@@ -44,15 +78,38 @@ impl Journal {
             root: root.to_path_buf(),
             device_id,
             secret,
+            keys,
         })
     }
 
-    /// Open an existing journal.
-    pub fn open(root: &Path) -> Result<Self> {
+    /// Open an existing journal with its master password.
+    pub fn open(root: &Path, password: &str) -> Result<Self> {
         if !root.join("db.sqlite").exists() {
             bail!("no journal at {} (run init first)", root.display());
         }
-        let store = Store::open(&root.join("db.sqlite"))?;
+        let keys_path = root.join(KEYS_FILE);
+        if !keys_path.exists() {
+            bail!(
+                "journal at {} predates encryption at rest — run `memorious migrate-encrypt`",
+                root.display()
+            );
+        }
+        let keys_file: KeysFile = serde_json::from_slice(
+            &std::fs::read(&keys_path).context("read keys.json")?,
+        )
+        .context("parse keys.json")?;
+        if keys_file.version != 1 || keys_file.kdf != "argon2id" {
+            bail!("keys.json from a newer memorious — upgrade this build");
+        }
+        let salt_vec = data_encoding::BASE64
+            .decode(keys_file.salt.as_bytes())
+            .context("keys.json salt")?;
+        let salt: [u8; crypto::SALT_LEN] = salt_vec
+            .as_slice()
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("keys.json salt has wrong length"))?;
+        let keys = KeySet::derive(password, &salt, &keys_file.params)?;
+        let store = Store::open(&root.join("db.sqlite"), &keys.db_key_hex())?;
         let device_id = String::from_utf8(
             store
                 .meta_get("device_id")?
@@ -70,7 +127,23 @@ impl Journal {
             root: root.to_path_buf(),
             device_id,
             secret,
+            keys,
         })
+    }
+
+    // ---- media keys ----
+
+    /// Wrap a sealed blob's key material into a capture event's envelope.
+    pub fn wrap_blob_keys(&self, sealed: &crypto::Sealed) -> Result<BlobCrypto> {
+        self.keys.wrap(&sealed.ck, &sealed.nonce_base)
+    }
+
+    /// Recover a blob's (content key, nonce base) from its capture payload.
+    pub fn unwrap_blob_keys(
+        &self,
+        crypto: &BlobCrypto,
+    ) -> Result<([u8; crypto::KEY_LEN], [u8; crypto::NONCE_BASE_LEN])> {
+        self.keys.unwrap(crypto)
     }
 
     pub fn root(&self) -> &Path {
@@ -183,40 +256,73 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
+    const PW: &str = "test password";
+
     #[test]
     fn init_open_round_trip_preserves_identity() {
         let dir = tempdir().unwrap();
         let root = dir.path().join("j");
-        let j = Journal::init(&root).unwrap();
+        let j = Journal::init(&root, PW).unwrap();
         let (dev, secret) = (j.device_id().to_string(), *j.secret());
         drop(j);
-        let j = Journal::open(&root).unwrap();
+        let j = Journal::open(&root, PW).unwrap();
         assert_eq!(j.device_id(), dev);
         assert_eq!(j.secret(), &secret);
         assert!(root.join("blobs").is_dir());
+        assert!(root.join("keys.json").is_file());
+    }
+
+    #[test]
+    fn wrong_password_fails_to_open() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().join("j");
+        Journal::init(&root, PW).unwrap();
+        let err = Journal::open(&root, "not it").err().expect("must fail");
+        assert!(format!("{err:#}").contains("wrong master password"));
+    }
+
+    #[test]
+    fn pre_encryption_journal_gets_a_pointed_error() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().join("j");
+        std::fs::create_dir_all(&root).unwrap();
+        // A legacy journal: db.sqlite present, no keys.json.
+        crate::store::Store::open_plaintext(&root.join("db.sqlite")).unwrap();
+        let err = Journal::open(&root, PW).err().expect("must fail");
+        assert!(format!("{err:#}").contains("migrate-encrypt"));
     }
 
     #[test]
     fn init_refuses_existing_journal() {
         let dir = tempdir().unwrap();
         let root = dir.path().join("j");
-        Journal::init(&root).unwrap();
-        assert!(Journal::init(&root).is_err());
+        Journal::init(&root, PW).unwrap();
+        assert!(Journal::init(&root, PW).is_err());
     }
 
     #[test]
     fn init_with_secret_joins_existing_journal() {
         let dir = tempdir().unwrap();
-        let a = Journal::init(&dir.path().join("a")).unwrap();
-        let b = Journal::init_with_secret(&dir.path().join("b"), *a.secret()).unwrap();
+        let a = Journal::init(&dir.path().join("a"), PW).unwrap();
+        let b = Journal::init_with_secret(&dir.path().join("b"), *a.secret(), PW).unwrap();
         assert_eq!(a.secret(), b.secret());
         assert_ne!(a.device_id(), b.device_id());
+        // Same secret + same password ⇒ identical wrapping keys: a key wrapped
+        // on one device unwraps on the other (the sync story for media).
+        let sealed = crate::crypto::seal(b"pixels").unwrap();
+        let envelope = a.wrap_blob_keys(&sealed).unwrap();
+        let (ck, nb) = b.unwrap_blob_keys(&envelope).unwrap();
+        assert_eq!(ck, sealed.ck);
+        assert_eq!(nb, sealed.nonce_base);
+        // A device joined with the wrong password cannot unwrap.
+        let c = Journal::init_with_secret(&dir.path().join("c"), *a.secret(), "typo").unwrap();
+        assert!(c.unwrap_blob_keys(&envelope).is_err());
     }
 
     #[test]
     fn list_hides_redacted_trash_shows_them() {
         let dir = tempdir().unwrap();
-        let j = Journal::init(&dir.path().join("j")).unwrap();
+        let j = Journal::init(&dir.path().join("j"), PW).unwrap();
         let keep = j.capture_text("keep").unwrap();
         let toss = j.capture_text("toss").unwrap();
         j.redact(&toss.event_id).unwrap();
@@ -229,7 +335,7 @@ mod tests {
     #[test]
     fn redact_requires_existing_capture() {
         let dir = tempdir().unwrap();
-        let j = Journal::init(&dir.path().join("j")).unwrap();
+        let j = Journal::init(&dir.path().join("j"), PW).unwrap();
         assert!(j.redact("nope").is_err());
         let r = j.capture_text("x").unwrap();
         let redaction = j.redact(&r.event_id).unwrap();
@@ -240,7 +346,7 @@ mod tests {
     #[test]
     fn passcode_latest_token_set_wins() {
         let dir = tempdir().unwrap();
-        let j = Journal::init(&dir.path().join("j")).unwrap();
+        let j = Journal::init(&dir.path().join("j"), PW).unwrap();
         assert!(!j.check_passcode("anything").unwrap()); // none set yet
         j.set_passcode("first").unwrap();
         assert!(j.check_passcode("first").unwrap());

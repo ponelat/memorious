@@ -61,22 +61,26 @@ fn spawn_node(journal: Journal) -> Result<Arc<Node>> {
     Ok(Arc::new(rt().block_on(Node::spawn(journal))?))
 }
 
+/// The app keeps the master password in the iOS Keychain and passes it on
+/// every open — the engine re-derives keys each time (a few hundred ms).
 #[uniffi::export]
-pub fn open_journal(dir: String) -> Result<Arc<MobileJournal>> {
-    let node = spawn_node(Journal::open(&PathBuf::from(dir))?)?;
+pub fn open_journal(dir: String, password: String) -> Result<Arc<MobileJournal>> {
+    let node = spawn_node(Journal::open(&PathBuf::from(dir), &password)?)?;
     Ok(Arc::new(MobileJournal { node }))
 }
 
 #[uniffi::export]
-pub fn init_fresh(dir: String) -> Result<Arc<MobileJournal>> {
-    let node = spawn_node(Journal::init(&PathBuf::from(dir))?)?;
+pub fn init_fresh(dir: String, password: String) -> Result<Arc<MobileJournal>> {
+    let node = spawn_node(Journal::init(&PathBuf::from(dir), &password)?)?;
     Ok(Arc::new(MobileJournal { node }))
 }
 
 /// Join an existing journal from a pairing ticket (initial sync included).
+/// The password is checked against the journal's media keys after the sync.
 #[uniffi::export]
-pub fn join_ticket(dir: String, ticket: String) -> Result<Arc<MobileJournal>> {
-    let (node, _report) = rt().block_on(Node::join_from_ticket(&PathBuf::from(dir), &ticket))?;
+pub fn join_ticket(dir: String, ticket: String, password: String) -> Result<Arc<MobileJournal>> {
+    let (node, _report) =
+        rt().block_on(Node::join_from_ticket(&PathBuf::from(dir), &ticket, &password))?;
     node.journal()
         .store
         .meta_set(LAST_PEER_TICKET, ticket.trim().as_bytes())
@@ -226,8 +230,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let d = dir.path().join("j").to_string_lossy().to_string();
         assert_eq!(setup_state(d.clone()), "empty");
-        let j = init_fresh(d.clone()).unwrap();
+        let j = init_fresh(d.clone(), "pw".into()).unwrap();
         assert_eq!(setup_state(d.clone()), "ready");
+        // Wrong password never opens the journal.
+        assert!(open_journal(d.clone(), "nope".into()).is_err());
         let e: serde_json::Value =
             serde_json::from_str(&j.capture_text("from ffi".into()).unwrap()).unwrap();
         assert_eq!(e["kind"], "text");
@@ -238,7 +244,7 @@ mod tests {
 
         // Second device joins by ticket and converges.
         let d2 = dir.path().join("j2").to_string_lossy().to_string();
-        let j2 = join_ticket(d2, ticket).unwrap();
+        let j2 = join_ticket(d2, ticket, "pw".into()).unwrap();
         let feed2: serde_json::Value = serde_json::from_str(&j2.feed(None, 50).unwrap()).unwrap();
         assert_eq!(feed2["entries"], feed["entries"]);
         // and sync_now uses the remembered ticket

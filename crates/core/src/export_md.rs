@@ -132,7 +132,7 @@ mod tests {
     #[tokio::test]
     async fn export_builds_day_tree_and_reruns_change_nothing() {
         let dir = tempdir().unwrap();
-        let node = Node::spawn(Journal::init(&dir.path().join("j")).unwrap())
+        let node = Node::spawn(Journal::init(&dir.path().join("j"), "pw").unwrap())
             .await
             .unwrap();
         let journal = node.journal();

@@ -38,9 +38,11 @@ export interface SyncReport {
 
 /** First-run choices on hosts that own their journal (desktop, iOS). */
 export interface SetupApi {
-  state(): Promise<'ready' | 'empty'>
-  initFresh(): Promise<void>
-  joinTicket(ticket: string): Promise<SyncReport>
+  /** 'locked': a journal exists but needs the master password this launch. */
+  state(): Promise<'ready' | 'empty' | 'locked'>
+  initFresh(password: string): Promise<void>
+  joinTicket(ticket: string, password: string): Promise<SyncReport>
+  unlock(password: string): Promise<void>
 }
 
 /**

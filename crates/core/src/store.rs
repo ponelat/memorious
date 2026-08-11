@@ -39,8 +39,27 @@ CREATE VIRTUAL TABLE IF NOT EXISTS events_fts USING fts5(text, event_id UNINDEXE
 ";
 
 impl Store {
-    pub fn open(path: &Path) -> Result<Self> {
+    /// Open (or create) an encrypted store. `db_key_hex` is the raw SQLCipher
+    /// key (already password-stretched — see crypto::KeySet::db_key_hex).
+    pub fn open(path: &Path, db_key_hex: &str) -> Result<Self> {
+        Self::open_with(path, Some(db_key_hex))
+    }
+
+    /// Open a legacy plaintext database — only the migration path may do this.
+    pub(crate) fn open_plaintext(path: &Path) -> Result<Self> {
+        Self::open_with(path, None)
+    }
+
+    fn open_with(path: &Path, db_key_hex: Option<&str>) -> Result<Self> {
         let conn = Connection::open(path).context("open sqlite")?;
+        if let Some(hex) = db_key_hex {
+            // Raw-key form: skips SQLCipher's own KDF (we already did Argon2id).
+            conn.pragma_update(None, "key", format!("x'{hex}'"))
+                .context("apply database key")?;
+        }
+        // Any read forces SQLCipher to actually check the key.
+        conn.query_row("SELECT count(*) FROM sqlite_master", [], |r| r.get::<_, i64>(0))
+            .context("unlock database — wrong master password?")?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "synchronous", "NORMAL")?;
         conn.execute_batch(SCHEMA).context("create schema")?;
@@ -74,6 +93,18 @@ impl Store {
             params![key, value],
         )?;
         Ok(())
+    }
+
+    /// Every meta row — the migration tool copies identity wholesale.
+    pub(crate) fn meta_all(&self) -> Result<Vec<(String, Vec<u8>)>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare("SELECT key, value FROM meta")?;
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
     }
 
     // ---- event log ----
@@ -243,6 +274,24 @@ impl Store {
         Ok(out)
     }
 
+    /// The capture payload referencing a blob hash — where its wrapped
+    /// content key lives.
+    pub fn capture_payload_for_hash(&self, hash: &str) -> Result<Option<Payload>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt =
+            conn.prepare("SELECT payload FROM events WHERE kind = 'capture'")?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+        for row in rows {
+            let payload: Payload = serde_json::from_str(&row?)?;
+            if let Payload::Photo { hash: h, .. } | Payload::Audio { hash: h, .. } = &payload {
+                if h == hash {
+                    return Ok(Some(payload));
+                }
+            }
+        }
+        Ok(None)
+    }
+
     /// When this peer first saw the event (local clock; never syncs).
     pub fn local_received_at(&self, event_id: &str) -> Result<Option<i64>> {
         let conn = self.conn.lock().unwrap();
@@ -328,9 +377,11 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
+    const TEST_KEY: &str = "0707070707070707070707070707070707070707070707070707070707070707";
+
     fn open_temp() -> (tempfile::TempDir, Store) {
         let dir = tempdir().unwrap();
-        let store = Store::open(&dir.path().join("db.sqlite")).unwrap();
+        let store = Store::open(&dir.path().join("db.sqlite"), TEST_KEY).unwrap();
         (dir, store)
     }
 
@@ -470,6 +521,7 @@ mod tests {
                 Payload::Photo {
                     hash: "deadbeef".into(),
                     size: 123,
+                    crypto: None,
                 },
                 true,
             )
@@ -477,5 +529,41 @@ mod tests {
         let got = store.get_event(&photo.event_id).unwrap().unwrap();
         assert_eq!(got, photo);
         assert_eq!(store.referenced_blob_hashes().unwrap(), vec!["deadbeef"]);
+        let looked_up = store.capture_payload_for_hash("deadbeef").unwrap().unwrap();
+        assert_eq!(looked_up, photo.payload);
+        assert!(store.capture_payload_for_hash("cafe").unwrap().is_none());
+    }
+
+    #[test]
+    fn database_file_is_ciphertext_and_needs_the_right_key() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("db.sqlite");
+        {
+            let store = Store::open(&path, TEST_KEY).unwrap();
+            store
+                .append_local("dev-a", EventKind::Capture, text("very secret words"), false)
+                .unwrap();
+            // Fold WAL content back into the main file before inspecting it.
+            store
+                .conn
+                .lock()
+                .unwrap()
+                .pragma_update(None, "wal_checkpoint", "TRUNCATE")
+                .ok();
+        }
+        let raw = std::fs::read(&path).unwrap();
+        assert!(!raw.starts_with(b"SQLite format 3"), "header must be encrypted");
+        let needle = b"very secret words";
+        assert!(
+            !raw.windows(needle.len()).any(|w| w == needle),
+            "plaintext must not appear in the database file"
+        );
+
+        let wrong = "0808080808080808080808080808080808080808080808080808080808080808";
+        let err = Store::open(&path, wrong).err().expect("must fail");
+        assert!(format!("{err:#}").contains("wrong master password"));
+        // and the right key still opens it
+        let store = Store::open(&path, TEST_KEY).unwrap();
+        assert_eq!(store.all_events().unwrap().len(), 1);
     }
 }

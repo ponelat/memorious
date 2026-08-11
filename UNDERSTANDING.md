@@ -139,3 +139,76 @@ timestamps preserved. Mostly for testing with real data.
 6. **Import + export** — v1 import tool; derived markdown tree.
 
 Each milestone leaves something working end to end.
+
+## Encryption at rest (decided 2026-08-11)
+
+**Threat model:** an attacker with read access to the disk (stolen laptop, shared machine,
+server box image) learns nothing useful from the SQLite database, the blob store, or any
+sidecar file. In-memory attacks while an app runs are out of scope.
+
+### Key hierarchy
+
+One **master password per journal**, shared by all paired devices (they must all derive the
+same keys to read each other's media). It is entered once per device and cached in the OS
+keychain where one exists (iOS/macOS); the headless server takes it from the environment.
+The password does **not** travel in the pairing ticket — a ticket grants sync/replication,
+the password grants reading. A photographed QR no longer exposes journal contents.
+
+```
+master password ──Argon2id(salt, params from keys.json)──▶ master key MK   (never on disk)
+    ├── blake3 derive_key("memorious db key v1")   ──▶ SQLCipher database key
+    └── blake3 derive_key("memorious wrap key v1") ──▶ key-wrapping key (KWK)
+per blob: fresh random 32-byte content key (CK), wrapped by KWK into the capture event
+```
+
+- The Argon2id **salt is derived from the journal secret** (blake3 `derive_key`), so every
+  peer computes identical keys with no coordination; it is copied into a plaintext
+  `keys.json` in the journal root (with the KDF parameters) because the secret itself lives
+  inside the encrypted database and must not be needed before unlock. The salt is not
+  sensitive.
+- **The manifest is the event log.** The proposal's external `manifest.enc` is redundant
+  here: capture events already sync to every peer and now sit inside an encrypted database,
+  so the wrapped CK + nonce base ride in the media payload (`Payload::Photo/Audio`). One
+  sync mechanism, no second source of truth.
+- Rotating the password = re-wrap CKs + re-key the database (future work; blobs never need
+  re-encryption).
+
+### SQLite: SQLCipher (community edition)
+
+`rusqlite` with `bundled-sqlcipher-vendored-openssl`; the database key is applied with
+`PRAGMA key = "x'…'"` (raw-key form — we already did the password stretching; SQLCipher's
+own KDF would just re-stretch). FTS5 works unchanged — the whole file, FTS index included,
+is encrypted. Wrong password surfaces as SQLCipher's "file is not a database" and is
+reported as such.
+
+### Blobs: encrypt at ingest, ciphertext is the identity
+
+All encryption happens **before** `add_bytes`: the iroh-blobs store only ever contains
+ciphertext, and the BLAKE3 hash / outboard / sync identity are of the ciphertext. No
+store-level shim, nothing to leak. Peers exchange ciphertext blobs as before; the wrapped
+CK arrives with the capture event.
+
+Format (all media): plaintext split into 64 KiB chunks, each sealed with
+XChaCha20-Poly1305; nonce = 19-byte random base ‖ 4-byte big-endian chunk counter ‖ 1-byte
+final flag (the STREAM construction — reordering, truncation, and cross-blob splicing all
+fail authentication). `size` in the payload stays the plaintext length.
+
+### Faces
+
+- **CLI**: `--password`, `MEMORIOUS_PASSWORD`, or interactive prompt.
+- **Server**: `MEMORIOUS_PASSWORD` env var, required. Browser flow unchanged — the server
+  holds the keys and serves decrypted media over the existing passcode-authed API.
+- **Desktop**: unlock screen on first launch; password cached in the OS keychain.
+- **iPhone**: unlock/setup screens; password cached in the iOS Keychain.
+- **Enrichment** shells out via temp files: 0700 tempdirs, plaintext zero-overwritten
+  best-effort before deletion.
+
+### Migration & compatibility
+
+Encrypted journals are the only kind the engine opens (single code path; a journal without
+`keys.json` gets a pointed error). `memorious migrate-encrypt` rebuilds a plaintext journal
+in place — same journal secret, device id, endpoint key, event ids/seqs/timestamps;
+media re-encrypted under fresh CKs (new blob hashes, payloads rewritten) — leaving the old
+directory beside it as a backup. Peers re-pair fresh, exactly like the protocol rename.
+Sync ALPN bumps to `memorious/sync/1`; media payloads carry the crypto fields, so old and
+new builds don't interoperate (deliberate, all peers are owner-controlled).

@@ -22,6 +22,9 @@ cargo test -p memorious-desktop                                        # separat
   (~35 min). Plan renames accordingly.
 - Sync tests spin up real iroh endpoints on loopback; they're CI-runnable but need a network
   stack (no sandbox-blocked sockets).
+- rusqlite builds **SQLCipher with vendored OpenSSL** (`bundled-sqlcipher-vendored-openssl`)
+  — first compile of `libsqlite3-sys`/`openssl-src` takes a few extra minutes and needs
+  `perl` on PATH (macOS has it; the nix flake adds it).
 
 ## Web UI (`apps/web`)
 

@@ -22,6 +22,8 @@
             src = self;
             cargoLock.lockFile = ./Cargo.lock;
             doCheck = false; # tests spin up live iroh endpoints — no sandbox network
+            # openssl-src (vendored into SQLCipher's build) configures with perl.
+            nativeBuildInputs = [ pkgs.perl ];
           };
         in
         rec {
@@ -42,9 +44,11 @@
           memorious-desktop = pkgs.rustPlatform.buildRustPackage (common // {
             pname = "memorious-desktop";
             buildAndTestSubdir = "apps/desktop/src-tauri";
+            # Overrides common's nativeBuildInputs — keep perl (openssl-src).
             nativeBuildInputs = [
               pkgs.cargo-tauri.hook
               pkgs.pkg-config
+              pkgs.perl
             ] ++ lib.optionals pkgs.stdenv.isLinux [ pkgs.wrapGAppsHook3 ];
             buildInputs = lib.optionals pkgs.stdenv.isLinux [
               pkgs.webkitgtk_4_1

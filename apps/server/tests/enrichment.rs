@@ -33,7 +33,7 @@ fn m4a_bytes() -> Vec<u8> {
 async fn media_from_a_peer_becomes_searchable_with_no_user_action() {
     // "Phone" peer captures audio offline (no will_enrich — it can't enrich).
     let dir = tempfile::tempdir().unwrap();
-    let phone = Node::spawn(Journal::init(&dir.path().join("phone")).unwrap())
+    let phone = Node::spawn(Journal::init(&dir.path().join("phone"), "pw").unwrap())
         .await
         .unwrap();
     phone
@@ -43,7 +43,7 @@ async fn media_from_a_peer_becomes_searchable_with_no_user_action() {
 
     // Server peer joins the same journal and syncs the capture in.
     let server_journal =
-        Journal::init_with_secret(&dir.path().join("server"), *phone.journal().secret()).unwrap();
+        Journal::init_with_secret(&dir.path().join("server"), *phone.journal().secret(), "pw").unwrap();
     server_journal.set_passcode("sesame").unwrap();
     let state = Arc::new(AppState {
         node: Node::spawn(server_journal).await.unwrap(),
@@ -107,7 +107,7 @@ async fn media_from_a_peer_becomes_searchable_with_no_user_action() {
 #[tokio::test]
 async fn flagged_captures_wait_out_the_grace_period() {
     let dir = tempfile::tempdir().unwrap();
-    let capturer = Node::spawn(Journal::init(&dir.path().join("capturer")).unwrap())
+    let capturer = Node::spawn(Journal::init(&dir.path().join("capturer"), "pw").unwrap())
         .await
         .unwrap();
     // Captured with intent to enrich locally.
@@ -117,7 +117,7 @@ async fn flagged_captures_wait_out_the_grace_period() {
         .unwrap();
 
     let sweeper_journal =
-        Journal::init_with_secret(&dir.path().join("sweeper"), *capturer.journal().secret())
+        Journal::init_with_secret(&dir.path().join("sweeper"), *capturer.journal().secret(), "pw")
             .unwrap();
     let state = Arc::new(AppState {
         node: Node::spawn(sweeper_journal).await.unwrap(),

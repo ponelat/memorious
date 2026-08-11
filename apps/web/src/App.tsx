@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { api, getToken } from './api'
 import { Login } from './views/Login'
 import { Setup } from './views/Setup'
+import { Unlock } from './views/Unlock'
 import { StreamView } from './views/StreamView'
 import { TrashView } from './views/TrashView'
 import { StatusView } from './views/StatusView'
@@ -10,7 +11,7 @@ export type View = 'stream' | 'trash' | 'status'
 
 export function App() {
   const [authed, setAuthed] = useState(() => !api.needsAuth || getToken() !== null)
-  const [setupState, setSetupState] = useState<'unknown' | 'ready' | 'empty'>(
+  const [setupState, setSetupState] = useState<'unknown' | 'ready' | 'empty' | 'locked'>(
     api.setup ? 'unknown' : 'ready',
   )
   const [view, setView] = useState<View>('stream')
@@ -34,6 +35,17 @@ export function App() {
   if (setupState === 'unknown') return null
   if (setupState === 'empty' && api.setup) {
     return <Setup setup={api.setup} onDone={() => setSetupState('ready')} />
+  }
+  if (setupState === 'locked' && api.setup) {
+    const { unlock } = api.setup
+    return (
+      <Unlock
+        onUnlock={async (password) => {
+          await unlock(password)
+          setSetupState('ready')
+        }}
+      />
+    )
   }
   if (!authed) return <Login onSubmit={login} />
 

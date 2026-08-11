@@ -81,7 +81,6 @@ impl Journal {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::event::MediaKind;
     use tempfile::tempdir;
 
     fn media_capture(j: &Journal, will_enrich: bool) -> Event {
@@ -89,7 +88,7 @@ mod tests {
             .append_local(
                 j.device_id(),
                 EventKind::Capture,
-                Payload::media(MediaKind::Audio, "cafe".into(), 9),
+                Payload::Audio { hash: "cafe".into(), size: 9, crypto: None },
                 will_enrich,
             )
             .unwrap()
@@ -98,7 +97,7 @@ mod tests {
     #[test]
     fn latest_annotation_wins_with_event_id_tiebreak() {
         let dir = tempdir().unwrap();
-        let j = Journal::init(&dir.path().join("j")).unwrap();
+        let j = Journal::init(&dir.path().join("j"), "pw").unwrap();
         let cap = media_capture(&j, false);
         let a1 = j.annotate(&cap.event_id, "first pass").unwrap();
         let a2 = j.annotate(&cap.event_id, "better model").unwrap();
@@ -111,8 +110,8 @@ mod tests {
     #[test]
     fn two_peers_converge_on_one_annotation_winner() {
         let dir = tempdir().unwrap();
-        let a = Journal::init(&dir.path().join("a")).unwrap();
-        let b = Journal::init_with_secret(&dir.path().join("b"), *a.secret()).unwrap();
+        let a = Journal::init(&dir.path().join("a"), "pw").unwrap();
+        let b = Journal::init_with_secret(&dir.path().join("b"), *a.secret(), "pw").unwrap();
         let cap = media_capture(&a, false);
 
         // b receives the capture, then both enrich concurrently.
@@ -138,7 +137,7 @@ mod tests {
     #[test]
     fn pending_respects_flag_grace_and_redaction() {
         let dir = tempdir().unwrap();
-        let j = Journal::init(&dir.path().join("j")).unwrap();
+        let j = Journal::init(&dir.path().join("j"), "pw").unwrap();
         let plain = media_capture(&j, false);
         let flagged_remote = Event {
             event_id: "evt-remote".into(),
@@ -146,7 +145,7 @@ mod tests {
             seq: 1,
             recorded_at: now_ms(),
             kind: EventKind::Capture,
-            payload: Payload::media(MediaKind::Photo, "beef".into(), 4),
+            payload: Payload::Photo { hash: "beef".into(), size: 4, crypto: None },
             will_enrich: true,
         };
         j.store.insert_remote(&flagged_remote).unwrap();
@@ -172,7 +171,7 @@ mod tests {
     #[test]
     fn own_flagged_capture_is_immediately_due_locally() {
         let dir = tempdir().unwrap();
-        let j = Journal::init(&dir.path().join("j")).unwrap();
+        let j = Journal::init(&dir.path().join("j"), "pw").unwrap();
         let mine = media_capture(&j, true);
         let due = j.pending_enrichment(DEFAULT_GRACE_MS).unwrap();
         assert_eq!(due.len(), 1);

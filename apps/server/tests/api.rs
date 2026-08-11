@@ -12,7 +12,7 @@ use tower::ServiceExt;
 
 async fn test_state() -> (tempfile::TempDir, Arc<AppState>) {
     let dir = tempfile::tempdir().unwrap();
-    let journal = Journal::init(&dir.path().join("j")).unwrap();
+    let journal = Journal::init(&dir.path().join("j"), "pw").unwrap();
     journal.set_passcode("sesame").unwrap();
     let node = Node::spawn(journal).await.unwrap();
     (dir, Arc::new(AppState { node, downloads_dir: None }))
@@ -274,7 +274,7 @@ async fn downloads_are_listed_and_publicly_fetchable() {
     std::fs::write(dl.join("journal-cli-macos-arm64"), b"fake binary").unwrap();
     std::fs::write(dl.join(".hidden"), b"nope").unwrap();
 
-    let journal = Journal::init(&dir.path().join("j")).unwrap();
+    let journal = Journal::init(&dir.path().join("j"), "pw").unwrap();
     journal.set_passcode("sesame").unwrap();
     let state = Arc::new(AppState {
         node: Node::spawn(journal).await.unwrap(),
@@ -338,7 +338,7 @@ async fn server_peer_converges_with_core_peer() {
     // A plain core peer joins via the server's ticket and captures too.
     let dir = tempfile::tempdir().unwrap();
     let ticket = state.node.ticket().unwrap();
-    let (peer, report) = Node::join_from_ticket(&dir.path().join("cli"), &ticket)
+    let (peer, report) = Node::join_from_ticket(&dir.path().join("cli"), &ticket, "pw")
         .await
         .unwrap();
     assert!(report.received >= 1);

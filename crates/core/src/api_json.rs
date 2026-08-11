@@ -30,14 +30,16 @@ pub fn entry_json(e: &Event) -> serde_json::Value {
             obj.insert("kind".into(), "text".into());
             obj.insert("text".into(), text.clone().into());
         }
-        Payload::Photo { hash, size } => {
+        // `crypto` stays out of the UI JSON: clients get plaintext media from
+        // their own face; wrapped keys don't belong in a browser.
+        Payload::Photo { hash, size, .. } => {
             obj.insert("kind".into(), "photo".into());
             obj.insert(
                 "media".into(),
                 json!({"hash": hash, "size": size, "url": format!("/api/media/{hash}")}),
             );
         }
-        Payload::Audio { hash, size } => {
+        Payload::Audio { hash, size, .. } => {
             obj.insert("kind".into(), "audio".into());
             obj.insert(
                 "media".into(),

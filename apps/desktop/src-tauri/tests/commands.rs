@@ -59,6 +59,7 @@ async fn desktop_command_layer_end_to_end() {
     let dir = tempfile::tempdir().unwrap();
     let desktop_dir = dir.path().join("desktop-journal");
     std::env::set_var("MEMORIOUS_DATA_DIR", &desktop_dir);
+    std::env::set_var("MEMORIOUS_NO_KEYRING", "1");
 
     let app = mock_builder()
         .manage(memorious_desktop_lib::NodeState::default())
@@ -72,7 +73,7 @@ async fn desktop_command_layer_end_to_end() {
     // Fresh install → empty → init.
     let state = invoke(&webview, "setup_state", json!({})).await.unwrap();
     assert_eq!(state, json!("empty"));
-    invoke(&webview, "setup_init", json!({})).await.unwrap();
+    invoke(&webview, "setup_init", json!({"password": "pw"})).await.unwrap();
     let state = invoke(&webview, "setup_state", json!({})).await.unwrap();
     assert_eq!(state, json!("ready"));
 
@@ -100,13 +101,13 @@ async fn desktop_command_layer_end_to_end() {
     assert!(media["__raw_len"].as_u64().unwrap() > 100);
 
     // An external core peer (stands in for the server) with entries of its own.
-    let peer_journal = Journal::init(&dir.path().join("peer")).unwrap();
+    let peer_journal = Journal::init(&dir.path().join("peer"), "pw").unwrap();
     // Same journal secret — as if the desktop had been paired to it.
-    let desktop_secret = *Journal::open(&desktop_dir).unwrap().secret();
+    let desktop_secret = *Journal::open(&desktop_dir, "pw").unwrap().secret();
     drop(peer_journal);
     std::fs::remove_dir_all(dir.path().join("peer")).unwrap();
     let peer_journal =
-        Journal::init_with_secret(&dir.path().join("peer"), desktop_secret).unwrap();
+        Journal::init_with_secret(&dir.path().join("peer"), desktop_secret, "pw").unwrap();
     peer_journal.capture_text("from the other peer").unwrap();
     let peer = Node::spawn(peer_journal).await.unwrap();
     let ticket = peer.ticket().unwrap();
@@ -121,7 +122,7 @@ async fn desktop_command_layer_end_to_end() {
 
     // Third peer (the "CLI peer"): joins from the first peer's ticket, captures,
     // then the desktop syncs with it — all three converge.
-    let (cli_peer, _) = Node::join_from_ticket(&dir.path().join("cli"), &ticket)
+    let (cli_peer, _) = Node::join_from_ticket(&dir.path().join("cli"), &ticket, "pw")
         .await
         .unwrap();
     cli_peer.journal().capture_text("from the cli peer").unwrap();
@@ -149,7 +150,7 @@ async fn desktop_command_layer_end_to_end() {
     assert_eq!(desktop_ids.len(), 4);
 
     // Wrong-journal ticket is refused.
-    let stranger = Node::spawn(Journal::init(&dir.path().join("stranger")).unwrap())
+    let stranger = Node::spawn(Journal::init(&dir.path().join("stranger"), "pw").unwrap())
         .await
         .unwrap();
     let bad = invoke(

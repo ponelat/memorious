@@ -14,8 +14,35 @@ struct Cli {
     /// Journal data directory.
     #[arg(long, global = true, default_value_os_t = default_data_dir())]
     data: PathBuf,
+    /// Master password (or set MEMORIOUS_PASSWORD; prompts interactively otherwise).
+    #[arg(long, global = true)]
+    password: Option<String>,
     #[command(subcommand)]
     cmd: Cmd,
+}
+
+/// Flag → env → interactive prompt. `confirm` double-prompts (init/migrate,
+/// where a typo would seal data behind a password nobody knows).
+fn resolve_password(flag: &Option<String>, confirm: bool) -> Result<String> {
+    if let Some(p) = flag {
+        return Ok(p.clone());
+    }
+    if let Ok(p) = std::env::var("MEMORIOUS_PASSWORD") {
+        if !p.is_empty() {
+            return Ok(p);
+        }
+    }
+    let p = rpassword::prompt_password("master password: ").context("read password")?;
+    if p.is_empty() {
+        bail!("empty password");
+    }
+    if confirm {
+        let again = rpassword::prompt_password("repeat password: ")?;
+        if p != again {
+            bail!("passwords don't match");
+        }
+    }
+    Ok(p)
 }
 
 fn default_data_dir() -> PathBuf {
@@ -71,6 +98,8 @@ enum Cmd {
     },
     /// Write the derived year/month/day markdown tree + media files.
     ExportMd { out: PathBuf },
+    /// Encrypt a pre-encryption journal in place (old dir kept as backup).
+    MigrateEncrypt,
 }
 
 #[tokio::main]
@@ -83,39 +112,44 @@ async fn main() -> Result<()> {
         .init();
     let cli = Cli::parse();
     let data = cli.data;
+    let pw = cli.password;
+    let open = |pw: &Option<String>| -> Result<Journal> {
+        Journal::open(&data, &resolve_password(pw, false)?)
+    };
 
     match cli.cmd {
         Cmd::Init => {
-            let j = Journal::init(&data)?;
+            let password = resolve_password(&pw, true)?;
+            let j = Journal::init(&data, &password)?;
             println!("journal created at {}", data.display());
             println!("device: {}", j.device_id());
         }
         Cmd::Add { text } => {
-            let j = Journal::open(&data)?;
+            let j = open(&pw)?;
             let e = j.capture_text(&text)?;
             println!("{}", e.event_id);
         }
-        Cmd::AddPhoto { file } => add_media(&data, MediaKind::Photo, &file).await?,
-        Cmd::AddAudio { file } => add_media(&data, MediaKind::Audio, &file).await?,
+        Cmd::AddPhoto { file } => add_media(&data, &pw, MediaKind::Photo, &file).await?,
+        Cmd::AddAudio { file } => add_media(&data, &pw, MediaKind::Audio, &file).await?,
         Cmd::List => {
-            let j = Journal::open(&data)?;
+            let j = open(&pw)?;
             for e in j.list()? {
                 println!("{}", format_entry(&e));
             }
         }
         Cmd::Redact { event_id } => {
-            let j = Journal::open(&data)?;
+            let j = open(&pw)?;
             j.redact(&event_id)?;
             println!("redacted {event_id}");
         }
         Cmd::Trash => {
-            let j = Journal::open(&data)?;
+            let j = open(&pw)?;
             for e in j.trash()? {
                 println!("{}", format_entry(&e));
             }
         }
         Cmd::Search { query } => {
-            let j = Journal::open(&data)?;
+            let j = open(&pw)?;
             let redacted = j.store.redacted_ids()?;
             for id in j.store.search(&query)? {
                 if let Some(e) = j.store.get_event(&id)? {
@@ -126,12 +160,12 @@ async fn main() -> Result<()> {
             }
         }
         Cmd::SetPasscode { passcode } => {
-            let j = Journal::open(&data)?;
+            let j = open(&pw)?;
             j.set_passcode(&passcode)?;
             println!("passcode set (syncs to all peers)");
         }
         Cmd::Serve | Cmd::Ticket => {
-            let node = Node::spawn(Journal::open(&data)?).await?;
+            let node = Node::spawn(open(&pw)?).await?;
             node.dialable_addr().await?;
             println!("device: {}", node.journal().device_id());
             println!("ticket: {}", node.ticket()?);
@@ -143,7 +177,8 @@ async fn main() -> Result<()> {
             if data.join("db.sqlite").exists() {
                 bail!("journal already exists at {} — use `sync`", data.display());
             }
-            let (node, report) = Node::join_from_ticket(&data, &ticket).await?;
+            let password = resolve_password(&pw, true)?;
+            let (node, report) = Node::join_from_ticket(&data, &ticket, &password).await?;
             println!(
                 "joined: received {} events, {} blobs",
                 report.received, report.blobs_fetched
@@ -151,7 +186,7 @@ async fn main() -> Result<()> {
             node.shutdown().await;
         }
         Cmd::Sync { ticket } => {
-            let node = Node::spawn(Journal::open(&data)?).await?;
+            let node = Node::spawn(open(&pw)?).await?;
             let t = JournalTicket::decode(&ticket)?;
             if &t.secret != node.journal().secret() {
                 bail!("ticket is for a different journal");
@@ -166,7 +201,7 @@ async fn main() -> Result<()> {
         Cmd::ImportV1 { file, base } => {
             let export: memorious_core::import_v1::V1Export =
                 serde_json::from_slice(&std::fs::read(&file)?).context("parse export json")?;
-            let node = Node::spawn(Journal::open(&data)?).await?;
+            let node = Node::spawn(open(&pw)?).await?;
             let report = memorious_core::import_v1::import_v1(&node, &export, |url| {
                 let full = if url.starts_with("http") {
                     url.to_string()
@@ -189,7 +224,7 @@ async fn main() -> Result<()> {
             node.shutdown().await;
         }
         Cmd::ExportMd { out } => {
-            let node = Node::spawn(Journal::open(&data)?).await?;
+            let node = Node::spawn(open(&pw)?).await?;
             let report = memorious_core::export_md::export_markdown(&node, &out).await?;
             println!(
                 "export: {} day files written, {} unchanged; {} media written, {} unchanged",
@@ -200,8 +235,18 @@ async fn main() -> Result<()> {
             );
             node.shutdown().await;
         }
+        Cmd::MigrateEncrypt => {
+            let password = resolve_password(&pw, true)?;
+            let report = memorious_core::migrate::migrate_encrypt(&data, &password).await?;
+            println!(
+                "encrypted: {} events, {} media blobs ({} bytes) re-encrypted",
+                report.events, report.media, report.media_bytes
+            );
+            println!("old journal kept at {}", report.backup_dir.display());
+            println!("other devices must re-pair (delete their data dir, then `join`)");
+        }
         Cmd::Status => {
-            let j = Journal::open(&data)?;
+            let j = open(&pw)?;
             println!("journal: {}", data.display());
             println!("device: {}", j.device_id());
             println!("entries: {}", j.list()?.len());
@@ -216,9 +261,14 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-async fn add_media(data: &std::path::Path, kind: MediaKind, file: &std::path::Path) -> Result<()> {
+async fn add_media(
+    data: &std::path::Path,
+    pw: &Option<String>,
+    kind: MediaKind,
+    file: &std::path::Path,
+) -> Result<()> {
     let bytes = std::fs::read(file).with_context(|| format!("read {}", file.display()))?;
-    let node = Node::spawn(Journal::open(data)?).await?;
+    let node = Node::spawn(Journal::open(data, &resolve_password(pw, false)?)?).await?;
     let e = node.capture_blob(kind, bytes).await?;
     println!("{}", e.event_id);
     node.shutdown().await;
@@ -229,8 +279,8 @@ fn format_entry(e: &memorious_core::Event) -> String {
     let ts = chrono_like(e.recorded_at);
     let body = match &e.payload {
         Payload::Text { text } => text.replace('\n', " ⏎ "),
-        Payload::Photo { hash, size } => format!("[photo {} {}B]", &hash[..8.min(hash.len())], size),
-        Payload::Audio { hash, size } => format!("[audio {} {}B]", &hash[..8.min(hash.len())], size),
+        Payload::Photo { hash, size, .. } => format!("[photo {} {}B]", &hash[..8.min(hash.len())], size),
+        Payload::Audio { hash, size, .. } => format!("[audio {} {}B]", &hash[..8.min(hash.len())], size),
         other => format!("{other:?}"),
     };
     format!("{ts}  {}  {body}", e.event_id)

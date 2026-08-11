@@ -4,7 +4,9 @@ A brutally minimalist, append-only, local-first capture device for text, audio, 
 photos. One Rust core (event log, SQLite+FTS5, custom sync over iroh, iroh-blobs media),
 four faces: an always-on server peer (axum + React web client), a Tauri 2 desktop app,
 a SwiftUI iPhone app (UniFFI), and a CLI. Peers sync directly — union of append-only
-logs, no conflicts, no accounts.
+logs, no conflicts, no accounts. Everything is encrypted at rest under a single master
+password: SQLCipher for the event log, per-blob XChaCha20-Poly1305 for media (sealed
+before ingest, so the blob store and the sync layer only ever see ciphertext).
 
 Read `UNDERSTANDING.md` (the founding document) and `AGENTS.md`, then `docs/BUILD.md`
 for how to work on it.
@@ -27,16 +29,20 @@ against this repo's `crates/mobile` via UniFFI.
 
 ```bash
 cargo test                                     # whole engine, incl. 2-peer convergence
-cargo run -p memorious-core --bin memorious -- --data /tmp/j init
+cargo run -p memorious-core --bin memorious -- --data /tmp/j init   # prompts for a master password
 (cd apps/web && bun install && bun run build)  # web bundle
-MEMORIOUS_DATA=./data PORT=4600 WEB_DIST=apps/web/dist cargo run -p memorious-server
+MEMORIOUS_DATA=./data MEMORIOUS_PASSWORD=… PORT=4600 WEB_DIST=apps/web/dist cargo run -p memorious-server
 ```
 
+The master password encrypts everything at rest and is shared by all of a journal's
+devices; the CLI takes `--password` / `MEMORIOUS_PASSWORD` / an interactive prompt.
+Journals from before encryption at rest: `memorious --data <dir> migrate-encrypt`.
 Browser passcode is set via `memorious --data ./data set-passcode …`. Enrichment needs
 `brew install whisper-cpp tesseract` + `~/.cache/whisper/ggml-base.bin`.
 
 CLI pairing demo: `memorious serve` on one data dir prints a ticket; `memorious join <ticket>`
-on another creates a second peer; `memorious sync <ticket>` converges them.
+on another creates a second peer (ticket + the journal's master password; the ticket alone
+only authorizes replication); `memorious sync <ticket>` converges them.
 
 Import from v1: `memorious import-v1 export.json` (idempotent; photos re-fetched).
 Markdown mirror: `memorious export-md <dir>` (derived, regenerable, never an input).

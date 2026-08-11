@@ -23,12 +23,18 @@ async fn main() -> Result<()> {
         .context("bad PORT")?;
     let web_dist = std::env::var_os("WEB_DIST").map(PathBuf::from);
     let downloads_dir = std::env::var_os("DOWNLOADS_DIR").map(PathBuf::from);
+    // Headless peer: no keychain, no prompt — the password comes from the
+    // environment (systemd credential / process-compose env file).
+    let password = std::env::var("MEMORIOUS_PASSWORD")
+        .ok()
+        .filter(|p| !p.is_empty())
+        .context("MEMORIOUS_PASSWORD env var required (master password)")?;
 
     let journal = if data.join("db.sqlite").exists() {
-        Journal::open(&data)?
+        Journal::open(&data, &password)?
     } else {
         tracing::info!("no journal at {} — creating one", data.display());
-        Journal::init(&data)?
+        Journal::init(&data, &password)?
     };
     let node = Node::spawn(journal).await?;
     if let Ok(addr) = node.dialable_addr().await {

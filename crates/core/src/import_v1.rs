@@ -175,7 +175,7 @@ mod tests {
     #[tokio::test]
     async fn import_preserves_timestamps_flattens_and_is_idempotent() {
         let dir = tempdir().unwrap();
-        let node = Node::spawn(Journal::init(&dir.path().join("j")).unwrap())
+        let node = Node::spawn(Journal::init(&dir.path().join("j"), "pw").unwrap())
             .await
             .unwrap();
         let export = fixture();
@@ -204,7 +204,7 @@ mod tests {
     #[tokio::test]
     async fn failed_photo_is_retried_next_run() {
         let dir = tempdir().unwrap();
-        let node = Node::spawn(Journal::init(&dir.path().join("j")).unwrap())
+        let node = Node::spawn(Journal::init(&dir.path().join("j"), "pw").unwrap())
             .await
             .unwrap();
         let export: V1Export = serde_json::from_value(serde_json::json!({

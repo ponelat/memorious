@@ -204,10 +204,57 @@ async fn capture_audio(State(state): State<SharedState>, multipart: Multipart) -
     }
 }
 
+/// A tempdir for plaintext media passing through subprocess pipelines
+/// (ffmpeg/whisper/tesseract): 0700, and every file is zero-overwritten
+/// before removal so plaintext doesn't linger on disk. Best-effort — the
+/// journal's own stores are encrypted; this covers the scratch space.
+pub(crate) struct ScrubDir(tempfile::TempDir);
+
+impl ScrubDir {
+    pub(crate) fn new() -> Result<Self> {
+        let dir = tempfile::tempdir()?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700))?;
+        }
+        Ok(Self(dir))
+    }
+
+    pub(crate) fn path(&self) -> &std::path::Path {
+        self.0.path()
+    }
+}
+
+impl Drop for ScrubDir {
+    fn drop(&mut self) {
+        let Ok(entries) = std::fs::read_dir(self.0.path()) else { return };
+        for entry in entries.flatten() {
+            let Ok(meta) = entry.metadata() else { continue };
+            if !meta.is_file() {
+                continue;
+            }
+            if let Ok(mut f) = std::fs::OpenOptions::new().write(true).open(entry.path()) {
+                use std::io::Write;
+                let zeros = [0u8; 8192];
+                let mut remaining = meta.len();
+                while remaining > 0 {
+                    let n = remaining.min(zeros.len() as u64) as usize;
+                    if f.write_all(&zeros[..n]).is_err() {
+                        break;
+                    }
+                    remaining -= n as u64;
+                }
+                let _ = f.sync_all();
+            }
+        }
+    }
+}
+
 /// Browser MediaRecorder often yields webm/opus (Chrome) — one stored format means
 /// transcoding to AAC/m4a here, via the system ffmpeg.
 async fn transcode_to_m4a(input: Vec<u8>) -> Result<Vec<u8>> {
-    let dir = tempfile::tempdir()?;
+    let dir = ScrubDir::new()?;
     let in_path = dir.path().join("in");
     let out_path = dir.path().join("out.m4a");
     tokio::fs::write(&in_path, &input).await?;
