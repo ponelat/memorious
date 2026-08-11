@@ -1,5 +1,14 @@
 # LOG
 
+## 2026-08-11
+- App downloads hosted by the server peer: `scripts/make-downloads.sh` builds the CLI
+  binary + zipped desktop .app into ./downloads (gitignored); server serves them at
+  /downloads (public — software only) and lists them via authed /api/downloads; web
+  sync view shows a "get the apps" section. Live-verified on the dev host.
+- Desktop zip is unsigned/un-notarized — Gatekeeper needs right-click → Open (or
+  `xattr -dr com.apple.quarantine`) on first launch. iOS stays outside downloads
+  (needs Xcode/TestFlight signing).
+
 ## 2026-08-10 (M6)
 - M6 complete: v1 import + derived markdown export, both idempotent.
 - `journal import-v1 <export.json>`: chunks flatten to plain entries (conversations
