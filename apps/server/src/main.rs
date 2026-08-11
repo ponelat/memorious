@@ -22,6 +22,7 @@ async fn main() -> Result<()> {
         .parse()
         .context("bad PORT")?;
     let web_dist = std::env::var_os("WEB_DIST").map(PathBuf::from);
+    let downloads_dir = std::env::var_os("DOWNLOADS_DIR").map(PathBuf::from);
 
     let journal = if data.join("db.sqlite").exists() {
         Journal::open(&data)?
@@ -37,7 +38,7 @@ async fn main() -> Result<()> {
         tracing::info!("pairing ticket: {ticket}");
     }
 
-    let state = Arc::new(AppState { node });
+    let state = Arc::new(AppState { node, downloads_dir });
     if let Some(engines) = journal_server::sweeper::SystemEngines::detect() {
         journal_server::sweeper::spawn(state.clone(), Arc::new(engines));
         tracing::info!("enrichment sweeper running");

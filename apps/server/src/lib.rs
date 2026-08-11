@@ -23,6 +23,9 @@ use serde_json::json;
 
 pub struct AppState {
     pub node: Node,
+    /// Directory of installable app builds served at /downloads (public — it
+    /// holds software, never journal data).
+    pub downloads_dir: Option<PathBuf>,
 }
 
 impl AppState {
@@ -45,12 +48,16 @@ pub fn app(state: SharedState, web_dist: Option<PathBuf>) -> Router {
         .route("/trash", get(trash))
         .route("/search", get(search))
         .route("/status", get(status))
+        .route("/downloads", get(downloads_list))
         .layer(middleware::from_fn_with_state(state.clone(), require_auth))
         .route("/auth/check", post(auth_check))
         .layer(DefaultBodyLimit::max(64 * 1024 * 1024))
-        .with_state(state);
+        .with_state(state.clone());
 
     let mut app = Router::new().nest("/api", api);
+    if let Some(dir) = &state.downloads_dir {
+        app = app.nest_service("/downloads", tower_http::services::ServeDir::new(dir));
+    }
     if let Some(dist) = web_dist {
         let index = dist.join("index.html");
         app = app.fallback_service(
@@ -59,6 +66,33 @@ pub fn app(state: SharedState, web_dist: Option<PathBuf>) -> Router {
         );
     }
     app
+}
+
+/// Available app builds: name, size, and the public URL to fetch each one.
+async fn downloads_list(State(state): State<SharedState>) -> Response {
+    let Some(dir) = &state.downloads_dir else {
+        return Json(json!({"files": []})).into_response();
+    };
+    let mut files = Vec::new();
+    match std::fs::read_dir(dir) {
+        Ok(entries) => {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if name.starts_with('.') || !entry.path().is_file() {
+                    continue;
+                }
+                let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
+                files.push(json!({
+                    "name": name,
+                    "size": size,
+                    "url": format!("/downloads/{name}"),
+                }));
+            }
+        }
+        Err(e) => return internal(e.into()),
+    }
+    files.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
+    Json(json!({"files": files})).into_response()
 }
 
 // ---- auth ----

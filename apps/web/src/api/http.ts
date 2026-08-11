@@ -102,5 +102,9 @@ export const httpApi: JournalApi = {
   status() {
     return json<Status>('/api/status')
   },
+
+  async downloads() {
+    return (await json<{ files: import('./types').DownloadFile[] }>('/api/downloads')).files
+  },
 }
 

@@ -47,6 +47,7 @@ async fn media_from_a_peer_becomes_searchable_with_no_user_action() {
     server_journal.set_passcode("sesame").unwrap();
     let state = Arc::new(AppState {
         node: Node::spawn(server_journal).await.unwrap(),
+        downloads_dir: None,
     });
     state.node.sync_with(&phone.addr()).await.unwrap();
 
@@ -120,6 +121,7 @@ async fn flagged_captures_wait_out_the_grace_period() {
             .unwrap();
     let state = Arc::new(AppState {
         node: Node::spawn(sweeper_journal).await.unwrap(),
+        downloads_dir: None,
     });
     state.node.sync_with(&capturer.addr()).await.unwrap();
 

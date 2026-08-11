@@ -64,4 +64,12 @@ export interface JournalApi {
   /** Present only on hosts that dial peers themselves (desktop). */
   setup?: SetupApi
   syncNow?(ticket?: string): Promise<SyncReport>
+  /** App builds hosted by the server peer (browser only). */
+  downloads?(): Promise<DownloadFile[]>
+}
+
+export interface DownloadFile {
+  name: string
+  size: number
+  url: string
 }

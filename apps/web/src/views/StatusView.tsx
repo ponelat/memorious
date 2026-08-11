@@ -1,5 +1,16 @@
 import { useEffect, useState } from 'react'
-import { api, Status } from '../api'
+import { api, DownloadFile, Status } from '../api'
+
+function prettySize(bytes: number): string {
+  if (bytes > 1_000_000) return `${(bytes / 1_000_000).toFixed(1)} MB`
+  if (bytes > 1_000) return `${Math.round(bytes / 1_000)} kB`
+  return `${bytes} B`
+}
+
+/** "journal-desktop-macos-arm64.zip" → "journal desktop · macos arm64" */
+function prettyName(name: string): string {
+  return name.replace(/\.(zip|dmg|tar\.gz)$/, '').replace(/-/g, ' ')
+}
 
 export function StatusView() {
   const [status, setStatus] = useState<Status | null>(null)
@@ -8,9 +19,11 @@ export function StatusView() {
   const [ticketIn, setTicketIn] = useState('')
   const [syncMsg, setSyncMsg] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  const [downloads, setDownloads] = useState<DownloadFile[]>([])
 
   useEffect(() => {
     api.status().then(setStatus).catch(() => setError(true))
+    api.downloads?.().then(setDownloads).catch(() => {})
   }, [])
 
   async function syncNow() {
@@ -81,6 +94,23 @@ export function StatusView() {
                 {busy ? 'syncing…' : 'sync'}
               </button>
               {syncMsg && <p className="hint">{syncMsg}</p>}
+            </dd>
+          </>
+        )}
+        {downloads.length > 0 && (
+          <>
+            <dt>get the apps</dt>
+            <dd>
+              <ul className="downloads">
+                {downloads.map((f) => (
+                  <li key={f.name}>
+                    <a href={f.url} download={f.name}>
+                      {prettyName(f.name)}
+                    </a>{' '}
+                    <span className="hint">{prettySize(f.size)}</span>
+                  </li>
+                ))}
+              </ul>
             </dd>
           </>
         )}

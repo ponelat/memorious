@@ -412,3 +412,5 @@ h2 {
 }
 .setup textarea { width: min(24rem, 80vw); }
 .sync-now input { width: 100%; margin-bottom: 0.3rem; }
+.downloads { list-style: none; padding: 0; margin: 0; }
+.downloads a { color: inherit; }

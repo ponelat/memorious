@@ -15,7 +15,7 @@ async fn test_state() -> (tempfile::TempDir, Arc<AppState>) {
     let journal = Journal::init(&dir.path().join("j")).unwrap();
     journal.set_passcode("sesame").unwrap();
     let node = Node::spawn(journal).await.unwrap();
-    (dir, Arc::new(AppState { node }))
+    (dir, Arc::new(AppState { node, downloads_dir: None }))
 }
 
 fn authed(req: axum::http::request::Builder) -> axum::http::request::Builder {
@@ -264,6 +264,58 @@ async fn redact_hides_from_feed_shows_in_trash() {
     )
     .await;
     assert_eq!(trash["entries"].as_array().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn downloads_are_listed_and_publicly_fetchable() {
+    let dir = tempfile::tempdir().unwrap();
+    let dl = dir.path().join("downloads");
+    std::fs::create_dir_all(&dl).unwrap();
+    std::fs::write(dl.join("journal-cli-macos-arm64"), b"fake binary").unwrap();
+    std::fs::write(dl.join(".hidden"), b"nope").unwrap();
+
+    let journal = Journal::init(&dir.path().join("j")).unwrap();
+    journal.set_passcode("sesame").unwrap();
+    let state = Arc::new(AppState {
+        node: Node::spawn(journal).await.unwrap(),
+        downloads_dir: Some(dl),
+    });
+    let router = app(state, None);
+
+    // Authed listing.
+    let resp = router
+        .clone()
+        .oneshot(authed(Request::get("/api/downloads")).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let list = body_json(resp).await;
+    let files = list["files"].as_array().unwrap();
+    assert_eq!(files.len(), 1, "dotfiles are hidden");
+    assert_eq!(files[0]["name"], "journal-cli-macos-arm64");
+    assert_eq!(files[0]["url"], "/downloads/journal-cli-macos-arm64");
+
+    // The file itself is public (software only, never journal data).
+    let resp = router
+        .clone()
+        .oneshot(
+            Request::get("/downloads/journal-cli-macos-arm64")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(&bytes[..], b"fake binary");
+
+    // But the listing endpoint stays behind auth like the rest of /api.
+    let resp = router
+        .clone()
+        .oneshot(Request::get("/api/downloads").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 }
 
 #[tokio::test]
