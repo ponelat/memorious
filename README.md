@@ -54,9 +54,9 @@ via cargo-zigbuild — those run on any Linux, NixOS included.
 The flake builds everything from source:
 
 ```bash
-nix run  'github:ponelat/memorious-core'                    # CLI
-nix run  'github:ponelat/memorious-core#desktop'            # desktop app
-nix build 'github:ponelat/memorious-core#memorious-server'
+nix run  'github:ponelat/memorious'                    # CLI
+nix run  'github:ponelat/memorious#desktop'            # desktop app
+nix build 'github:ponelat/memorious#memorious-server'
 ```
 
 Or from a checkout: `nix build .#journal-cli|memorious-server|memorious-desktop`.
