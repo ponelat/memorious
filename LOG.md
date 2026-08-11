@@ -1,5 +1,27 @@
 # LOG
 
+## 2026-08-11 (Memorious)
+- The product is named **Memorious** (memorious.app registered by owner). Full
+  ubiquitous-language sweep: crates memorious-*, CLI binary `memorious`, env
+  MEMORIOUS_DATA(_DIR), sync ALPN `memorious/sync/0`, ticket prefix `memorious`,
+  fresh 32-byte auth context, web/iOS/desktop wordmarks + display names, flake
+  packages, downloads renamed. "Journal" stays as the domain noun in code/docs.
+- Protocol identifiers changed ⇒ all peers upgraded together: dev server
+  (now the dev host via devhost rename), iPhone (in-place upgrade,
+  shows "Memorious"), desktop bundle rebuilt as Memorious.app. Old pairing
+  tickets are invalid; stored last-peer tickets need one re-pair.
+- iOS bundle id KEPT as the legacy bundle id for now — Xcode's Apple ID
+  session had lapsed so no profile could be minted for a new id; keeping it also
+  upgraded the installed app in place (data intact). Rename next time Xcode is
+  logged in. Desktop identifier DID change (com.ponelat.memorious) — a journal
+  initialized under the old desktop app lives orphaned at
+  ~/Library/Application Support/com.ponelat.infinite-journal/.
+- Repo renamed: github.com/clawjungle/memorious; local dir ~/projects/memorious.
+  Landing deployed to memorious.app vhost on the Caddy box (awaiting owner's DNS
+  A record → REDACTED-IP); hero video re-captured with rebranded UI.
+- Rename gotcha: cargo package renames invalidate every workspace fingerprint —
+  full recompile (~35 min). Also: don't rename the project dir mid-compile.
+
 ## 2026-08-11 (NixOS)
 - NixOS/Linux delivery: (1) static musl CLI binaries (x86_64 + aarch64, cargo-zigbuild)
   hosted in /downloads — x86_64 one smoke-tested in an Alpine container; (2) flake.nix
