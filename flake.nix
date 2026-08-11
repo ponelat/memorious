@@ -54,12 +54,15 @@
               pkgs.glib-networking
             ];
             tauriBuildFlags = [ "--no-bundle" ];
-            # --no-bundle leaves installation to us.
-            postInstall = ''
-              if [ ! -e "$out/bin/journal-desktop" ]; then
-                find target -type f -name journal-desktop -path '*/release/*' \
-                  -exec install -Dm755 {} $out/bin/journal-desktop \; -quit
-              fi
+            # We build with --no-bundle, so the hook's installPhase (which mv's
+            # bundle output) has nothing to move — defining installPhase makes
+            # the hook skip its own, and we install the plain binary instead.
+            installPhase = ''
+              runHook preInstall
+              find target -type f -name journal-desktop -path '*/release/*' \
+                -exec install -Dm755 {} $out/bin/journal-desktop \; -quit
+              test -x "$out/bin/journal-desktop"
+              runHook postInstall
             '';
           });
 
