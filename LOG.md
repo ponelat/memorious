@@ -1,5 +1,17 @@
 # LOG
 
+## 2026-08-11 (open source)
+- **Licensing decided: open-core.** This repo (engine, server, web, desktop, CLI,
+  landing) is public under **MIT OR Apache-2.0**; the native mobile apps are a paid,
+  proprietary product in a separate private repo (`memorious-mobile`, iOS under `ios/`,
+  Android later), split out with its history via git filter-repo. The Memorious name
+  and branding stay reserved (see README §License). Rationale: sell convenience on the
+  app stores while everything self-hostable is genuinely free.
+- History rewritten before going public: `apps/ios` removed from all commits, and the
+  ops runbook (docs/DEPLOY.md) moved to a private umbrella repo along with redaction of
+  personal infra strings throughout history. Deployment specifics intentionally live
+  outside this repo from now on.
+
 ## 2026-08-11 (Memorious)
 - The product is named **Memorious** (memorious.app registered by owner). Full
   ubiquitous-language sweep: crates memorious-*, CLI binary `memorious`, env
