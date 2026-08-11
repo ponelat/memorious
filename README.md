@@ -32,8 +32,7 @@ cargo run -p memorious-core --bin memorious -- --data /tmp/j init
 MEMORIOUS_DATA=./data PORT=4600 WEB_DIST=apps/web/dist cargo run -p memorious-server
 ```
 
-Dev deployment: registered with devhost as `journal` → the dev app
-(passcode set via `memorious --data ./data set-passcode …`). Enrichment needs
+Browser passcode is set via `memorious --data ./data set-passcode …`. Enrichment needs
 `brew install whisper-cpp tesseract` + `~/.cache/whisper/ggml-base.bin`.
 
 CLI pairing demo: `memorious serve` on one data dir prints a ticket; `memorious join <ticket>`
