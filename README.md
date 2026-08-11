@@ -7,7 +7,7 @@ a SwiftUI iPhone app (UniFFI), and a CLI. Peers sync directly — union of appen
 logs, no conflicts, no accounts.
 
 Read `UNDERSTANDING.md` (the founding document) and `AGENTS.md`, then `docs/BUILD.md`
-for how to work on it. `apps/landing/CONTEXT.md` covers memorious.app.
+for how to work on it.
 `LOG.md` records decisions made while building; `MILESTONES.md` is historical.
 
 ## Layout

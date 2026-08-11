@@ -8,8 +8,7 @@ Start here. This file orients any AI agent (or human) working on the project.
    reasoning. **It is the source of truth.** If an implementation choice contradicts it, the doc
    wins; if the doc is silent, make the boring choice and note it in `LOG.md`.
 2. **`docs/BUILD.md`** — how to build and test every part.
-3. **`apps/landing/CONTEXT.md`** — the memorious.app landing page.
-4. `MILESTONES.md` is historical (all six milestones shipped 2026-08-10); `LOG.md` is the
+3. `MILESTONES.md` is historical (all six milestones shipped 2026-08-10); `LOG.md` is the
    dated decision record — keep appending to it.
 
 Deployment/ops details are deliberately not in this repo (owner-private runbook).
@@ -48,9 +47,8 @@ crates/mobile/     UniFFI face of core for iOS (JSON strings + bytes over blocki
 apps/server/       axum HTTP peer; serves apps/web build; enrichment sweeper; /downloads
 apps/web/          React + Vite UI shared by the browser client and the Tauri shell
 apps/desktop/      Tauri 2 shell (its own peer, embeds core — never a client of the server)
-apps/landing/      memorious.app static landing page (see its CONTEXT.md)
 docs/              build + deploy context
-scripts/           make-downloads.sh (hosted app builds), stitch-hero.py (landing video)
+scripts/           make-downloads.sh (hosted app builds)
 ```
 
 This repo is open source (MIT OR Apache-2.0; see README §License). The native iOS app is
