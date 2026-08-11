@@ -1,4 +1,4 @@
-# Infinite Journal v2 — Agent Guide
+# Memorious (formerly Infinite Journal v2) — Agent Guide
 
 Start here. This file orients any AI agent (or human) building the project.
 
@@ -12,6 +12,9 @@ Start here. This file orients any AI agent (or human) building the project.
    order; each milestone must leave something working end to end before the next starts.
 
 ## One-paragraph brief
+
+The product is named **Memorious** (chosen 2026-08-11; domain memorious.app). "Journal" remains
+the domain noun for the data structure; Memorious is the product/brand.
 
 A brutally minimalist, append-only, local-first capture device for text, audio, and photos.
 One shared Rust core crate (event log, SQLite storage, custom sync protocol over Iroh,

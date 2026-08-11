@@ -1,6 +1,6 @@
 import type { Entry, FeedPage, JournalApi, MediaRef, Status } from './types'
 
-const TOKEN_KEY = 'journal.passcode'
+const TOKEN_KEY = 'memorious.passcode'
 
 export function getToken(): string | null {
   return localStorage.getItem(TOKEN_KEY)

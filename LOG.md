@@ -3,7 +3,7 @@
 ## 2026-08-11 (NixOS)
 - NixOS/Linux delivery: (1) static musl CLI binaries (x86_64 + aarch64, cargo-zigbuild)
   hosted in /downloads — x86_64 one smoke-tested in an Alpine container; (2) flake.nix
-  building journal-cli / journal-server / journal-desktop from source. nixpkgs-unstable
+  building journal-cli / memorious-server / memorious-desktop from source. nixpkgs-unstable
   pinned (25.05 rustc 1.86 < iroh's 1.91 floor). apps/web/dist now committed so flake
   builds are self-contained.
 - journal-cli verified with a real `nix build` on this Mac. The desktop derivation
@@ -11,7 +11,7 @@
   NOT yet build-verified on Linux: two Docker attempts died — first seccomp under amd64
   emulation, then the host disk hit 100% mid-build and corrupted Docker Desktop's
   containerd metadata (prune/df now 500; needs a Docker factory reset — owner's call,
-  it wipes all local images). First `nix build .#journal-desktop` on a real NixOS box
+  it wipes all local images). First `nix build .#memorious-desktop` on a real NixOS box
   is the honest test; expect at most attribute-name-level fixes.
 - Disk on this Mac is chronically tight (~3GB free after cleanup); Rust target dirs
   and Docker.raw are the repeat offenders.
@@ -40,7 +40,7 @@
   photos with 0 failures into a fresh journal, re-ran both tools → no changes. Day
   files read as real journal history. Import preserved at ./data-v1-import
   (gitignored) — pair it into any peer with `journal serve` + join, or point the
-  live server's JOURNAL_DATA at it.
+  live server's MEMORIOUS_DATA at it.
 - v1 export quirk: 4 chunks had blank content (dropped by design).
 
 ## 2026-08-10 (M5)

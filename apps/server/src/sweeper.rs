@@ -7,9 +7,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
-use journal_core::enrich::DEFAULT_GRACE_MS;
-use journal_core::event::Payload;
-use journal_core::Node;
+use memorious_core::enrich::DEFAULT_GRACE_MS;
+use memorious_core::event::Payload;
+use memorious_core::Node;
 
 pub trait Engines: Send + Sync + 'static {
     fn transcribe(&self, m4a: &[u8]) -> Result<String>;

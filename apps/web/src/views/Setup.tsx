@@ -21,7 +21,7 @@ export function Setup({ setup, onDone }: { setup: SetupApi; onDone: () => void }
 
   return (
     <div className="login setup">
-      <h1>journal</h1>
+      <h1>memorious</h1>
       <p className="hint">this device has no journal yet</p>
       <button disabled={busy} onClick={() => run(() => setup.initFresh())}>
         start a new journal

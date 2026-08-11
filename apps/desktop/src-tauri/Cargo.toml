@@ -1,12 +1,12 @@
 [package]
-name = "journal-desktop"
+name = "memorious-desktop"
 version = "0.1.0"
 description = "Infinite Journal desktop"
 edition = "2021"
 license = "MIT"
 
 [lib]
-name = "journal_desktop_lib"
+name = "memorious_desktop_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
@@ -14,7 +14,7 @@ tauri-build = { version = "2.6.3", features = [] }
 
 [dependencies]
 anyhow = "1"
-journal-core = { path = "../../../crates/core" }
+memorious-core = { path = "../../../crates/core" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tauri = { version = "2.11.3", features = [] }

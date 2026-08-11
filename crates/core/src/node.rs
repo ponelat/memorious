@@ -1,6 +1,6 @@
 //! A running peer: journal + blob store + iroh endpoint speaking the sync protocol.
 //!
-//! Protocol (ALPN `infinite-journal/sync/0`), one bi stream per sync:
+//! Protocol (ALPN `memorious/sync/0`), one bi stream per sync:
 //!   initiator → Hello { auth, heads, addr }     auth = keyed blake3 of the journal secret
 //!   responder → HelloAck { heads }              (or closes the connection on bad auth)
 //!   responder → Event* EndEvents                events the initiator is missing
@@ -26,8 +26,8 @@ use crate::event::{Event, MediaKind, Payload};
 use crate::journal::{Journal, SECRET_LEN};
 use crate::store::Heads;
 
-pub const SYNC_ALPN: &[u8] = b"infinite-journal/sync/0";
-const AUTH_CONTEXT: &[u8; 32] = b"infinite-journal auth v0 ctx key";
+pub const SYNC_ALPN: &[u8] = b"memorious/sync/0";
+const AUTH_CONTEXT: &[u8; 32] = b"memorious auth v0 context key 32";
 /// Close code used when the peer fails journal-secret auth.
 const CLOSE_BAD_AUTH: u32 = 1;
 const MAX_FRAME: usize = 16 * 1024 * 1024;
@@ -85,7 +85,7 @@ pub struct SyncReport {
     pub blobs_fetched: usize,
 }
 
-/// Ticket: journal secret + address of one existing peer. String form `journal<base32>`.
+/// Ticket: journal secret + address of one existing peer. String form `memorious<base32>`.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct JournalTicket {
     pub secret: [u8; SECRET_LEN],
@@ -105,7 +105,7 @@ impl JournalTicket {
     }
 }
 
-const TICKET_PREFIX: &str = "journal";
+const TICKET_PREFIX: &str = "memorious";
 
 impl JournalTicket {
     pub fn encode(&self) -> String {
@@ -519,7 +519,7 @@ mod tests {
             .with_ip_addr("127.0.0.1:4242".parse().unwrap());
         let ticket = JournalTicket::new([7u8; SECRET_LEN], &addr);
         let s = ticket.encode();
-        assert!(s.starts_with("journal"));
+        assert!(s.starts_with("memorious"));
         let back = JournalTicket::decode(&s).unwrap();
         assert_eq!(back.secret, ticket.secret);
         let back_addr = back.addr().unwrap();

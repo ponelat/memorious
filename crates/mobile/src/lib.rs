@@ -5,10 +5,10 @@
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 
-use journal_core::api_json::{entry_json, entry_json_annotated};
-use journal_core::event::MediaKind;
-use journal_core::node::JournalTicket;
-use journal_core::{Journal, Node};
+use memorious_core::api_json::{entry_json, entry_json_annotated};
+use memorious_core::event::MediaKind;
+use memorious_core::node::JournalTicket;
+use memorious_core::{Journal, Node};
 use serde_json::json;
 
 uniffi::setup_scaffolding!();
@@ -95,14 +95,14 @@ impl MobileJournal {
 
     /// Any decodable image in; JPEG stored.
     pub fn capture_photo(&self, bytes: Vec<u8>) -> Result<String> {
-        let jpeg = journal_core::media::normalize_photo(&bytes)?;
+        let jpeg = memorious_core::media::normalize_photo(&bytes)?;
         let e = rt().block_on(self.node.capture_blob(MediaKind::Photo, jpeg))?;
         Ok(entry_json(&e).to_string())
     }
 
     /// iOS records AAC/m4a natively; anything else is refused.
     pub fn capture_audio(&self, bytes: Vec<u8>) -> Result<String> {
-        if !journal_core::media::is_mp4_family(&bytes) {
+        if !memorious_core::media::is_mp4_family(&bytes) {
             return Err(JournalError::Failure {
                 msg: "audio must be an m4a recording".into(),
             });
@@ -147,13 +147,13 @@ impl MobileJournal {
         for id in journal.store.search(&q).map_err(JournalError::from)? {
             if let Some(e) = journal.store.get_event(&id).map_err(JournalError::from)? {
                 let display = match &e.payload {
-                    journal_core::Payload::Annotation { target, .. } => {
+                    memorious_core::Payload::Annotation { target, .. } => {
                         journal.store.get_event(target).map_err(JournalError::from)?
                     }
                     _ => Some(e),
                 };
                 if let Some(e) = display {
-                    if e.kind == journal_core::EventKind::Capture && !redacted.contains(&e.event_id)
+                    if e.kind == memorious_core::EventKind::Capture && !redacted.contains(&e.event_id)
                     {
                         out.push(entry_json(&e));
                     }
@@ -234,7 +234,7 @@ mod tests {
         let feed: serde_json::Value = serde_json::from_str(&j.feed(None, 50).unwrap()).unwrap();
         assert_eq!(feed["entries"].as_array().unwrap().len(), 1);
         let ticket = j.my_ticket().unwrap();
-        assert!(ticket.starts_with("journal"));
+        assert!(ticket.starts_with("memorious"));
 
         // Second device joins by ticket and converges.
         let d2 = dir.path().join("j2").to_string_lossy().to_string();

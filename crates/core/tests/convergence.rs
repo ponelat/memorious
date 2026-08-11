@@ -1,7 +1,7 @@
 //! M1 acceptance: two peers, offline captures, sync → identical timelines, media included.
 
-use journal_core::node::Node;
-use journal_core::Journal;
+use memorious_core::node::Node;
+use memorious_core::Journal;
 use tempfile::tempdir;
 
 fn timeline_ids(j: &Journal) -> Vec<String> {
@@ -29,7 +29,7 @@ async fn two_peers_converge_including_media() {
     b.journal().capture_text("from b: one").unwrap();
     let photo_bytes = b"not really a jpeg but bytes all the same".to_vec();
     let photo = a
-        .capture_blob(journal_core::event::MediaKind::Photo, photo_bytes.clone())
+        .capture_blob(memorious_core::event::MediaKind::Photo, photo_bytes.clone())
         .await
         .unwrap();
 

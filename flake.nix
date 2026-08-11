@@ -25,22 +25,22 @@
           };
         in
         rec {
-          journal-cli = pkgs.rustPlatform.buildRustPackage (common // {
-            pname = "journal-cli";
-            cargoBuildFlags = [ "-p" "journal-core" "--bin" "journal" ];
+          memorious-cli = pkgs.rustPlatform.buildRustPackage (common // {
+            pname = "memorious-cli";
+            cargoBuildFlags = [ "-p" "memorious-core" "--bin" "memorious" ];
           });
 
-          journal-server = pkgs.rustPlatform.buildRustPackage (common // {
-            pname = "journal-server";
-            cargoBuildFlags = [ "-p" "journal-server" ];
+          memorious-server = pkgs.rustPlatform.buildRustPackage (common // {
+            pname = "memorious-server";
+            cargoBuildFlags = [ "-p" "memorious-server" ];
             postInstall = ''
-              mkdir -p $out/share/journal
-              cp -r ${self}/apps/web/dist $out/share/journal/web
+              mkdir -p $out/share/memorious
+              cp -r ${self}/apps/web/dist $out/share/memorious/web
             '';
           });
 
-          journal-desktop = pkgs.rustPlatform.buildRustPackage (common // {
-            pname = "journal-desktop";
+          memorious-desktop = pkgs.rustPlatform.buildRustPackage (common // {
+            pname = "memorious-desktop";
             buildAndTestSubdir = "apps/desktop/src-tauri";
             nativeBuildInputs = [
               pkgs.cargo-tauri.hook
@@ -59,24 +59,24 @@
             # the hook skip its own, and we install the plain binary instead.
             installPhase = ''
               runHook preInstall
-              find target -type f -name journal-desktop -path '*/release/*' \
-                -exec install -Dm755 {} $out/bin/journal-desktop \; -quit
-              test -x "$out/bin/journal-desktop"
+              find target -type f -name memorious-desktop -path '*/release/*' \
+                -exec install -Dm755 {} $out/bin/memorious-desktop \; -quit
+              test -x "$out/bin/memorious-desktop"
               runHook postInstall
             '';
           });
 
-          default = journal-cli;
+          default = memorious-cli;
         });
 
       apps = forAllSystems (system: {
         default = {
           type = "app";
-          program = "${self.packages.${system}.journal-cli}/bin/journal";
+          program = "${self.packages.${system}.memorious-cli}/bin/memorious";
         };
         desktop = {
           type = "app";
-          program = "${self.packages.${system}.journal-desktop}/bin/journal-desktop";
+          program = "${self.packages.${system}.memorious-desktop}/bin/memorious-desktop";
         };
       });
 

@@ -2,8 +2,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use journal_core::{Journal, Node};
-use journal_server::{app, AppState};
+use memorious_core::{Journal, Node};
+use memorious_server::{app, AppState};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -14,9 +14,9 @@ async fn main() -> Result<()> {
         )
         .init();
 
-    let data: PathBuf = std::env::var_os("JOURNAL_DATA")
+    let data: PathBuf = std::env::var_os("MEMORIOUS_DATA")
         .map(PathBuf::from)
-        .context("JOURNAL_DATA env var required")?;
+        .context("MEMORIOUS_DATA env var required")?;
     let port: u16 = std::env::var("PORT")
         .unwrap_or_else(|_| "4600".into())
         .parse()
@@ -39,8 +39,8 @@ async fn main() -> Result<()> {
     }
 
     let state = Arc::new(AppState { node, downloads_dir });
-    if let Some(engines) = journal_server::sweeper::SystemEngines::detect() {
-        journal_server::sweeper::spawn(state.clone(), Arc::new(engines));
+    if let Some(engines) = memorious_server::sweeper::SystemEngines::detect() {
+        memorious_server::sweeper::spawn(state.clone(), Arc::new(engines));
         tracing::info!("enrichment sweeper running");
     }
     let router = app(state.clone(), web_dist);

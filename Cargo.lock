@@ -3401,79 +3401,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "journal-core"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "blake3",
- "clap",
- "data-encoding",
- "image",
- "iroh",
- "iroh-blobs",
- "postcard",
- "rand 0.9.5",
- "rusqlite",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.20",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "uuid",
-]
-
-[[package]]
-name = "journal-desktop"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "image",
- "journal-core",
- "log",
- "serde",
- "serde_json",
- "tauri",
- "tauri-build",
- "tauri-plugin-log",
- "tempfile",
- "tokio",
-]
-
-[[package]]
-name = "journal-mobile"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "journal-core",
- "serde_json",
- "tempfile",
- "thiserror 2.0.20",
- "tokio",
- "uniffi",
-]
-
-[[package]]
-name = "journal-server"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "axum",
- "http-body-util",
- "image",
- "journal-core",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "tower",
- "tower-http",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
 name = "js-sys"
 version = "0.3.104"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3733,6 +3660,79 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "488016bfae457b036d996092f6cb448677611ce4449e970ceaf42695203f218a"
 dependencies = [
  "autocfg",
+]
+
+[[package]]
+name = "memorious-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "blake3",
+ "clap",
+ "data-encoding",
+ "image",
+ "iroh",
+ "iroh-blobs",
+ "postcard",
+ "rand 0.9.5",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
+name = "memorious-desktop"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "image",
+ "log",
+ "memorious-core",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-log",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
+name = "memorious-mobile"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "memorious-core",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tokio",
+ "uniffi",
+]
+
+[[package]]
+name = "memorious-server"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "http-body-util",
+ "image",
+ "memorious-core",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tower",
+ "tower-http",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

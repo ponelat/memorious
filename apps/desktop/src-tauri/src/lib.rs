@@ -6,10 +6,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{anyhow, Context, Result};
-use journal_core::api_json::{entry_json, entry_json_annotated};
-use journal_core::event::MediaKind;
-use journal_core::node::JournalTicket;
-use journal_core::{Journal, Node};
+use memorious_core::api_json::{entry_json, entry_json_annotated};
+use memorious_core::event::MediaKind;
+use memorious_core::node::JournalTicket;
+use memorious_core::{Journal, Node};
 use serde_json::{json, Value};
 use tauri::{AppHandle, Manager, State};
 use tokio::sync::Mutex;
@@ -20,7 +20,7 @@ const LAST_PEER_TICKET: &str = "last_peer_ticket";
 pub struct NodeState(Arc<Mutex<Option<Arc<Node>>>>);
 
 fn data_dir<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<PathBuf> {
-    if let Some(dir) = std::env::var_os("JOURNAL_DATA_DIR") {
+    if let Some(dir) = std::env::var_os("MEMORIOUS_DATA_DIR") {
         return Ok(PathBuf::from(dir));
     }
     Ok(app
@@ -109,7 +109,7 @@ async fn capture_media<R: tauri::Runtime>(
     let (kind, bytes) = match kind.as_str() {
         "photo" => {
             let jpeg = tokio::task::spawn_blocking(move || {
-                journal_core::media::normalize_photo(&bytes)
+                memorious_core::media::normalize_photo(&bytes)
             })
             .await
             .map_err(|e| e.to_string())?
@@ -117,7 +117,7 @@ async fn capture_media<R: tauri::Runtime>(
             (MediaKind::Photo, jpeg)
         }
         "audio" => {
-            if !journal_core::media::is_mp4_family(&bytes) {
+            if !memorious_core::media::is_mp4_family(&bytes) {
                 return Err("audio must be an m4a/mp4 recording".into());
             }
             (MediaKind::Audio, bytes)
@@ -196,13 +196,13 @@ async fn search<R: tauri::Runtime>(
         for id in journal.store.search(&q)? {
             if let Some(e) = journal.store.get_event(&id)? {
                 let display = match &e.payload {
-                    journal_core::Payload::Annotation { target, .. } => {
+                    memorious_core::Payload::Annotation { target, .. } => {
                         journal.store.get_event(target)?
                     }
                     _ => Some(e),
                 };
                 if let Some(e) = display {
-                    if e.kind == journal_core::EventKind::Capture
+                    if e.kind == memorious_core::EventKind::Capture
                         && !redacted.contains(&e.event_id)
                     {
                         out.push(entry_json(&e));

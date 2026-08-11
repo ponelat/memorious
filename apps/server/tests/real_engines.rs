@@ -2,7 +2,7 @@
 //! Fixtures are synthesized on the fly: macOS `say` for speech, ffmpeg drawtext
 //! for a text image.
 
-use journal_server::sweeper::{Engines, SystemEngines};
+use memorious_server::sweeper::{Engines, SystemEngines};
 
 fn have(bin: &str) -> bool {
     std::process::Command::new("which")
@@ -64,7 +64,7 @@ fn tesseract_reads_rendered_text() {
         "/tests/fixtures/hello.png"
     ))
     .unwrap();
-    let jpeg = journal_core::media::normalize_photo(&png).unwrap();
+    let jpeg = memorious_core::media::normalize_photo(&png).unwrap();
     let text = engines.ocr(&jpeg).unwrap().to_uppercase();
     assert!(
         text.contains("HELLO JOURNAL"),

@@ -2,7 +2,7 @@
 //! setup, capture, feed, sync with an external core peer — exactly the calls the
 //! shared web UI makes through its Tauri adapter.
 
-use journal_core::{Journal, Node};
+use memorious_core::{Journal, Node};
 use serde_json::{json, Value};
 use tauri::ipc::InvokeBody;
 use tauri::test::{mock_builder, mock_context, noop_assets, INVOKE_KEY};
@@ -58,11 +58,11 @@ fn body_to_json(body: tauri::ipc::InvokeResponseBody) -> Value {
 async fn desktop_command_layer_end_to_end() {
     let dir = tempfile::tempdir().unwrap();
     let desktop_dir = dir.path().join("desktop-journal");
-    std::env::set_var("JOURNAL_DATA_DIR", &desktop_dir);
+    std::env::set_var("MEMORIOUS_DATA_DIR", &desktop_dir);
 
     let app = mock_builder()
-        .manage(journal_desktop_lib::NodeState::default())
-        .invoke_handler(journal_desktop_lib::handlers())
+        .manage(memorious_desktop_lib::NodeState::default())
+        .invoke_handler(memorious_desktop_lib::handlers())
         .build(mock_context(noop_assets()))
         .unwrap();
     let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
@@ -172,7 +172,7 @@ async fn desktop_command_layer_end_to_end() {
 
     // Status carries a ticket other devices can join from.
     let status = invoke(&webview, "status", json!({})).await.unwrap();
-    assert!(status["ticket"].as_str().unwrap().starts_with("journal"));
+    assert!(status["ticket"].as_str().unwrap().starts_with("memorious"));
 
     peer.shutdown().await;
     cli_peer.shutdown().await;

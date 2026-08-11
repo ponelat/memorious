@@ -5,10 +5,10 @@ use std::sync::Arc;
 use axum::body::Body;
 use axum::http::{header, Request, StatusCode};
 use http_body_util::BodyExt;
-use journal_core::event::MediaKind;
-use journal_core::{Journal, Node};
-use journal_server::sweeper::{sweep_once, Engines};
-use journal_server::{app, AppState};
+use memorious_core::event::MediaKind;
+use memorious_core::{Journal, Node};
+use memorious_server::sweeper::{sweep_once, Engines};
+use memorious_server::{app, AppState};
 use tower::ServiceExt;
 
 struct MockEngines;
@@ -52,7 +52,7 @@ async fn media_from_a_peer_becomes_searchable_with_no_user_action() {
     state.node.sync_with(&phone.addr()).await.unwrap();
 
     // Sweeper runs (grace irrelevant: flag not set).
-    let written = sweep_once(&state.node, &MockEngines, journal_core::enrich::DEFAULT_GRACE_MS)
+    let written = sweep_once(&state.node, &MockEngines, memorious_core::enrich::DEFAULT_GRACE_MS)
         .await
         .unwrap();
     assert_eq!(written, 1);

@@ -12,10 +12,10 @@ use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use journal_core::api_json::entry_json;
-use journal_core::event::{EventKind, MediaKind, Payload};
-use journal_core::media::{normalize_photo, sniff_audio, AudioContainer};
-use journal_core::Node;
+use memorious_core::api_json::entry_json;
+use memorious_core::event::{EventKind, MediaKind, Payload};
+use memorious_core::media::{normalize_photo, sniff_audio, AudioContainer};
+use memorious_core::Node;
 use serde::{Deserialize, Serialize};
 
 pub mod sweeper;
@@ -29,7 +29,7 @@ pub struct AppState {
 }
 
 impl AppState {
-    fn journal(&self) -> &journal_core::Journal {
+    fn journal(&self) -> &memorious_core::Journal {
         self.node.journal()
     }
 }
@@ -235,7 +235,7 @@ struct FeedParams {
 }
 
 
-fn annotated_entry(journal: &journal_core::Journal, e: &journal_core::Event) -> serde_json::Value {
+fn annotated_entry(journal: &memorious_core::Journal, e: &memorious_core::Event) -> serde_json::Value {
     let mut v = entry_json(e);
     if let Ok(map) = journal.annotations() {
         if let Some(text) = map.get(&e.event_id) {

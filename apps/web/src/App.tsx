@@ -44,7 +44,7 @@ export function App() {
           className={view === 'stream' ? 'tab active' : 'tab'}
           onClick={() => setView('stream')}
         >
-          journal
+          memorious
         </button>
         <span className="spacer" />
         <button

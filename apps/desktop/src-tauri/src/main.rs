@@ -2,5 +2,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-  journal_desktop_lib::run();
+  memorious_desktop_lib::run();
 }

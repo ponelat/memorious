@@ -1,4 +1,4 @@
-# Infinite Journal v2
+# Memorious
 
 A brutally minimalist, append-only, local-first capture device for text, audio, and
 photos. One Rust core (event log, SQLite+FTS5, custom sync over iroh, iroh-blobs media),
@@ -24,20 +24,20 @@ apps/ios/          SwiftUI app; ./build.sh makes JournalCore.xcframework
 
 ```bash
 cargo test                                     # whole engine, incl. 2-peer convergence
-cargo run -p journal-core --bin journal -- --data /tmp/j init
+cargo run -p memorious-core --bin memorious -- --data /tmp/j init
 (cd apps/web && bun install && bun run build)  # web bundle
-JOURNAL_DATA=./data PORT=4600 WEB_DIST=apps/web/dist cargo run -p journal-server
+MEMORIOUS_DATA=./data PORT=4600 WEB_DIST=apps/web/dist cargo run -p memorious-server
 ```
 
 Dev deployment: registered with devhost as `journal` → the dev app
-(passcode set via `journal --data ./data set-passcode …`). Enrichment needs
+(passcode set via `memorious --data ./data set-passcode …`). Enrichment needs
 `brew install whisper-cpp tesseract` + `~/.cache/whisper/ggml-base.bin`.
 
-CLI pairing demo: `journal serve` on one data dir prints a ticket; `journal join <ticket>`
-on another creates a second peer; `journal sync <ticket>` converges them.
+CLI pairing demo: `memorious serve` on one data dir prints a ticket; `memorious join <ticket>`
+on another creates a second peer; `memorious sync <ticket>` converges them.
 
-Import from v1: `journal import-v1 export.json` (idempotent; photos re-fetched).
-Markdown mirror: `journal export-md <dir>` (derived, regenerable, never an input).
+Import from v1: `memorious import-v1 export.json` (idempotent; photos re-fetched).
+Markdown mirror: `memorious export-md <dir>` (derived, regenerable, never an input).
 
 ## Downloads
 
@@ -53,10 +53,10 @@ The flake builds everything from source (repo is private — use ssh fetch):
 ```bash
 nix run  'git+ssh://git@github.com/clawjungle/infinite-journal-v2'             # CLI
 nix run  'git+ssh://git@github.com/clawjungle/infinite-journal-v2#desktop'     # desktop app
-nix build 'git+ssh://git@github.com/clawjungle/infinite-journal-v2#journal-server'
+nix build 'git+ssh://git@github.com/clawjungle/infinite-journal-v2#memorious-server'
 ```
 
-Or from a checkout: `nix build .#journal-cli|journal-server|journal-desktop`.
+Or from a checkout: `nix build .#journal-cli|memorious-server|memorious-desktop`.
 The desktop links system webkitgtk 4.1/GTK on Linux, so there is deliberately no
 portable Linux desktop binary — the flake (or the static CLI) is the path.
 Pin note: nixpkgs-unstable, because iroh needs rustc ≥ 1.91.

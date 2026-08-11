@@ -10,6 +10,6 @@ apps/ios/**/xcuserdata/
 data/
 apps/ios/Generated/
 apps/ios/Journal.xcodeproj/
-apps/ios/JournalCore.xcframework/
+apps/ios/MemoriousCore.xcframework/
 data-v1-import/
 downloads/

@@ -7,7 +7,7 @@ function prettySize(bytes: number): string {
   return `${bytes} B`
 }
 
-/** "journal-desktop-macos-arm64.zip" → "journal desktop · macos arm64" */
+/** "memorious-desktop-macos-arm64.zip" → "journal desktop · macos arm64" */
 function prettyName(name: string): string {
   return name.replace(/\.(zip|dmg|tar\.gz)$/, '').replace(/-/g, ' ')
 }

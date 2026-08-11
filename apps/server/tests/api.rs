@@ -6,8 +6,8 @@ use std::sync::Arc;
 use axum::body::Body;
 use axum::http::{header, Request, StatusCode};
 use http_body_util::BodyExt;
-use journal_core::{Journal, Node};
-use journal_server::{app, AppState};
+use memorious_core::{Journal, Node};
+use memorious_server::{app, AppState};
 use tower::ServiceExt;
 
 async fn test_state() -> (tempfile::TempDir, Arc<AppState>) {
@@ -213,7 +213,7 @@ async fn audio_transcodes_webm_when_ffmpeg_available() {
         .await
         .unwrap();
     let bytes = resp.into_body().collect().await.unwrap().to_bytes();
-    assert!(journal_core::media::is_mp4_family(&bytes));
+    assert!(memorious_core::media::is_mp4_family(&bytes));
 }
 
 #[tokio::test]

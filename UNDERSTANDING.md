@@ -1,5 +1,8 @@
 # Infinite Journal v2 — Shared Understanding
 
+> **Naming (2026-08-11):** the product is now called **Memorious** (memorious.app).
+> This founding document predates the name and is kept as written.
+
 Agreed 2026-08-10 (grilling session). This is the founding document: what we're building and every
 decision made, with the reasoning that mattered. Supersedes v1 idioms — read v1
 (`~/projects/infinite-journal`) for history, not for design.

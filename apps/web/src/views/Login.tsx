@@ -21,7 +21,7 @@ export function Login({ onSubmit }: { onSubmit: (passcode: string) => Promise<bo
 
   return (
     <form className="login" onSubmit={submit}>
-      <h1>journal</h1>
+      <h1>memorious</h1>
       <input
         type="password"
         inputMode="numeric"

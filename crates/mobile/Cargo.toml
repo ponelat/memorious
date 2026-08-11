@@ -1,11 +1,11 @@
 [package]
-name = "journal-mobile"
+name = "memorious-mobile"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 
 [lib]
-name = "journal_mobile"
+name = "memorious_mobile"
 crate-type = ["lib", "staticlib", "cdylib"]
 
 [[bin]]
@@ -14,7 +14,7 @@ path = "src/bin/uniffi-bindgen.rs"
 
 [dependencies]
 anyhow = "1"
-journal-core = { path = "../core" }
+memorious-core = { path = "../core" }
 serde_json = "1"
 thiserror = "2"
 tokio = { version = "1", features = ["full"] }

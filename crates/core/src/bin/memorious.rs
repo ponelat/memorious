@@ -4,9 +4,9 @@ use std::path::PathBuf;
 
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
-use journal_core::event::{MediaKind, Payload};
-use journal_core::node::JournalTicket;
-use journal_core::{Journal, Node};
+use memorious_core::event::{MediaKind, Payload};
+use memorious_core::node::JournalTicket;
+use memorious_core::{Journal, Node};
 
 #[derive(Parser)]
 #[command(name = "journal", about = "Infinite Journal peer")]
@@ -19,12 +19,12 @@ struct Cli {
 }
 
 fn default_data_dir() -> PathBuf {
-    std::env::var_os("JOURNAL_DATA")
+    std::env::var_os("MEMORIOUS_DATA")
         .map(PathBuf::from)
         .unwrap_or_else(|| {
             dirs_home()
                 .unwrap_or_else(|| PathBuf::from("."))
-                .join(".infinite-journal")
+                .join(".memorious")
         })
 }
 
@@ -164,10 +164,10 @@ async fn main() -> Result<()> {
             node.shutdown().await;
         }
         Cmd::ImportV1 { file, base } => {
-            let export: journal_core::import_v1::V1Export =
+            let export: memorious_core::import_v1::V1Export =
                 serde_json::from_slice(&std::fs::read(&file)?).context("parse export json")?;
             let node = Node::spawn(Journal::open(&data)?).await?;
-            let report = journal_core::import_v1::import_v1(&node, &export, |url| {
+            let report = memorious_core::import_v1::import_v1(&node, &export, |url| {
                 let full = if url.starts_with("http") {
                     url.to_string()
                 } else {
@@ -190,7 +190,7 @@ async fn main() -> Result<()> {
         }
         Cmd::ExportMd { out } => {
             let node = Node::spawn(Journal::open(&data)?).await?;
-            let report = journal_core::export_md::export_markdown(&node, &out).await?;
+            let report = memorious_core::export_md::export_markdown(&node, &out).await?;
             println!(
                 "export: {} day files written, {} unchanged; {} media written, {} unchanged",
                 report.day_files_written,
@@ -225,7 +225,7 @@ async fn add_media(data: &std::path::Path, kind: MediaKind, file: &std::path::Pa
     Ok(())
 }
 
-fn format_entry(e: &journal_core::Event) -> String {
+fn format_entry(e: &memorious_core::Event) -> String {
     let ts = chrono_like(e.recorded_at);
     let body = match &e.payload {
         Payload::Text { text } => text.replace('\n', " ⏎ "),

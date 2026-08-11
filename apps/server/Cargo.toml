@@ -1,21 +1,21 @@
 [package]
-name = "journal-server"
+name = "memorious-server"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 
 [[bin]]
-name = "journal-server"
+name = "memorious-server"
 path = "src/main.rs"
 
 [lib]
-name = "journal_server"
+name = "memorious_server"
 path = "src/lib.rs"
 
 [dependencies]
 anyhow = "1"
 axum = { version = "0.8", features = ["multipart"] }
-journal-core = { path = "../../crates/core" }
+memorious-core = { path = "../../crates/core" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tempfile = "3"
