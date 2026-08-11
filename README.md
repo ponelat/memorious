@@ -38,3 +38,25 @@ on another creates a second peer; `journal sync <ticket>` converges them.
 
 Import from v1: `journal import-v1 export.json` (idempotent; photos re-fetched).
 Markdown mirror: `journal export-md <dir>` (derived, regenerable, never an input).
+
+## Downloads
+
+`scripts/make-downloads.sh` builds installable artifacts into `./downloads/`
+(served by the server at `/downloads`, listed in the web client's sync view):
+macOS CLI + desktop .app zip, and static musl Linux CLIs (x86_64 + aarch64)
+via cargo-zigbuild — those run on any Linux, NixOS included.
+
+## NixOS / Nix
+
+The flake builds everything from source (repo is private — use ssh fetch):
+
+```bash
+nix run  'git+ssh://git@github.com/clawjungle/infinite-journal-v2'             # CLI
+nix run  'git+ssh://git@github.com/clawjungle/infinite-journal-v2#desktop'     # desktop app
+nix build 'git+ssh://git@github.com/clawjungle/infinite-journal-v2#journal-server'
+```
+
+Or from a checkout: `nix build .#journal-cli|journal-server|journal-desktop`.
+The desktop links system webkitgtk 4.1/GTK on Linux, so there is deliberately no
+portable Linux desktop binary — the flake (or the static CLI) is the path.
+Pin note: nixpkgs-unstable, because iroh needs rustc ≥ 1.91.

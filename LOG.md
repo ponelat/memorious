@@ -1,5 +1,21 @@
 # LOG
 
+## 2026-08-11 (NixOS)
+- NixOS/Linux delivery: (1) static musl CLI binaries (x86_64 + aarch64, cargo-zigbuild)
+  hosted in /downloads — x86_64 one smoke-tested in an Alpine container; (2) flake.nix
+  building journal-cli / journal-server / journal-desktop from source. nixpkgs-unstable
+  pinned (25.05 rustc 1.86 < iroh's 1.91 floor). apps/web/dist now committed so flake
+  builds are self-contained.
+- journal-cli verified with a real `nix build` on this Mac. The desktop derivation
+  (cargo-tauri.hook + webkitgtk_4_1/gtk3/libsoup_3, --no-bundle + manual install) is
+  NOT yet build-verified on Linux: two Docker attempts died — first seccomp under amd64
+  emulation, then the host disk hit 100% mid-build and corrupted Docker Desktop's
+  containerd metadata (prune/df now 500; needs a Docker factory reset — owner's call,
+  it wipes all local images). First `nix build .#journal-desktop` on a real NixOS box
+  is the honest test; expect at most attribute-name-level fixes.
+- Disk on this Mac is chronically tight (~3GB free after cleanup); Rust target dirs
+  and Docker.raw are the repeat offenders.
+
 ## 2026-08-11
 - App downloads hosted by the server peer: `scripts/make-downloads.sh` builds the CLI
   binary + zipped desktop .app into ./downloads (gitignored); server serves them at
