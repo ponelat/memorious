@@ -18,8 +18,10 @@ crates/mobile/     UniFFI face of core for iOS
 apps/server/       axum HTTP peer; serves apps/web build; enrichment sweeper
 apps/web/          React + Vite UI (browser client and Tauri shell share it)
 apps/desktop/      Tauri 2 shell
-apps/ios/          SwiftUI app; ./build.sh makes JournalCore.xcframework
 ```
+
+The native iOS app lives in a separate private repo (`memorious-ios`); it builds
+against this repo's `crates/mobile` via UniFFI.
 
 ## Quick start
 
@@ -49,15 +51,28 @@ via cargo-zigbuild — those run on any Linux, NixOS included.
 
 ## NixOS / Nix
 
-The flake builds everything from source (repo is private — use ssh fetch):
+The flake builds everything from source:
 
 ```bash
-nix run  'git+ssh://git@github.com/clawjungle/infinite-journal-v2'             # CLI
-nix run  'git+ssh://git@github.com/clawjungle/infinite-journal-v2#desktop'     # desktop app
-nix build 'git+ssh://git@github.com/clawjungle/infinite-journal-v2#memorious-server'
+nix run  'github:clawjungle/memorious'                    # CLI
+nix run  'github:clawjungle/memorious#desktop'            # desktop app
+nix build 'github:clawjungle/memorious#memorious-server'
 ```
 
 Or from a checkout: `nix build .#journal-cli|memorious-server|memorious-desktop`.
 The desktop links system webkitgtk 4.1/GTK on Linux, so there is deliberately no
 portable Linux desktop binary — the flake (or the static CLI) is the path.
 Pin note: nixpkgs-unstable, because iroh needs rustc ≥ 1.91.
+
+## License
+
+Licensed under either of the [MIT license](LICENSE-MIT) or the
+[Apache License, Version 2.0](LICENSE-APACHE), at your option.
+
+Unless you explicitly state otherwise, any contribution intentionally submitted
+for inclusion in the work by you, as defined in the Apache-2.0 license, shall be
+dual licensed as above, without any additional terms or conditions.
+
+The **Memorious** name and branding are not covered by these licenses — forks
+and derived products must use a different name. The native iOS app is a
+separate, proprietary product built on this engine.

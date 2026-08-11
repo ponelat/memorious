@@ -3,7 +3,7 @@ name = "memorious-desktop"
 version = "0.1.0"
 description = "Infinite Journal desktop"
 edition = "2021"
-license = "MIT"
+license.workspace = true
 
 [lib]
 name = "memorious_desktop_lib"

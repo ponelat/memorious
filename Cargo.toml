@@ -4,7 +4,7 @@ members = ["crates/core", "crates/mobile", "apps/server", "apps/desktop/src-taur
 
 [workspace.package]
 edition = "2021"
-license = "MIT"
+license = "MIT OR Apache-2.0"
 
 [profile.dev]
 # iroh + quinn are slow unoptimized; keep tests bearable

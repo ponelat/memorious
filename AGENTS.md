@@ -47,11 +47,16 @@ crates/mobile/     UniFFI face of core for iOS (JSON strings + bytes over blocki
 apps/server/       axum HTTP peer; serves apps/web build; enrichment sweeper; /downloads
 apps/web/          React + Vite UI shared by the browser client and the Tauri shell
 apps/desktop/      Tauri 2 shell (its own peer, embeds core — never a client of the server)
-apps/ios/          SwiftUI app; build.sh makes MemoriousCore.xcframework; xcodegen project
 apps/landing/      memorious.app static landing page (see its CONTEXT.md)
 docs/              build + deploy context
 scripts/           make-downloads.sh (hosted app builds), stitch-hero.py (landing video)
 ```
+
+This repo is open source (MIT OR Apache-2.0; see README §License). The native iOS app is
+proprietary and lives in the separate **private** repo `~/projects/memorious-ios`
+(github.com/clawjungle/memorious-ios); it builds `MemoriousCore.xcframework` from this
+repo's `crates/mobile` via its own `build.sh` (default engine path: sibling checkout).
+Never move paid-app code into this repo.
 
 Keep the core deep and the shells thin: if logic could live in `crates/core`, it must.
 The one UI seam is `apps/web/src/api/types.ts` (`JournalApi`) — browser implements it with
