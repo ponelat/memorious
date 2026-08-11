@@ -8,10 +8,11 @@ Start here. This file orients any AI agent (or human) working on the project.
    reasoning. **It is the source of truth.** If an implementation choice contradicts it, the doc
    wins; if the doc is silent, make the boring choice and note it in `LOG.md`.
 2. **`docs/BUILD.md`** — how to build and test every part.
-3. **`docs/DEPLOY.md`** — how everything is deployed and operated.
-4. **`apps/landing/CONTEXT.md`** — the memorious.app landing page.
-5. `MILESTONES.md` is historical (all six milestones shipped 2026-08-10); `LOG.md` is the
+3. **`apps/landing/CONTEXT.md`** — the memorious.app landing page.
+4. `MILESTONES.md` is historical (all six milestones shipped 2026-08-10); `LOG.md` is the
    dated decision record — keep appending to it.
+
+Deployment/ops details are deliberately not in this repo (owner-private runbook).
 
 ## One-paragraph brief
 
@@ -68,9 +69,8 @@ HTTP, desktop with Tauri commands. The wire shape for entries is
 - **Protocol identifiers travel together.** `SYNC_ALPN`, the ticket prefix, and
   `AUTH_CONTEXT` live in `crates/core/src/node.rs`. Changing any of them strands every
   deployed peer — only do it with a plan to upgrade server, desktop, and phone in one go.
-- **iOS bundle id is still `the legacy bundle id`** (see docs/DEPLOY.md,
-  "iOS signing"). Don't "fix" it casually — it requires a live Xcode Apple ID session and
-  orphans the app's on-phone data.
+- **The iOS bundle id predates the rename** (details in the mobile repo). Don't "fix" it
+  casually — it requires a live Xcode Apple ID session and orphans the app's on-phone data.
 - iroh is pinned 1.x; its pre-1.0 API differs wildly from training data — trust docs.rs and
   the vendored sources in `~/.cargo/registry`. Two local gotchas: iroh's `EndpointAddr` serde
   needs `deserialize_any` (postcard can't — wire frames are JSON, tickets use `AddrWire`),
@@ -78,11 +78,9 @@ HTTP, desktop with Tauri commands. The wire shape for entries is
 
 ## Environment notes
 
-- Dev machine: macOS (Apple Silicon). Dev hosting via the `devhost` CLI
-  (project `memorious` → the dev app).
-- v1 lives at `~/projects/infinite-journal` (PocketBase); deployed at v1 prod.
-  Its `GET /api/export` feeds `memorious import-v1`. The owner's real import sits in
-  `./data-v1-import/` (gitignored).
+- Dev machine: macOS (Apple Silicon). Dev hosting via the owner's local `devhost` CLI.
+- v1 is the PocketBase predecessor; its `GET /api/export` feeds `memorious import-v1`.
+  The owner's real import sits in `./data-v1-import/` (gitignored).
 - Git identity: clawjungle. Commit style: `type(scope): summary`.
 - Keep `LOG.md` current: dated, terse entries for decisions made while building.
 
@@ -91,4 +89,4 @@ HTTP, desktop with Tauri commands. The wire shape for entries is
 - `cargo test` green (run per-package — see docs/BUILD.md for the disk story); core logic has
   tests, the sync protocol especially.
 - If a shell app exists, it runs. No dead scaffolding.
-- Deployed surfaces updated when behavior changes (docs/DEPLOY.md).
+- Deployed surfaces updated when behavior changes (owner's private ops runbook).

@@ -1,7 +1,7 @@
 # memorious.app — landing page context
 
 The public face of Memorious. One self-contained `index.html` + `hero.mp4` + `poster.jpg`,
-served as static files from the shared EC2 Caddy box (deploy recipe: docs/DEPLOY.md).
+served as static files from the shared EC2 Caddy box (deploy recipe: owner's private ops runbook).
 No framework, no build step, no analytics.
 
 ## The name
@@ -43,7 +43,7 @@ Regeneration recipe (used 2026-08-11):
    then walk the shot list with `dom fill/click/screenshot` into `frames/NN-name.png`.
    Watch for duplicate seeded entries between takes — redact strays first.
 3. Stitch: `python3 scripts/stitch-hero.py <frames-dir> apps/landing/`.
-4. Deploy per docs/DEPLOY.md.
+4. Deploy per the owner's private ops runbook.
 
 ## Voiceover (pending)
 

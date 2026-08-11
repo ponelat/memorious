@@ -78,7 +78,7 @@ xcodebuild -project Memorious.xcodeproj -scheme Memorious \
   gitignored. Linker needs `-framework SystemConfiguration` (iroh's netdev).
 - Simulator UI tests: `xcodebuild ... test -only-testing:MemoriousUITests/...`. The
   join-by-ticket test takes a live host peer's ticket via `TEST_RUNNER_TEST_JOIN_TICKET`.
-- Signing/deploy specifics are in docs/DEPLOY.md.
+- Signing/deploy specifics are in the owner's private ops runbook.
 
 ## Nix flake
 
