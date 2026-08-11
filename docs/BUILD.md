@@ -58,14 +58,14 @@ cd apps/desktop && cargo tauri build            # → target/release/bundle/maco
   server. `MEMORIOUS_DATA_DIR` env overrides the data dir (used by tests).
 - Unsigned/un-notarized: first launch needs right-click → Open.
 
-## iOS (private repo `memorious-ios`)
+## iOS (private repo `memorious-mobile`)
 
-The iOS app is proprietary — separate private repo at `~/projects/memorious-ios`
-(github.com/clawjungle/memorious-ios). Its `build.sh` builds the engine from this
+The iOS app is proprietary — separate private repo at `~/projects/memorious-mobile`
+(github.com/ponelat/memorious-mobile). Its `build.sh` builds the engine from this
 repo, located as a sibling checkout by default (`ENGINE_DIR` overrides).
 
 ```bash
-cd ../memorious-ios
+cd ../memorious-mobile
 ./build.sh --device             # rust for sim+device, uniffi Swift bindings, XCFramework
 xcodegen generate
 xcodebuild -project Memorious.xcodeproj -scheme Memorious \

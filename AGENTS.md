@@ -53,8 +53,8 @@ scripts/           make-downloads.sh (hosted app builds), stitch-hero.py (landin
 ```
 
 This repo is open source (MIT OR Apache-2.0; see README §License). The native iOS app is
-proprietary and lives in the separate **private** repo `~/projects/memorious-ios`
-(github.com/clawjungle/memorious-ios); it builds `MemoriousCore.xcframework` from this
+proprietary and lives in the separate **private** repo `~/projects/memorious-mobile`
+(github.com/ponelat/memorious-mobile); it builds `MemoriousCore.xcframework` from this
 repo's `crates/mobile` via its own `build.sh` (default engine path: sibling checkout).
 Never move paid-app code into this repo.
 
