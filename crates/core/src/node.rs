@@ -69,9 +69,15 @@ enum Msg {
         auth: [u8; 32],
         heads: Heads,
         addr: AddrWire,
+        /// The sender's journal device id, so the receiver can map endpoint
+        /// id → device id. Optional for wire compat with older builds.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        device: Option<String>,
     },
     HelloAck {
         heads: Heads,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        device: Option<String>,
     },
     Event(Event),
     EndEvents,
@@ -83,6 +89,109 @@ pub struct SyncReport {
     pub sent: usize,
     pub received: usize,
     pub blobs_fetched: usize,
+}
+
+/// Per-device network configuration, stored in journal meta (local, never
+/// syncs — each device picks its own relays) and applied at [`Node::spawn`],
+/// i.e. changes take effect on the next launch/restart.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct NetConfig {
+    /// "default" = n0's public relays, "custom" = `relay_urls`, "disabled" =
+    /// direct connections only (LAN / tickets with reachable addresses).
+    pub relay_mode: String,
+    pub relay_urls: Vec<String>,
+    /// Publish/resolve peer addresses via the public iroh address lookup
+    /// (DNS + pkarr records on the mainline DHT infrastructure). Off = peers
+    /// are found only through tickets and last-known addresses.
+    pub public_lookup: bool,
+}
+
+impl Default for NetConfig {
+    fn default() -> Self {
+        Self {
+            relay_mode: "default".into(),
+            relay_urls: Vec::new(),
+            public_lookup: true,
+        }
+    }
+}
+
+const NET_CONFIG_KEY: &str = "net_config";
+
+impl Journal {
+    /// This device's network configuration (defaults when never set).
+    pub fn net_config(&self) -> NetConfig {
+        self.store
+            .meta_get(NET_CONFIG_KEY)
+            .ok()
+            .flatten()
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .unwrap_or_default()
+    }
+
+    /// Validate and store the network configuration. Applied on next spawn.
+    pub fn set_net_config(&self, cfg: &NetConfig) -> Result<()> {
+        match cfg.relay_mode.as_str() {
+            "default" | "disabled" => {}
+            "custom" => {
+                if cfg.relay_urls.is_empty() {
+                    bail!("custom relay mode needs at least one relay url");
+                }
+                for url in &cfg.relay_urls {
+                    let _: iroh::RelayUrl = url
+                        .parse()
+                        .with_context(|| format!("bad relay url: {url}"))?;
+                }
+            }
+            other => bail!("unknown relay mode: {other} (default/custom/disabled)"),
+        }
+        self.store
+            .meta_set(NET_CONFIG_KEY, &serde_json::to_vec(cfg)?)
+    }
+}
+
+/// How we reached a peer, as reported on the status screen.
+#[derive(Debug, Clone, Serialize)]
+pub struct PeerConn {
+    /// "relay" or "direct".
+    pub transport: String,
+    /// The relay url or the remote socket address.
+    pub detail: String,
+    /// Direct over a private/link-local address — the same LAN.
+    pub lan: bool,
+}
+
+/// A known sync peer: everything the status screens show about it. Stale by
+/// design — a peer's row is only as fresh as our last contact with it.
+#[derive(Debug, Clone, Serialize)]
+pub struct PeerInfo {
+    pub endpoint_id: String,
+    /// The peer's journal device id, once it has told us (Hello/HelloAck).
+    pub device_id: Option<String>,
+    /// Last completed event sync, unix ms.
+    pub last_ok_ms: i64,
+    /// How we first met: "dialed" (we connected to it) or "inbound" (it
+    /// connected to us).
+    pub origin: Option<String>,
+    /// The transport in use right now, when the endpoint still holds a live
+    /// path to the peer; `None` between contacts.
+    pub conn: Option<PeerConn>,
+}
+
+/// Private, loopback, or link-local — "same network" for the status UI.
+fn is_lan_ip(ip: &std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(v4) => v4.is_private() || v4.is_loopback() || v4.is_link_local(),
+        std::net::IpAddr::V6(v6) => {
+            v6.is_loopback()
+                || v6.is_unique_local()
+                || v6.is_unicast_link_local()
+                || v6.to_ipv4_mapped().is_some_and(|v4| {
+                    v4.is_private() || v4.is_loopback() || v4.is_link_local()
+                })
+        }
+    }
 }
 
 /// Ticket: journal secret + address of one existing peer. String form `memorious<base32>`.
@@ -163,11 +272,30 @@ impl Node {
             }
         };
 
-        let endpoint = Endpoint::builder(presets::N0)
+        // Network shape comes from the journal's (per-device) net config.
+        // presets::N0 minus whatever the owner turned off.
+        let cfg = journal.net_config();
+        let relay_mode = match cfg.relay_mode.as_str() {
+            "disabled" => iroh::RelayMode::Disabled,
+            "custom" => iroh::RelayMode::custom(
+                cfg.relay_urls
+                    .iter()
+                    .map(|u| u.parse().with_context(|| format!("bad relay url: {u}")))
+                    .collect::<Result<Vec<_>>>()?,
+            ),
+            _ => iroh::endpoint::default_relay_mode(),
+        };
+        let mut builder = Endpoint::builder(presets::Minimal)
             .secret_key(secret_key)
-            .bind()
-            .await
-            .context("bind iroh endpoint")?;
+            .relay_mode(relay_mode);
+        if cfg.public_lookup {
+            use iroh::address_lookup::{DnsAddressLookup, PkarrPublisher, PkarrResolver};
+            builder = builder
+                .address_lookup(PkarrPublisher::n0_dns())
+                .address_lookup(PkarrResolver::n0_dns())
+                .address_lookup(DnsAddressLookup::n0_dns());
+        }
+        let endpoint = builder.bind().await.context("bind iroh endpoint")?;
 
         let proto = SyncProto {
             journal: journal.clone(),
@@ -369,12 +497,13 @@ impl Node {
                 auth: auth_token(self.journal.secret()),
                 heads: self.journal.store.heads()?,
                 addr: AddrWire::from_addr(&my_addr),
+                device: Some(self.journal.device_id().to_string()),
             },
         )
         .await?;
 
-        let peer_heads = match read_msg(&mut recv).await? {
-            Some(Msg::HelloAck { heads }) => heads,
+        let (peer_heads, peer_device) = match read_msg(&mut recv).await? {
+            Some(Msg::HelloAck { heads, device }) => (heads, device),
             Some(other) => bail!("protocol violation: expected HelloAck, got {other:?}"),
             None => bail!("peer closed during handshake (bad journal secret?)"),
         };
@@ -408,9 +537,92 @@ impl Node {
         }
 
         conn.close(VarInt::from(0u32), b"done");
-        self.journal
-            .record_sync_contact(&addr.id.to_string(), unix_now_ms())?;
+        self.journal.record_sync_contact(
+            &addr.id.to_string(),
+            unix_now_ms(),
+            peer_device.as_deref(),
+            "dialed",
+        )?;
         Ok(report)
+    }
+
+    /// Known sync peers with their device mapping, last contact, and (when
+    /// the endpoint still holds a live path) the transport in use.
+    pub async fn peers(&self) -> Result<Vec<PeerInfo>> {
+        let store = &self.journal.store;
+        let mut out = Vec::new();
+        for (key, value) in store.meta_scan("peer_last_ok:")? {
+            let endpoint_id = key.trim_start_matches("peer_last_ok:").to_string();
+            let last_ok_ms = value
+                .as_slice()
+                .try_into()
+                .map(i64::from_le_bytes)
+                .unwrap_or(0);
+            let meta_str = |prefix: &str| -> Option<String> {
+                store
+                    .meta_get(&format!("{prefix}{endpoint_id}"))
+                    .ok()
+                    .flatten()
+                    .and_then(|b| String::from_utf8(b).ok())
+            };
+            let conn = match endpoint_id.parse::<iroh::EndpointId>() {
+                Ok(id) => self.endpoint.remote_info(id).await.and_then(|info| {
+                    info.addrs()
+                        .find(|a| matches!(a.usage(), iroh::endpoint::TransportAddrUsage::Active))
+                        .map(|a| match a.addr() {
+                            iroh::TransportAddr::Relay(url) => PeerConn {
+                                transport: "relay".into(),
+                                detail: url.to_string(),
+                                lan: false,
+                            },
+                            iroh::TransportAddr::Ip(sock) => PeerConn {
+                                transport: "direct".into(),
+                                detail: sock.to_string(),
+                                lan: is_lan_ip(&sock.ip()),
+                            },
+                            other => PeerConn {
+                                transport: "custom".into(),
+                                detail: format!("{other:?}"),
+                                lan: false,
+                            },
+                        })
+                }),
+                Err(_) => None,
+            };
+            let device_id = meta_str("peer_device:");
+            let origin = meta_str("peer_origin:");
+            out.push(PeerInfo {
+                endpoint_id,
+                device_id,
+                last_ok_ms,
+                origin,
+                conn,
+            });
+        }
+        out.sort_by_key(|p| std::cmp::Reverse(p.last_ok_ms));
+        Ok(out)
+    }
+
+    /// The status screen's JSON, one shape for every face (HTTP, Tauri, FFI).
+    pub async fn status_json(&self) -> Result<serde_json::Value> {
+        let journal = self.journal();
+        let timeline = journal.timeline()?;
+        let mut v = serde_json::json!({
+            "device_id": journal.device_id(),
+            "entries": timeline.entries,
+            "trash": journal.trash()?.len(),
+            "heads": journal.store.heads()?,
+            "timeline": timeline,
+            "storage": journal.storage_usage()?,
+            "health": journal.sync_health(unix_now_ms())?,
+            "names": journal.device_names()?,
+            "peers": self.peers().await?,
+            "net": journal.net_config(),
+        });
+        if let Ok(t) = self.ticket() {
+            v["ticket"] = t.into();
+        }
+        Ok(v)
     }
 
     pub async fn shutdown(self) {
@@ -483,27 +695,34 @@ impl ProtocolHandler for SyncProto {
     async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
         let (mut send, mut recv) = connection.accept_bi().await?;
 
-        let (heads, initiator_addr) = match read_msg(&mut recv).await.map_err(acc)? {
-            Some(Msg::Hello { auth, heads, addr }) => {
-                if auth != auth_token(self.journal.secret()) {
-                    connection.close(VarInt::from(CLOSE_BAD_AUTH), b"bad auth");
-                    return Err(AcceptError::from_err(std::io::Error::other(
-                        "peer failed journal auth",
-                    )));
+        let (heads, initiator_addr, initiator_device) =
+            match read_msg(&mut recv).await.map_err(acc)? {
+                Some(Msg::Hello { auth, heads, addr, device }) => {
+                    if auth != auth_token(self.journal.secret()) {
+                        connection.close(VarInt::from(CLOSE_BAD_AUTH), b"bad auth");
+                        return Err(AcceptError::from_err(std::io::Error::other(
+                            "peer failed journal auth",
+                        )));
+                    }
+                    (heads, addr.to_addr().map_err(acc)?, device)
                 }
-                (heads, addr.to_addr().map_err(acc)?)
-            }
-            _ => {
-                return Err(AcceptError::from_err(std::io::Error::other(
-                    "protocol violation: expected Hello",
-                )))
-            }
-        };
+                _ => {
+                    return Err(AcceptError::from_err(std::io::Error::other(
+                        "protocol violation: expected Hello",
+                    )))
+                }
+            };
 
         let my_heads = self.journal.store.heads().map_err(acc)?;
-        write_msg(&mut send, &Msg::HelloAck { heads: my_heads })
-            .await
-            .map_err(acc)?;
+        write_msg(
+            &mut send,
+            &Msg::HelloAck {
+                heads: my_heads,
+                device: Some(self.journal.device_id().to_string()),
+            },
+        )
+        .await
+        .map_err(acc)?;
 
         // Send the initiator what it's missing.
         let to_send = self
@@ -544,9 +763,12 @@ impl ProtocolHandler for SyncProto {
         send.finish()?;
 
         // Events are converged both ways at this point — a real contact.
-        let _ = self
-            .journal
-            .record_sync_contact(&connection.remote_id().to_string(), unix_now_ms());
+        let _ = self.journal.record_sync_contact(
+            &connection.remote_id().to_string(),
+            unix_now_ms(),
+            initiator_device.as_deref(),
+            "inbound",
+        );
 
         // Pull blobs we now reference but don't hold, dialing back the initiator.
         if let Err(err) =
@@ -603,6 +825,73 @@ mod tests {
         let back_addr = back.addr().unwrap();
         assert_eq!(back_addr.id, addr.id);
         assert_eq!(back_addr.ip_addrs().count(), 1);
+    }
+
+    #[test]
+    fn hello_without_device_field_still_decodes() {
+        // Wire compat: peers running the previous build send Hello/HelloAck
+        // without `device`. JSON frames must keep decoding both ways.
+        let old_hello = serde_json::json!({
+            "Hello": {
+                "auth": vec![0u8; 32],
+                "heads": crate::store::Heads::new(),
+                "addr": { "id_hex": "00", "relays": [], "ips": [] },
+            }
+        });
+        let msg: Msg = serde_json::from_value(old_hello).unwrap();
+        assert!(matches!(msg, Msg::Hello { device: None, .. }));
+        let old_ack = serde_json::json!({ "HelloAck": { "heads": crate::store::Heads::new() } });
+        let msg: Msg = serde_json::from_value(old_ack).unwrap();
+        assert!(matches!(msg, Msg::HelloAck { device: None, .. }));
+    }
+
+    #[test]
+    fn net_config_defaults_validates_and_round_trips() {
+        let dir = tempfile::tempdir().unwrap();
+        let j = crate::Journal::init(&dir.path().join("j"), "pw").unwrap();
+
+        // Nothing stored yet: the n0 defaults, public lookup on.
+        let cfg = j.net_config();
+        assert_eq!(cfg.relay_mode, "default");
+        assert!(cfg.public_lookup);
+
+        // Custom relays must parse as URLs; garbage is refused.
+        let bad = NetConfig {
+            relay_mode: "custom".into(),
+            relay_urls: vec!["not a url".into()],
+            public_lookup: true,
+        };
+        assert!(j.set_net_config(&bad).is_err());
+        let empty_custom = NetConfig {
+            relay_mode: "custom".into(),
+            relay_urls: vec![],
+            public_lookup: true,
+        };
+        assert!(j.set_net_config(&empty_custom).is_err());
+        let unknown_mode = NetConfig {
+            relay_mode: "turbo".into(),
+            relay_urls: vec![],
+            public_lookup: true,
+        };
+        assert!(j.set_net_config(&unknown_mode).is_err());
+
+        let good = NetConfig {
+            relay_mode: "custom".into(),
+            relay_urls: vec!["https://relay.example.com".into()],
+            public_lookup: false,
+        };
+        j.set_net_config(&good).unwrap();
+        assert_eq!(j.net_config(), good);
+    }
+
+    #[test]
+    fn lan_classification() {
+        for ip in ["127.0.0.1", "10.1.2.3", "192.168.0.42", "172.16.9.9", "169.254.1.1", "::1", "fe80::1", "fd00::1"] {
+            assert!(is_lan_ip(&ip.parse().unwrap()), "{ip} should be LAN");
+        }
+        for ip in ["8.8.8.8", "196.25.1.1", "2001:4860::1"] {
+            assert!(!is_lan_ip(&ip.parse().unwrap()), "{ip} should not be LAN");
+        }
     }
 
     #[test]

@@ -36,6 +36,8 @@ async fn main() -> Result<()> {
         tracing::info!("no journal at {} — creating one", data.display());
         Journal::init(&data, &password)?
     };
+    // Default friendly name: the server peer is what the browser fronts.
+    journal.ensure_device_name("web")?;
     let node = Node::spawn(journal).await?;
     if let Ok(addr) = node.dialable_addr().await {
         tracing::info!("iroh peer up: {} ({} addrs)", node.endpoint().id(), addr.addrs.len());

@@ -54,13 +54,26 @@ fn data_dir<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<PathBuf> {
         .join("journal"))
 }
 
+/// Platform default for this device's friendly name ("desktop (macOS)").
+fn default_device_name() -> String {
+    let os = match std::env::consts::OS {
+        "macos" => "macOS",
+        "linux" => "Linux",
+        "windows" => "Windows",
+        other => other,
+    };
+    format!("desktop ({os})")
+}
+
 async fn open_with<R: tauri::Runtime>(
     app: &AppHandle<R>,
     state: &State<'_, NodeState>,
     password: &str,
 ) -> Result<Arc<Node>> {
     let dir = data_dir(app)?;
-    let n = Arc::new(Node::spawn(Journal::open(&dir, password)?).await?);
+    let journal = Journal::open(&dir, password)?;
+    journal.ensure_device_name(&default_device_name())?;
+    let n = Arc::new(Node::spawn(journal).await?);
     *state.0.lock().await = Some(n.clone());
     Ok(n)
 }
@@ -129,6 +142,7 @@ async fn setup_init<R: tauri::Runtime>(
 ) -> Result<(), String> {
     let dir = data_dir(&app).map_err(estr)?;
     let journal = Journal::init(&dir, &password).map_err(estr)?;
+    journal.ensure_device_name(&default_device_name()).map_err(estr)?;
     let n = Arc::new(Node::spawn(journal).await.map_err(estr)?);
     *state.0.lock().await = Some(n);
     cache_password(&password);
@@ -145,6 +159,9 @@ async fn setup_join<R: tauri::Runtime>(
     let dir = data_dir(&app).map_err(estr)?;
     let (n, report) = Node::join_from_ticket(&dir, &ticket, &password)
         .await
+        .map_err(estr)?;
+    n.journal()
+        .ensure_device_name(&default_device_name())
         .map_err(estr)?;
     cache_password(&password);
     n.journal()
@@ -294,17 +311,31 @@ async fn search<R: tauri::Runtime>(
 #[tauri::command]
 async fn status<R: tauri::Runtime>(app: AppHandle<R>, state: State<'_, NodeState>) -> Result<Value, String> {
     let n = node(&app, &state).await.map_err(estr)?;
-    let journal = n.journal();
-    let mut v = json!({
-        "device_id": journal.device_id(),
-        "entries": journal.list().map_err(estr)?.len(),
-        "trash": journal.trash().map_err(estr)?.len(),
-        "heads": journal.store.heads().map_err(estr)?,
-    });
-    if let Ok(t) = n.ticket() {
-        v["ticket"] = t.into();
-    }
-    Ok(v)
+    n.status_json().await.map_err(estr)
+}
+
+#[tauri::command]
+async fn set_device_name<R: tauri::Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, NodeState>,
+    device_id: String,
+    name: String,
+) -> Result<(), String> {
+    let n = node(&app, &state).await.map_err(estr)?;
+    n.journal().set_device_name(&device_id, &name).map_err(estr)?;
+    Ok(())
+}
+
+/// Store the network config (relays / public lookup). Applied on relaunch.
+#[tauri::command]
+async fn set_net_config<R: tauri::Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, NodeState>,
+    net: memorious_core::node::NetConfig,
+) -> Result<(), String> {
+    let n = node(&app, &state).await.map_err(estr)?;
+    n.journal().set_net_config(&net).map_err(estr)?;
+    Ok(())
 }
 
 // ---- sync ----
@@ -357,6 +388,8 @@ pub fn handlers<R: tauri::Runtime>(
         trash_list,
         search,
         status,
+        set_device_name,
+        set_net_config,
         sync_now,
     ]
 }

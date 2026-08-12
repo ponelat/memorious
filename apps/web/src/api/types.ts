@@ -22,12 +22,62 @@ export interface FeedPage {
   next_before: number | null
 }
 
+/** The transport a peer is reached over right now (absent between contacts). */
+export interface PeerConn {
+  transport: 'relay' | 'direct' | string
+  /** Relay url or remote socket address. */
+  detail: string
+  /** Direct over a private/link-local address — same LAN. */
+  lan: boolean
+}
+
+/** A known sync peer, as fresh as our last contact with it. */
+export interface PeerInfo {
+  endpoint_id: string
+  device_id?: string | null
+  last_ok_ms: number
+  /** "dialed" (we connect to it) or "inbound" (it connects to us). */
+  origin?: string | null
+  conn?: PeerConn | null
+}
+
+export interface TimelineStats {
+  entries: number
+  first_recorded_at: number | null
+  last_recorded_at: number | null
+}
+
+export interface StorageUsage {
+  db_bytes: number
+  blobs_bytes: number
+}
+
+export interface SyncHealth {
+  color: 'green' | 'yellow' | 'red' | string
+  pending: boolean
+  stalest_ms: number | null
+  peers: number
+}
+
+export interface NetConfig {
+  relay_mode: 'default' | 'custom' | 'disabled' | string
+  relay_urls: string[]
+  public_lookup: boolean
+}
+
 export interface Status {
   device_id: string
   entries: number
   trash: number
   heads: Record<string, number>
   ticket?: string
+  timeline?: TimelineStats
+  storage?: StorageUsage
+  health?: SyncHealth
+  /** Friendly name per device id (editable, latest wins). */
+  names?: Record<string, string>
+  peers?: PeerInfo[]
+  net?: NetConfig
 }
 
 export interface SyncReport {
@@ -64,6 +114,10 @@ export interface JournalApi {
   trash(): Promise<Entry[]>
   search(q: string): Promise<Entry[]>
   status(): Promise<Status>
+  /** Rename a device (any device — names sync). */
+  setDeviceName(deviceId: string, name: string): Promise<void>
+  /** Store relay/lookup config; the node applies it on next launch. */
+  setNetConfig(net: NetConfig): Promise<void>
   /** Present only on hosts that dial peers themselves (desktop). */
   setup?: SetupApi
   syncNow?(ticket?: string): Promise<SyncReport>

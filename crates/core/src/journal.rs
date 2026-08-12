@@ -31,6 +31,29 @@ struct KeysFile {
     params: KdfParams,
 }
 
+/// Device ids look like `dev-<uuid>`; annotation targets with this prefix are
+/// device names, everything else is enrichment on an event.
+const DEVICE_ID_PREFIX: &str = "dev-";
+const DEVICE_NAME_MAX: usize = 64;
+
+/// Span of the visible timeline (non-redacted captures).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct TimelineStats {
+    pub entries: usize,
+    /// Unix ms of the oldest / newest visible entry; `None` when empty.
+    pub first_recorded_at: Option<i64>,
+    pub last_recorded_at: Option<i64>,
+}
+
+/// Bytes on disk under this journal's root.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct StorageUsage {
+    /// The SQLCipher database (incl. WAL/shm sidecars).
+    pub db_bytes: u64,
+    /// The iroh-blobs store (sealed media ciphertext).
+    pub blobs_bytes: u64,
+}
+
 /// Traffic-light summary of replication state; see [`Journal::sync_health`].
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct SyncHealth {
@@ -175,9 +198,26 @@ impl Journal {
 
     /// A completed event sync with `peer` (either direction): remember when,
     /// and snapshot our heads so "pending to push" is detectable later.
-    pub fn record_sync_contact(&self, peer: &str, now_ms: i64) -> Result<()> {
+    /// `device` maps the peer's endpoint id to its journal device id when the
+    /// peer told us; `origin` records how we first met ("dialed"/"inbound")
+    /// and is never overwritten.
+    pub fn record_sync_contact(
+        &self,
+        peer: &str,
+        now_ms: i64,
+        device: Option<&str>,
+        origin: &str,
+    ) -> Result<()> {
         self.store
             .meta_set(&format!("peer_last_ok:{peer}"), &now_ms.to_le_bytes())?;
+        if let Some(device) = device {
+            self.store
+                .meta_set(&format!("peer_device:{peer}"), device.as_bytes())?;
+        }
+        if self.store.meta_get(&format!("peer_origin:{peer}"))?.is_none() {
+            self.store
+                .meta_set(&format!("peer_origin:{peer}"), origin.as_bytes())?;
+        }
         let heads = self.store.heads()?;
         self.store
             .meta_set("last_sync_heads", &serde_json::to_vec(&heads)?)?;
@@ -269,6 +309,83 @@ impl Journal {
             .into_iter()
             .filter(|e| e.kind == EventKind::Capture && redacted.contains(&e.event_id))
             .collect())
+    }
+
+    // ---- device names ----
+    // A name is an annotation event whose target is a *device id* instead of
+    // an event id (the `dev-` prefix keeps the namespaces apart). It syncs and
+    // resolves latest-wins exactly like enrichment annotations, so any device
+    // can rename any other and every peer converges on the same names.
+
+    /// Name a device (this one or any other). Editable: latest wins.
+    pub fn set_device_name(&self, device_id: &str, name: &str) -> Result<Event> {
+        if !device_id.starts_with(DEVICE_ID_PREFIX) {
+            bail!("not a device id: {device_id}");
+        }
+        let name = name.trim();
+        if name.is_empty() {
+            bail!("device name is empty");
+        }
+        if name.chars().count() > DEVICE_NAME_MAX {
+            bail!("device name too long ({DEVICE_NAME_MAX} chars max)");
+        }
+        self.annotate(device_id, name)
+    }
+
+    /// Friendly name per device id (latest annotation wins).
+    pub fn device_names(&self) -> Result<std::collections::HashMap<String, String>> {
+        Ok(self
+            .annotations()?
+            .into_iter()
+            .filter(|(target, _)| target.starts_with(DEVICE_ID_PREFIX))
+            .collect())
+    }
+
+    /// First-run default: name this device `default` unless it has a name
+    /// already (from an earlier run or set by a peer).
+    pub fn ensure_device_name(&self, default: &str) -> Result<()> {
+        if !self.device_names()?.contains_key(self.device_id()) {
+            let device_id = self.device_id().to_string();
+            self.set_device_name(&device_id, default)?;
+        }
+        Ok(())
+    }
+
+    // ---- journal stats ----
+
+    /// Entry count and time span of the visible timeline.
+    pub fn timeline(&self) -> Result<TimelineStats> {
+        let list = self.list()?; // (recorded_at, event_id) order
+        Ok(TimelineStats {
+            entries: list.len(),
+            first_recorded_at: list.first().map(|e| e.recorded_at),
+            last_recorded_at: list.last().map(|e| e.recorded_at),
+        })
+    }
+
+    /// Disk footprint of the database and blob store.
+    pub fn storage_usage(&self) -> Result<StorageUsage> {
+        let mut db_bytes = 0;
+        for suffix in ["", "-wal", "-shm"] {
+            let path = self.root.join(format!("db.sqlite{suffix}"));
+            if let Ok(meta) = std::fs::metadata(&path) {
+                db_bytes += meta.len();
+            }
+        }
+        let mut blobs_bytes = 0;
+        let mut stack = vec![self.blobs_dir()];
+        while let Some(dir) = stack.pop() {
+            let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+            for entry in entries.flatten() {
+                let Ok(meta) = entry.metadata() else { continue };
+                if meta.is_dir() {
+                    stack.push(entry.path());
+                } else {
+                    blobs_bytes += meta.len();
+                }
+            }
+        }
+        Ok(StorageUsage { db_bytes, blobs_bytes })
     }
 
     // ---- browser passcode ----
@@ -399,6 +516,61 @@ mod tests {
         let redaction = j.redact(&r.event_id).unwrap();
         // a redaction itself can't be redacted
         assert!(j.redact(&redaction.event_id).is_err());
+    }
+
+    #[test]
+    fn device_names_default_then_edit_latest_wins() {
+        let dir = tempdir().unwrap();
+        let j = Journal::init(&dir.path().join("j"), PW).unwrap();
+        assert!(j.device_names().unwrap().is_empty());
+
+        // First-run default sticks; a second ensure never overwrites.
+        j.ensure_device_name("desktop (macOS)").unwrap();
+        j.ensure_device_name("web").unwrap();
+        let me = j.device_id().to_string();
+        assert_eq!(j.device_names().unwrap().get(&me).map(String::as_str), Some("desktop (macOS)"));
+
+        // An explicit rename wins (latest annotation).
+        j.set_device_name(&me, "study mac").unwrap();
+        assert_eq!(j.device_names().unwrap().get(&me).map(String::as_str), Some("study mac"));
+
+        // Any device can (re)name any other device.
+        j.set_device_name("dev-feedbeef", "old phone").unwrap();
+        assert_eq!(
+            j.device_names().unwrap().get("dev-feedbeef").map(String::as_str),
+            Some("old phone")
+        );
+
+        // Guard rails: device ids only, no empty or silly-long names.
+        assert!(j.set_device_name("not-a-device", "x").is_err());
+        assert!(j.set_device_name(&me, "   ").is_err());
+        assert!(j.set_device_name(&me, &"x".repeat(65)).is_err());
+
+        // Naming never leaks into the entry timeline.
+        assert_eq!(j.list().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn timeline_and_storage_stats() {
+        let dir = tempdir().unwrap();
+        let j = Journal::init(&dir.path().join("j"), PW).unwrap();
+        let t = j.timeline().unwrap();
+        assert_eq!(t.entries, 0);
+        assert_eq!(t.first_recorded_at, None);
+
+        let first = j.capture_text("first").unwrap();
+        let last = j.capture_text("last").unwrap();
+        let toss = j.capture_text("toss").unwrap();
+        j.redact(&toss.event_id).unwrap();
+
+        let t = j.timeline().unwrap();
+        assert_eq!(t.entries, 2);
+        assert_eq!(t.first_recorded_at, Some(first.recorded_at));
+        assert_eq!(t.last_recorded_at, Some(last.recorded_at));
+
+        let s = j.storage_usage().unwrap();
+        assert!(s.db_bytes > 0, "SQLite file must count: {s:?}");
+        assert_eq!(s.blobs_bytes, 0, "no media captured yet: {s:?}");
     }
 
     #[test]

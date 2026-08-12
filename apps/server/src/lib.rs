@@ -49,6 +49,8 @@ pub fn app(state: SharedState, web_dist: Option<PathBuf>) -> Router {
         .route("/trash", get(trash))
         .route("/search", get(search))
         .route("/status", get(status))
+        .route("/device-name", post(set_device_name))
+        .route("/net-config", post(set_net_config))
         .route("/downloads", get(downloads_list))
         .layer(middleware::from_fn_with_state(state.clone(), require_auth))
         .route("/auth/check", post(auth_check))
@@ -463,23 +465,37 @@ async fn search(State(state): State<SharedState>, Query(p): Query<SearchParams>)
 }
 
 async fn status(State(state): State<SharedState>) -> Response {
-    let journal = state.journal();
-    let run = || -> Result<serde_json::Value> {
-        Ok(json!({
-            "device_id": journal.device_id(),
-            "entries": journal.list()?.len(),
-            "trash": journal.trash()?.len(),
-            "heads": journal.store.heads()?,
-        }))
-    };
-    match run() {
-        Ok(mut v) => {
-            if let Ok(t) = state.node.ticket() {
-                v["ticket"] = t.into();
-            }
-            Json(v).into_response()
-        }
+    match state.node.status_json().await {
+        Ok(v) => Json(v).into_response(),
         Err(e) => internal(e),
+    }
+}
+
+#[derive(Deserialize)]
+struct DeviceNameBody {
+    device_id: String,
+    name: String,
+}
+
+async fn set_device_name(
+    State(state): State<SharedState>,
+    Json(body): Json<DeviceNameBody>,
+) -> Response {
+    match state.journal().set_device_name(&body.device_id, &body.name) {
+        Ok(_) => Json(json!({"ok": true})).into_response(),
+        Err(e) => err(StatusCode::BAD_REQUEST, &format!("{e:#}")),
+    }
+}
+
+/// Store the (per-device) network config. Applied on the next restart —
+/// the running endpoint keeps its current relays.
+async fn set_net_config(
+    State(state): State<SharedState>,
+    Json(cfg): Json<memorious_core::node::NetConfig>,
+) -> Response {
+    match state.journal().set_net_config(&cfg) {
+        Ok(()) => Json(json!({"ok": true, "applies": "on restart"})).into_response(),
+        Err(e) => err(StatusCode::BAD_REQUEST, &format!("{e:#}")),
     }
 }
 

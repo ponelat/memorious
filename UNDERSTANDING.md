@@ -49,6 +49,9 @@ Event kinds:
   Exactly one passcode is active: latest event wins; concurrent offline sets resolved by log
   ordering (timestamp, device-id tiebreak). No revoke — only replace.
 - **annotation** — transcription or OCR text referencing a media entry (see Enrichment).
+  An annotation may instead target a **device id** (`dev-…` prefix keeps the namespaces
+  apart): that is a device's editable friendly name, latest wins, synced like everything
+  else — device naming without a fifth event kind (2026-08-12).
 
 ## Sync (DIY, no iroh-docs)
 
@@ -66,13 +69,21 @@ an existing device; the ticket carries the journal's shared secret + peer addres
 of the secret *is* identity. No accounts, no users table, anywhere.
 
 **Relays:** config carries a relay list — n0's public relays **plus** a self-hosted iroh-relay
-on our server (small Rust binary, needs domain + TLS) as fallback.
+on our server (small Rust binary, needs domain + TLS) as fallback. Each device stores its own
+network config in journal meta (2026-08-12): relay mode (n0 default / custom list / disabled)
+and whether the peer publishes to the public address lookup (DNS/pkarr). Local, never syncs,
+applied when the peer's endpoint spawns — i.e. on restart.
 
 **iOS reality:** foreground sync only (on open / while active). No background-sync heroics in v1.
 
 **Sync status UX:** every app has a status screen listing each known peer, last successful
 sync, and whether it's missing anything we hold — plus a badge when this device has undelivered
 local entries. Honest caveat: a peer's status is only as fresh as our last contact with it.
+Peers also carry (2026-08-12): the device id ↔ endpoint id mapping and friendly name, how the
+pair first met (who dialed whom), and — while the endpoint still holds a live path — the
+transport in use (direct LAN / direct internet / public relay). The status screen additionally
+shows journal stats (entry count, first→latest entry dates, disk usage of database and media
+store) and the network config knobs above.
 
 ## Browser auth
 

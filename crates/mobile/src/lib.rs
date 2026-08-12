@@ -61,17 +61,25 @@ fn spawn_node(journal: Journal) -> Result<Arc<Node>> {
     Ok(Arc::new(rt().block_on(Node::spawn(journal))?))
 }
 
+/// This face only ships on the iPhone today; revisit when an iPad/Android
+/// build exists.
+const DEFAULT_DEVICE_NAME: &str = "iPhone";
+
 /// The app keeps the master password in the iOS Keychain and passes it on
 /// every open — the engine re-derives keys each time (a few hundred ms).
 #[uniffi::export]
 pub fn open_journal(dir: String, password: String) -> Result<Arc<MobileJournal>> {
-    let node = spawn_node(Journal::open(&PathBuf::from(dir), &password)?)?;
+    let journal = Journal::open(&PathBuf::from(dir), &password)?;
+    journal.ensure_device_name(DEFAULT_DEVICE_NAME)?;
+    let node = spawn_node(journal)?;
     Ok(Arc::new(MobileJournal { node }))
 }
 
 #[uniffi::export]
 pub fn init_fresh(dir: String, password: String) -> Result<Arc<MobileJournal>> {
-    let node = spawn_node(Journal::init(&PathBuf::from(dir), &password)?)?;
+    let journal = Journal::init(&PathBuf::from(dir), &password)?;
+    journal.ensure_device_name(DEFAULT_DEVICE_NAME)?;
+    let node = spawn_node(journal)?;
     Ok(Arc::new(MobileJournal { node }))
 }
 
@@ -82,6 +90,7 @@ pub fn init_fresh(dir: String, password: String) -> Result<Arc<MobileJournal>> {
 pub fn join_ticket(dir: String, ticket: String, password: String) -> Result<Arc<MobileJournal>> {
     let (node, _report) =
         rt().block_on(Node::pair_from_ticket(&PathBuf::from(dir), &ticket, &password))?;
+    node.journal().ensure_device_name(DEFAULT_DEVICE_NAME)?;
     node.journal()
         .store
         .meta_set(LAST_PEER_TICKET, ticket.trim().as_bytes())
@@ -180,18 +189,26 @@ impl MobileJournal {
         Ok(json!({"entries": out}).to_string())
     }
 
+    /// The shared status shape (device, stats, names, peers, net config) —
+    /// same JSON the HTTP API and Tauri commands return.
     pub fn status_json(&self) -> Result<String> {
-        let journal = self.node.journal();
-        let mut v = json!({
-            "device_id": journal.device_id(),
-            "entries": journal.list().map_err(JournalError::from)?.len(),
-            "trash": journal.trash().map_err(JournalError::from)?.len(),
-            "heads": journal.store.heads().map_err(JournalError::from)?,
-        });
-        if let Ok(t) = self.node.ticket() {
-            v["ticket"] = t.into();
-        }
-        Ok(v.to_string())
+        Ok(rt().block_on(self.node.status_json())?.to_string())
+    }
+
+    /// Name a device (this one or any peer). Editable; latest wins everywhere.
+    pub fn set_device_name(&self, device_id: String, name: String) -> Result<()> {
+        self.node.journal().set_device_name(&device_id, &name)?;
+        Ok(())
+    }
+
+    /// Store the network config from its JSON form. Applied on next launch.
+    pub fn set_net_config(&self, json: String) -> Result<()> {
+        let cfg: memorious_core::node::NetConfig =
+            serde_json::from_str(&json).map_err(|e| JournalError::Failure {
+                msg: format!("bad net config: {e}"),
+            })?;
+        self.node.journal().set_net_config(&cfg)?;
+        Ok(())
     }
 
     /// Traffic-light replication state: {"color","pending","stalest_ms","peers"}.
@@ -271,9 +288,28 @@ mod tests {
         let feed2: serde_json::Value = serde_json::from_str(&j2.feed(None, 50).unwrap()).unwrap();
         assert_eq!(feed2["entries"], feed["entries"]);
         // and sync_now uses the remembered ticket
+        // (2 sent: the "reply" capture plus this device's default-name
+        // annotation — names are events and sync like everything else)
         j2.capture_text("reply".into()).unwrap();
         let report: serde_json::Value =
             serde_json::from_str(&j2.sync_now(None).unwrap()).unwrap();
-        assert_eq!(report["sent"], 1);
+        assert_eq!(report["sent"], 2);
+
+        // Status carries the sync-page surface; the default name is set and
+        // editable over the FFI.
+        let status: serde_json::Value =
+            serde_json::from_str(&j2.status_json().unwrap()).unwrap();
+        let me = status["device_id"].as_str().unwrap().to_string();
+        assert_eq!(status["names"][&me], "iPhone");
+        assert!(status["storage"]["db_bytes"].as_u64().unwrap() > 0);
+        assert_eq!(status["peers"][0]["origin"], "dialed");
+        j2.set_device_name(me.clone(), "Josh's phone".into()).unwrap();
+        let status: serde_json::Value =
+            serde_json::from_str(&j2.status_json().unwrap()).unwrap();
+        assert_eq!(status["names"][&me], "Josh's phone");
+        assert_eq!(status["net"]["relay_mode"], "default");
+        j2.set_net_config(r#"{"relay_mode":"disabled","relay_urls":[],"public_lookup":false}"#.into())
+            .unwrap();
+        assert!(j2.set_net_config("not json".into()).is_err());
     }
 }

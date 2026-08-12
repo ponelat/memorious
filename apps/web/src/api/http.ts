@@ -1,4 +1,4 @@
-import type { Entry, FeedPage, JournalApi, MediaRef, Status } from './types'
+import type { Entry, FeedPage, JournalApi, MediaRef, NetConfig, Status } from './types'
 
 const TOKEN_KEY = 'memorious.passcode'
 
@@ -102,6 +102,22 @@ export const httpApi: JournalApi = {
 
   status() {
     return json<Status>('/api/status')
+  },
+
+  async setDeviceName(deviceId: string, name: string) {
+    await request('/api/device-name', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ device_id: deviceId, name }),
+    })
+  },
+
+  async setNetConfig(net: NetConfig) {
+    await request('/api/net-config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(net),
+    })
   },
 
   async downloads() {

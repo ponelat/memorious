@@ -244,6 +244,85 @@ async fn pairing_defers_media_to_background_sync() {
 }
 
 #[tokio::test]
+async fn peers_learn_device_ids_names_and_origin() {
+    let dir = tempdir().unwrap();
+    let ja = Journal::init(&dir.path().join("a"), "pw").unwrap();
+    let jb = Journal::init_with_secret(&dir.path().join("b"), *ja.secret(), "pw").unwrap();
+    ja.ensure_device_name("web").unwrap();
+    jb.ensure_device_name("iPhone").unwrap();
+    let a = Node::spawn(ja).await.unwrap();
+    let b = Node::spawn(jb).await.unwrap();
+    a.journal().capture_text("an entry so the timeline has a span").unwrap();
+
+    b.sync_with(&a.addr()).await.unwrap();
+
+    // Each side knows the other's device id; origin says who dialed whom.
+    let a_peers = a.peers().await.unwrap();
+    let b_peers = b.peers().await.unwrap();
+    assert_eq!(a_peers.len(), 1);
+    assert_eq!(b_peers.len(), 1);
+    assert_eq!(a_peers[0].device_id.as_deref(), Some(b.journal().device_id()));
+    assert_eq!(b_peers[0].device_id.as_deref(), Some(a.journal().device_id()));
+    assert_eq!(a_peers[0].origin.as_deref(), Some("inbound"));
+    assert_eq!(b_peers[0].origin.as_deref(), Some("dialed"));
+    assert!(a_peers[0].last_ok_ms > 0);
+    assert_eq!(a_peers[0].endpoint_id, b.endpoint().id().to_string());
+
+    // Right after a loopback sync the transport is a direct LAN path.
+    let conn = b_peers[0].conn.as_ref().expect("fresh contact has a live path");
+    assert_eq!(conn.transport, "direct");
+    assert!(conn.lan, "loopback must classify as LAN: {conn:?}");
+
+    // Names went along with the event log (they are annotation events).
+    let names = b.journal().device_names().unwrap();
+    assert_eq!(names.get(a.journal().device_id()).map(String::as_str), Some("web"));
+    assert_eq!(names.get(b.journal().device_id()).map(String::as_str), Some("iPhone"));
+
+    // The shared status JSON carries everything the status screens need.
+    let v = a.status_json().await.unwrap();
+    assert_eq!(v["device_id"], a.journal().device_id());
+    assert!(v["storage"]["db_bytes"].as_u64().unwrap() > 0);
+    assert!(v["timeline"]["first_recorded_at"].is_i64());
+    assert!(v["timeline"]["last_recorded_at"].is_i64());
+    assert_eq!(v["names"][b.journal().device_id()], "iPhone");
+    assert_eq!(v["peers"][0]["device_id"], b.journal().device_id());
+    assert_eq!(v["health"]["color"], "green");
+    assert_eq!(v["net"]["relay_mode"], "default");
+
+    a.shutdown().await;
+    b.shutdown().await;
+}
+
+#[tokio::test]
+async fn relays_disabled_peers_still_sync_on_lan() {
+    let dir = tempdir().unwrap();
+    let ja = Journal::init(&dir.path().join("a"), "pw").unwrap();
+    let jb = Journal::init_with_secret(&dir.path().join("b"), *ja.secret(), "pw").unwrap();
+
+    // LAN-only network config: no relays, no public address lookup.
+    let cfg = memorious_core::node::NetConfig {
+        relay_mode: "disabled".into(),
+        relay_urls: vec![],
+        public_lookup: false,
+    };
+    ja.set_net_config(&cfg).unwrap();
+    jb.set_net_config(&cfg).unwrap();
+    assert_eq!(ja.net_config(), cfg);
+
+    let a = Node::spawn(ja).await.unwrap();
+    let b = Node::spawn(jb).await.unwrap();
+    a.journal().capture_text("over the LAN only").unwrap();
+    b.sync_with(&a.addr()).await.unwrap();
+    assert_eq!(timeline_ids(a.journal()), timeline_ids(b.journal()));
+
+    // The ticket still works — it carries direct addresses.
+    assert!(a.ticket().unwrap().starts_with("memorious"));
+
+    a.shutdown().await;
+    b.shutdown().await;
+}
+
+#[tokio::test]
 async fn ticket_pairing_round_trip() {
     let dir = tempdir().unwrap();
     let ja = Journal::init(&dir.path().join("a"), "pw").unwrap();

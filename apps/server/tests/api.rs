@@ -78,6 +78,101 @@ async fn auth_gates_everything() {
 }
 
 #[tokio::test]
+async fn status_carries_stats_names_and_net_config() {
+    let (_d, state) = test_state().await;
+    state.node.journal().ensure_device_name("web").unwrap();
+    state.node.journal().capture_text("hello").unwrap();
+    let router = app(state.clone(), None);
+
+    let resp = router
+        .clone()
+        .oneshot(authed(Request::get("/api/status")).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let v = body_json(resp).await;
+    let me = state.node.journal().device_id();
+    assert_eq!(v["entries"], 1);
+    assert_eq!(v["names"][me], "web");
+    assert!(v["storage"]["db_bytes"].as_u64().unwrap() > 0);
+    assert!(v["timeline"]["first_recorded_at"].is_i64());
+    assert!(v["peers"].is_array());
+    assert_eq!(v["net"]["relay_mode"], "default");
+    assert_eq!(v["net"]["public_lookup"], true);
+
+    // Rename this device through the API; the new name shows up in status.
+    let resp = router
+        .clone()
+        .oneshot(
+            authed(Request::post("/api/device-name"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(format!(
+                    r#"{{"device_id":"{me}","name":"living room server"}}"#
+                )))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let resp = router
+        .clone()
+        .oneshot(authed(Request::get("/api/status")).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let v = body_json(resp).await;
+    assert_eq!(v["names"][me], "living room server");
+
+    // Bad names are refused.
+    let resp = router
+        .clone()
+        .oneshot(
+            authed(Request::post("/api/device-name"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(format!(r#"{{"device_id":"{me}","name":"  "}}"#)))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+    // Net config: reject garbage, accept a real one, see it in status.
+    let resp = router
+        .clone()
+        .oneshot(
+            authed(Request::post("/api/net-config"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    r#"{"relay_mode":"custom","relay_urls":[],"public_lookup":true}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let resp = router
+        .clone()
+        .oneshot(
+            authed(Request::post("/api/net-config"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    r#"{"relay_mode":"disabled","relay_urls":[],"public_lookup":false}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let resp = router
+        .clone()
+        .oneshot(authed(Request::get("/api/status")).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let v = body_json(resp).await;
+    assert_eq!(v["net"]["relay_mode"], "disabled");
+    assert_eq!(v["net"]["public_lookup"], false);
+}
+
+#[tokio::test]
 async fn capture_all_three_types_and_read_back() {
     let (_d, state) = test_state().await;
     let router = app(state.clone(), None);

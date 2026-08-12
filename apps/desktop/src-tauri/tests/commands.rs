@@ -133,9 +133,11 @@ async fn desktop_command_layer_end_to_end() {
     let ticket = peer.ticket().unwrap();
 
     // Desktop dials out via the sync_now command; both sides converge.
+    // (sent = 3 captures + this device's default-name annotation, which is
+    // an event and syncs like everything else)
     let report = invoke(&webview, "sync_now", json!({"ticket": ticket})).await.unwrap();
     assert_eq!(report["received"], 1);
-    assert_eq!(report["sent"], 3);
+    assert_eq!(report["sent"], 4);
     let feed = invoke(&webview, "feed", json!({})).await.unwrap();
     assert_eq!(feed["entries"].as_array().unwrap().len(), 4);
     assert_eq!(peer.journal().list().unwrap().len(), 4);
@@ -191,9 +193,48 @@ async fn desktop_command_layer_end_to_end() {
     let hits = invoke(&webview, "search", json!({"q": "desktop"})).await.unwrap();
     assert_eq!(hits["entries"].as_array().unwrap().len(), 1);
 
-    // Status carries a ticket other devices can join from.
+    // Status carries a ticket other devices can join from, plus the sync-page
+    // surface: names (this device got its platform default), peers, stats.
     let status = invoke(&webview, "status", json!({})).await.unwrap();
     assert!(status["ticket"].as_str().unwrap().starts_with("memorious"));
+    let me = status["device_id"].as_str().unwrap().to_string();
+    assert!(
+        status["names"][&me].as_str().unwrap().starts_with("desktop ("),
+        "expected a platform default name, got {}",
+        status["names"][&me]
+    );
+    assert!(status["storage"]["db_bytes"].as_u64().unwrap() > 0);
+    assert!(status["timeline"]["first_recorded_at"].is_i64());
+    let peers = status["peers"].as_array().unwrap();
+    assert!(peers.iter().any(|p| p["device_id"] == peer.journal().device_id()));
+    assert_eq!(status["net"]["relay_mode"], "default");
+
+    // Rename any device over IPC; net config round-trips (applies on relaunch).
+    invoke(
+        &webview,
+        "set_device_name",
+        json!({"deviceId": me, "name": "the workhorse"}),
+    )
+    .await
+    .unwrap();
+    let status = invoke(&webview, "status", json!({})).await.unwrap();
+    assert_eq!(status["names"][&me], "the workhorse");
+    invoke(
+        &webview,
+        "set_net_config",
+        json!({"net": {"relay_mode": "disabled", "relay_urls": [], "public_lookup": false}}),
+    )
+    .await
+    .unwrap();
+    let status = invoke(&webview, "status", json!({})).await.unwrap();
+    assert_eq!(status["net"]["relay_mode"], "disabled");
+    assert!(invoke(
+        &webview,
+        "set_net_config",
+        json!({"net": {"relay_mode": "custom", "relay_urls": [], "public_lookup": true}}),
+    )
+    .await
+    .is_err());
 
     peer.shutdown().await;
     cli_peer.shutdown().await;

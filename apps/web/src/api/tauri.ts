@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core'
-import type { Entry, FeedPage, JournalApi, MediaRef, Status, SyncReport } from './types'
+import type { Entry, FeedPage, JournalApi, MediaRef, NetConfig, Status, SyncReport } from './types'
 
 async function blobToBytes(blob: Blob): Promise<number[]> {
   return Array.from(new Uint8Array(await blob.arrayBuffer()))
@@ -51,6 +51,14 @@ export const tauriApi: JournalApi = {
 
   status() {
     return invoke<Status>('status')
+  },
+
+  async setDeviceName(deviceId: string, name: string) {
+    await invoke('set_device_name', { deviceId, name })
+  },
+
+  async setNetConfig(net: NetConfig) {
+    await invoke('set_net_config', { net })
   },
 
   setup: {

@@ -1,5 +1,35 @@
 # LOG
 
+## 2026-08-12 (sync page: peers, names, stats, net config)
+- **Device names**: an annotation event may now target a *device id* instead of an event
+  id (`dev-` prefix separates the namespaces) — that annotation is the device's friendly
+  name. Editable from any device, latest wins, syncs as ordinary events; no fifth event
+  kind. Each face writes a platform default on first run ("web", "desktop (macOS)",
+  "iPhone"); the CLI deliberately doesn't. UNDERSTANDING.md amended.
+- **Peer registry**: `Hello`/`HelloAck` gained an optional `device` field (serde-default,
+  old frames still decode), so each side maps the peer's endpoint id → journal device id.
+  `record_sync_contact` also stores a set-once origin ("dialed"/"inbound"). `Node::peers()`
+  reports device id, name, last contact, origin, and — via `Endpoint::remote_info` — the
+  transport in use right now (relay url, or socket addr classified LAN/internet by
+  private-range check). Honest limitation: transport is only known while the endpoint
+  still holds a path; between contacts it's `None`.
+- **Stats**: `Journal::timeline()` (entry count, first/latest recorded_at) and
+  `Journal::storage_usage()` (db.sqlite + sidecars, blobs dir walk).
+- **Net config**: per-device `net_config` in journal meta — relay mode (default n0 /
+  custom urls / disabled) and public address lookup (DNS/pkarr) on/off. Applied at
+  `Node::spawn` by building the endpoint from `presets::Minimal` + the chosen pieces
+  (was hardwired `presets::N0`); changes take effect on restart. Validation at set time
+  (urls must parse, custom needs ≥1).
+- **One status shape**: `Node::status_json()` feeds the HTTP `/api/status`, the Tauri
+  `status` command, and the FFI `status_json` — plus new mutators everywhere
+  (`/api/device-name`, `/api/net-config`; `set_device_name`/`set_net_config` commands and
+  FFI). Web sync page reworked: SVG peer map (transport-colored edges, arrows showing who
+  dials whom, relay drawn as a waypoint, animated when live), device list with inline
+  rename, journal/storage lines, network settings form.
+- Boring choices: names capped at 64 chars; `annotations()` consumers are unaffected
+  (feed/export/sweeper key by event id, device ids never match); sync-report `sent`
+  counts in two tests bumped — a first-run name annotation is an event like any other.
+
 ## 2026-08-12 (video everywhere; paste-to-capture)
 - The Video media kind (introduced with the mobile bindings) now reaches every face:
   server route `POST /api/capture/video` (mp4-family passes through; webm transcoded to
