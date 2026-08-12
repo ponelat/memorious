@@ -50,6 +50,9 @@ fn entry_line(e: &Event, annotation: Option<&str>) -> String {
         Payload::Audio { hash, .. } => {
             format!("- {time} [audio](../../media/{hash}.m4a)")
         }
+        Payload::Video { hash, .. } => {
+            format!("- {time} [video](../../media/{hash}.mp4)")
+        }
         other => format!("- {time} {other:?}"),
     };
     if let Some(text) = annotation {
@@ -104,6 +107,7 @@ pub async fn export_markdown(node: &Node, out: &Path) -> Result<ExportReport> {
         let (hash, ext) = match &e.payload {
             Payload::Photo { hash, .. } => (hash, "jpg"),
             Payload::Audio { hash, .. } => (hash, "m4a"),
+            Payload::Video { hash, .. } => (hash, "mp4"),
             _ => continue,
         };
         let path = out.join(format!("media/{hash}.{ext}"));

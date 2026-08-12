@@ -116,6 +116,18 @@ impl MobileJournal {
         Ok(entry_json(&e).to_string())
     }
 
+    /// H.264/AAC MP4 — the canonical video format; anything else is refused.
+    /// (The app exports camera footage to MP4 before handing it over.)
+    pub fn capture_video(&self, bytes: Vec<u8>) -> Result<String> {
+        if !memorious_core::media::is_mp4_family(&bytes) {
+            return Err(JournalError::Failure {
+                msg: "video must be an mp4 recording".into(),
+            });
+        }
+        let e = rt().block_on(self.node.capture_blob(MediaKind::Video, bytes))?;
+        Ok(entry_json(&e).to_string())
+    }
+
     pub fn feed(&self, before: Option<i64>, limit: u32) -> Result<String> {
         let annotations = self.node.journal().annotations().map_err(JournalError::from)?;
         let mut entries = self.node.journal().list().map_err(JournalError::from)?;

@@ -10,12 +10,14 @@ pub enum EventKind {
     Annotation,
 }
 
-/// The two media types. One stored format each: JPEG photos, AAC/m4a audio.
+/// The media types. One stored format each: JPEG photos, AAC/m4a audio,
+/// H.264/AAC MP4 video.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MediaKind {
     Photo,
     Audio,
+    Video,
 }
 
 /// Per-blob encryption envelope carried inside a media capture payload: the
@@ -47,6 +49,12 @@ pub enum Payload {
         crypto: Option<BlobCrypto>,
     },
     Audio {
+        hash: String,
+        size: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        crypto: Option<BlobCrypto>,
+    },
+    Video {
         hash: String,
         size: u64,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -86,13 +94,16 @@ impl Payload {
         match kind {
             MediaKind::Photo => Payload::Photo { hash, size, crypto },
             MediaKind::Audio => Payload::Audio { hash, size, crypto },
+            MediaKind::Video => Payload::Video { hash, size, crypto },
         }
     }
 
     /// The encryption envelope of a media payload, if any.
     pub fn blob_crypto(&self) -> Option<&BlobCrypto> {
         match self {
-            Payload::Photo { crypto, .. } | Payload::Audio { crypto, .. } => crypto.as_ref(),
+            Payload::Photo { crypto, .. }
+            | Payload::Audio { crypto, .. }
+            | Payload::Video { crypto, .. } => crypto.as_ref(),
             _ => None,
         }
     }
@@ -102,7 +113,9 @@ impl Event {
     /// Blob hash referenced by this event's payload, if any.
     pub fn blob_hash(&self) -> Option<&str> {
         match &self.payload {
-            Payload::Photo { hash, .. } | Payload::Audio { hash, .. } => Some(hash),
+            Payload::Photo { hash, .. }
+            | Payload::Audio { hash, .. }
+            | Payload::Video { hash, .. } => Some(hash),
             _ => None,
         }
     }

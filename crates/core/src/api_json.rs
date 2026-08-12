@@ -46,6 +46,13 @@ pub fn entry_json(e: &Event) -> serde_json::Value {
                 json!({"hash": hash, "size": size, "url": format!("/api/media/{hash}")}),
             );
         }
+        Payload::Video { hash, size, .. } => {
+            obj.insert("kind".into(), "video".into());
+            obj.insert(
+                "media".into(),
+                json!({"hash": hash, "size": size, "url": format!("/api/media/{hash}")}),
+            );
+        }
         other => {
             obj.insert("kind".into(), "other".into());
             obj.insert("detail".into(), format!("{other:?}").into());

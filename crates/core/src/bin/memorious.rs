@@ -281,6 +281,7 @@ fn format_entry(e: &memorious_core::Event) -> String {
         Payload::Text { text } => text.replace('\n', " ⏎ "),
         Payload::Photo { hash, size, .. } => format!("[photo {} {}B]", &hash[..8.min(hash.len())], size),
         Payload::Audio { hash, size, .. } => format!("[audio {} {}B]", &hash[..8.min(hash.len())], size),
+        Payload::Video { hash, size, .. } => format!("[video {} {}B]", &hash[..8.min(hash.len())], size),
         other => format!("{other:?}"),
     };
     format!("{ts}  {}  {body}", e.event_id)

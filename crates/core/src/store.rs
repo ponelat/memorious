@@ -267,7 +267,10 @@ impl Store {
         let mut out = Vec::new();
         for row in rows {
             let payload: Payload = serde_json::from_str(&row?)?;
-            if let Payload::Photo { hash, .. } | Payload::Audio { hash, .. } = payload {
+            if let Payload::Photo { hash, .. }
+            | Payload::Audio { hash, .. }
+            | Payload::Video { hash, .. } = payload
+            {
                 out.push(hash);
             }
         }
@@ -283,7 +286,10 @@ impl Store {
         let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
         for row in rows {
             let payload: Payload = serde_json::from_str(&row?)?;
-            if let Payload::Photo { hash: h, .. } | Payload::Audio { hash: h, .. } = &payload {
+            if let Payload::Photo { hash: h, .. }
+            | Payload::Audio { hash: h, .. }
+            | Payload::Video { hash: h, .. } = &payload
+            {
                 if h == hash {
                     return Ok(Some(payload));
                 }

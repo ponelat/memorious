@@ -136,6 +136,32 @@ async fn interrupted_sync_converges_on_retry() {
 }
 
 #[tokio::test]
+async fn video_capture_round_trips() {
+    let dir = tempdir().unwrap();
+    let ja = Journal::init(&dir.path().join("a"), "pw").unwrap();
+    let jb = Journal::init_with_secret(&dir.path().join("b"), *ja.secret(), "pw").unwrap();
+    let a = Node::spawn(ja).await.unwrap();
+    let b = Node::spawn(jb).await.unwrap();
+
+    let bytes = b"definitely an mp4".to_vec();
+    let ev = a
+        .capture_blob(memorious_core::event::MediaKind::Video, bytes.clone())
+        .await
+        .unwrap();
+    let json = memorious_core::api_json::entry_json(&ev);
+    assert_eq!(json["kind"], "video");
+    assert!(json["media"]["hash"].is_string());
+
+    b.sync_with(&a.addr()).await.unwrap();
+    assert_eq!(timeline_ids(a.journal()), timeline_ids(b.journal()));
+    let got = b.blob_bytes(ev.blob_hash().unwrap()).await.unwrap();
+    assert_eq!(got, bytes);
+
+    a.shutdown().await;
+    b.shutdown().await;
+}
+
+#[tokio::test]
 async fn pairing_defers_media_to_background_sync() {
     let dir = tempdir().unwrap();
     let ja = Journal::init(&dir.path().join("a"), "pw").unwrap();
