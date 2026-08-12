@@ -14,7 +14,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use memorious_core::api_json::entry_json;
 use memorious_core::event::{EventKind, MediaKind, Payload};
-use memorious_core::media::{normalize_photo, sniff_audio, AudioContainer};
+use memorious_core::media::{is_mp4_family, normalize_photo, sniff_audio, AudioContainer};
 use memorious_core::Node;
 use serde::{Deserialize, Serialize};
 
@@ -42,6 +42,7 @@ pub fn app(state: SharedState, web_dist: Option<PathBuf>) -> Router {
         .route("/capture/text", post(capture_text))
         .route("/capture/photo", post(capture_photo))
         .route("/capture/audio", post(capture_audio))
+        .route("/capture/video", post(capture_video))
         .route("/feed", get(feed))
         .route("/media/{hash}", get(media))
         .route("/redact", post(redact))
@@ -204,6 +205,31 @@ async fn capture_audio(State(state): State<SharedState>, multipart: Multipart) -
     }
 }
 
+async fn capture_video(State(state): State<SharedState>, multipart: Multipart) -> Response {
+    let bytes = match read_upload(multipart).await {
+        Ok(b) => b,
+        Err(e) => return err(StatusCode::BAD_REQUEST, &format!("{e:#}")),
+    };
+    // Canonical video is H.264/AAC MP4. Browsers paste/drag mp4-family files
+    // (mp4/mov) straight through; webm screen-recordings get transcoded.
+    let mp4 = if is_mp4_family(&bytes) {
+        bytes
+    } else if bytes.starts_with(&[0x1A, 0x45, 0xDF, 0xA3]) {
+        match transcode_to_mp4_video(bytes).await {
+            Ok(b) => b,
+            Err(e) => return err(StatusCode::UNPROCESSABLE_ENTITY, &format!("transcode: {e:#}")),
+        }
+    } else {
+        return err(StatusCode::UNPROCESSABLE_ENTITY, "unrecognized video container");
+    };
+    // No enrichment engine for video: capture without the will-enrich flag so
+    // peers don't hold a grace period for an annotation that never comes.
+    match state.node.capture_blob(MediaKind::Video, mp4).await {
+        Ok(e) => Json(entry_json(&e)).into_response(),
+        Err(e) => internal(e),
+    }
+}
+
 /// A tempdir for plaintext media passing through subprocess pipelines
 /// (ffmpeg/whisper/tesseract): 0700, and every file is zero-overwritten
 /// before removal so plaintext doesn't linger on disk. Best-effort — the
@@ -262,6 +288,26 @@ async fn transcode_to_m4a(input: Vec<u8>) -> Result<Vec<u8>> {
         .args(["-y", "-i"])
         .arg(&in_path)
         .args(["-vn", "-c:a", "aac", "-b:a", "96k"])
+        .arg(&out_path)
+        .output()
+        .await
+        .context("run ffmpeg (is it installed?)")?;
+    if !output.status.success() {
+        anyhow::bail!("ffmpeg failed: {}", String::from_utf8_lossy(&output.stderr));
+    }
+    Ok(tokio::fs::read(&out_path).await?)
+}
+
+/// Same idea for video: webm (Chrome screen/tab recordings) → H.264/AAC MP4.
+async fn transcode_to_mp4_video(input: Vec<u8>) -> Result<Vec<u8>> {
+    let dir = ScrubDir::new()?;
+    let in_path = dir.path().join("in");
+    let out_path = dir.path().join("out.mp4");
+    tokio::fs::write(&in_path, &input).await?;
+    let output = tokio::process::Command::new("ffmpeg")
+        .args(["-y", "-i"])
+        .arg(&in_path)
+        .args(["-c:v", "libx264", "-preset", "fast", "-c:a", "aac", "-b:a", "96k", "-movflags", "+faststart"])
         .arg(&out_path)
         .output()
         .await
@@ -333,6 +379,7 @@ async fn media(State(state): State<SharedState>, UrlPath(hash): UrlPath<String>)
             let content_type = match kind {
                 MediaKind::Photo => "image/jpeg",
                 MediaKind::Audio => "audio/mp4",
+                MediaKind::Video => "video/mp4",
             };
             (
                 [
@@ -352,6 +399,7 @@ fn media_kind_for_hash(state: &AppState, hash: &str) -> Result<Option<MediaKind>
         match &e.payload {
             Payload::Photo { hash: h, .. } if h == hash => return Ok(Some(MediaKind::Photo)),
             Payload::Audio { hash: h, .. } if h == hash => return Ok(Some(MediaKind::Audio)),
+            Payload::Video { hash: h, .. } if h == hash => return Ok(Some(MediaKind::Video)),
             _ => {}
         }
     }

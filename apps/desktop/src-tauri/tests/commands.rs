@@ -94,9 +94,29 @@ async fn desktop_command_layer_end_to_end() {
     assert_eq!(photo["kind"], "photo");
     let hash = photo["media"]["hash"].as_str().unwrap().to_string();
 
-    // Feed shows both; media_bytes returns raw bytes.
+    // Video: mp4-family bytes pass through; anything else is refused.
+    let mut mp4 = vec![0u8, 0, 0, 24];
+    mp4.extend_from_slice(b"ftypisom");
+    mp4.extend_from_slice(&[7; 64]);
+    let video = invoke(
+        &webview,
+        "capture_media",
+        json!({"kind": "video", "bytes": mp4}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(video["kind"], "video");
+    assert!(invoke(
+        &webview,
+        "capture_media",
+        json!({"kind": "video", "bytes": b"not a video".to_vec()}),
+    )
+    .await
+    .is_err());
+
+    // Feed shows all three; media_bytes returns raw bytes.
     let feed = invoke(&webview, "feed", json!({})).await.unwrap();
-    assert_eq!(feed["entries"].as_array().unwrap().len(), 2);
+    assert_eq!(feed["entries"].as_array().unwrap().len(), 3);
     let media = invoke(&webview, "media_bytes", json!({"hash": hash})).await.unwrap();
     assert!(media["__raw_len"].as_u64().unwrap() > 100);
 
@@ -115,10 +135,10 @@ async fn desktop_command_layer_end_to_end() {
     // Desktop dials out via the sync_now command; both sides converge.
     let report = invoke(&webview, "sync_now", json!({"ticket": ticket})).await.unwrap();
     assert_eq!(report["received"], 1);
-    assert_eq!(report["sent"], 2);
+    assert_eq!(report["sent"], 3);
     let feed = invoke(&webview, "feed", json!({})).await.unwrap();
-    assert_eq!(feed["entries"].as_array().unwrap().len(), 3);
-    assert_eq!(peer.journal().list().unwrap().len(), 3);
+    assert_eq!(feed["entries"].as_array().unwrap().len(), 4);
+    assert_eq!(peer.journal().list().unwrap().len(), 4);
 
     // Third peer (the "CLI peer"): joins from the first peer's ticket, captures,
     // then the desktop syncs with it — all three converge.
@@ -147,7 +167,7 @@ async fn desktop_command_layer_end_to_end() {
     };
     assert_eq!(desktop_ids, ids(peer.journal()));
     assert_eq!(desktop_ids, ids(cli_peer.journal()));
-    assert_eq!(desktop_ids.len(), 4);
+    assert_eq!(desktop_ids.len(), 5);
 
     // Wrong-journal ticket is refused.
     let stranger = Node::spawn(Journal::init(&dir.path().join("stranger"), "pw").unwrap())

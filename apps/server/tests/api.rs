@@ -166,6 +166,60 @@ async fn capture_all_three_types_and_read_back() {
 }
 
 #[tokio::test]
+async fn capture_video_mp4_roundtrip() {
+    let (_d, state) = test_state().await;
+    let router = app(state, None);
+
+    // An mp4-shaped container passes straight through.
+    let mut mp4 = vec![0, 0, 0, 24];
+    mp4.extend_from_slice(b"ftypisom");
+    mp4.extend_from_slice(&[7; 64]);
+    let (ct, body) = multipart_body(&mp4);
+    let resp = router
+        .clone()
+        .oneshot(
+            authed(Request::post("/api/capture/video"))
+                .header(header::CONTENT_TYPE, ct)
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let entry = body_json(resp).await;
+    assert_eq!(entry["kind"], "video");
+
+    // Media fetch serves it back as video/mp4, bytes intact.
+    let url = entry["media"]["url"].as_str().unwrap().to_string();
+    let resp = router
+        .clone()
+        .oneshot(authed(Request::get(&url)).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(
+        resp.headers().get(header::CONTENT_TYPE).unwrap(),
+        "video/mp4"
+    );
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    assert!(memorious_core::media::is_mp4_family(&bytes));
+
+    // Garbage is refused.
+    let (ct, body) = multipart_body(b"definitely not a video");
+    let resp = router
+        .clone()
+        .oneshot(
+            authed(Request::post("/api/capture/video"))
+                .header(header::CONTENT_TYPE, ct)
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+}
+
+#[tokio::test]
 async fn audio_transcodes_webm_when_ffmpeg_available() {
     if std::process::Command::new("ffmpeg")
         .arg("-version")

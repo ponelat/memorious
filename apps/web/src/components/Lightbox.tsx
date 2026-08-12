@@ -28,7 +28,12 @@ export function Lightbox({
   return (
     <div className="lightbox" onClick={onClose}>
       <div className="lightbox-inner" onClick={(e) => e.stopPropagation()}>
-        {url && <img src={url} alt="" />}
+        {url &&
+          (entry.kind === 'video' ? (
+            <video src={url} controls autoPlay playsInline />
+          ) : (
+            <img src={url} alt="" />
+          ))}
         <div className="lightbox-bar">
           {entries.length > 1 && (
             <span>

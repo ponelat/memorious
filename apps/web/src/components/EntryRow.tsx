@@ -29,6 +29,7 @@ export function EntryRow({
   onOpenPhoto?: () => void
 }) {
   if (entry.kind === 'photo') return <PhotoSingle entry={entry} onOpen={onOpenPhoto} />
+  if (entry.kind === 'video') return <VideoSingle entry={entry} onOpen={onOpenPhoto} />
   if (entry.kind === 'audio') return <AudioRow entry={entry} onRedact={onRedact} />
   return (
     <div className="entry text">
@@ -51,6 +52,26 @@ function PhotoSingle({ entry, onOpen }: { entry: Entry; onOpen?: () => void }) {
       <span className="time">{timeOf(entry.recorded_at)}</span>
       <button className="polaroid" onClick={onOpen}>
         {url ? <img src={url} alt="" loading="lazy" /> : <span className="ph" />}
+      </button>
+      {entry.annotation && <p className="annotation">{entry.annotation}</p>}
+    </div>
+  )
+}
+
+function VideoSingle({ entry, onOpen }: { entry: Entry; onOpen?: () => void }) {
+  const url = useMediaUrl(entry)
+  return (
+    <div className="entry photo">
+      <span className="time">{timeOf(entry.recorded_at)}</span>
+      <button className="polaroid video" onClick={onOpen}>
+        {url ? (
+          <>
+            <video src={url} muted playsInline preload="metadata" />
+            <span className="play-badge">▶</span>
+          </>
+        ) : (
+          <span className="ph" />
+        )}
       </button>
       {entry.annotation && <p className="annotation">{entry.annotation}</p>}
     </div>

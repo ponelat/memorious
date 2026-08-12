@@ -24,6 +24,10 @@ export const tauriApi: JournalApi = {
     return invoke<Entry>('capture_media', { kind: 'audio', bytes: await blobToBytes(file) })
   },
 
+  async captureVideo(file: Blob) {
+    return invoke<Entry>('capture_media', { kind: 'video', bytes: await blobToBytes(file) })
+  },
+
   feed(before?: number) {
     return invoke<FeedPage>('feed', { before })
   },

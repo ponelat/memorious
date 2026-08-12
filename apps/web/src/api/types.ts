@@ -1,4 +1,4 @@
-export type EntryKind = 'text' | 'photo' | 'audio' | 'other'
+export type EntryKind = 'text' | 'photo' | 'audio' | 'video' | 'other'
 
 export interface MediaRef {
   hash: string
@@ -57,6 +57,7 @@ export interface JournalApi {
   captureText(text: string): Promise<Entry>
   capturePhoto(file: Blob): Promise<Entry>
   captureAudio(file: Blob): Promise<Entry>
+  captureVideo(file: Blob): Promise<Entry>
   feed(before?: number): Promise<FeedPage>
   mediaBlob(media: MediaRef): Promise<Blob>
   redact(eventId: string): Promise<void>

@@ -192,6 +192,12 @@ async fn capture_media<R: tauri::Runtime>(
             }
             (MediaKind::Audio, bytes)
         }
+        "video" => {
+            if !memorious_core::media::is_mp4_family(&bytes) {
+                return Err("video must be an mp4 recording".into());
+            }
+            (MediaKind::Video, bytes)
+        }
         other => return Err(format!("unknown media kind {other}")),
     };
     let e = n.capture_blob(kind, bytes).await.map_err(estr)?;
