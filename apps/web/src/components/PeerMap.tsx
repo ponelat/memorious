@@ -70,12 +70,12 @@ export function PeerMap({ self, selfSub, peers }: { self: string; selfSub: strin
         // Arrow points the way the connection is opened; no arrow when we
         // don't know (contact predates origin tracking).
         const markerProps =
-          p.peer.origin === 'dialed' ? { markerEnd: 'url(#pm-arrow)' } :
-          p.peer.origin === 'inbound' ? { markerStart: 'url(#pm-arrow)' } : {}
+          p.peer.discovery === 'ticket' ? { markerEnd: 'url(#pm-arrow)' } :
+          p.peer.discovery === 'inbound' ? { markerStart: 'url(#pm-arrow)' } : {}
         const label =
-          kind === 'lan' ? 'LAN' :
-          kind === 'internet' ? 'internet' :
-          kind === 'relay' ? 'public relay' :
+          kind === 'lan' ? 'LAN · p2p' :
+          kind === 'internet' ? 'internet · p2p' :
+          kind === 'relay' ? 'public relay · proxied' :
           `last sync ${agoLabel(p.peer.last_ok_ms)}`
         if (kind === 'relay') {
           const d = `M ${x1} ${y1} Q ${relayCx} ${relayCy + 8} ${x2} ${y2}`

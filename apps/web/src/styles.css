@@ -640,6 +640,9 @@ h2 {
 .devices .device-meta {
   margin-left: auto;
   text-align: right;
+  display: flex;
+  flex-direction: column;
+  gap: 0.05rem;
 }
 
 .device-name .rename {

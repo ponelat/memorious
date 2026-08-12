@@ -256,22 +256,25 @@ async fn peers_learn_device_ids_names_and_origin() {
 
     b.sync_with(&a.addr()).await.unwrap();
 
-    // Each side knows the other's device id; origin says who dialed whom.
+    // Each side knows the other's device id, and how the peer was discovered:
+    // B redeemed a ticket for A; A learned B when it connected in.
     let a_peers = a.peers().await.unwrap();
     let b_peers = b.peers().await.unwrap();
     assert_eq!(a_peers.len(), 1);
     assert_eq!(b_peers.len(), 1);
     assert_eq!(a_peers[0].device_id.as_deref(), Some(b.journal().device_id()));
     assert_eq!(b_peers[0].device_id.as_deref(), Some(a.journal().device_id()));
-    assert_eq!(a_peers[0].origin.as_deref(), Some("inbound"));
-    assert_eq!(b_peers[0].origin.as_deref(), Some("dialed"));
+    assert_eq!(a_peers[0].discovery.as_deref(), Some("inbound"));
+    assert_eq!(b_peers[0].discovery.as_deref(), Some("ticket"));
     assert!(a_peers[0].last_ok_ms > 0);
     assert_eq!(a_peers[0].endpoint_id, b.endpoint().id().to_string());
 
-    // Right after a loopback sync the transport is a direct LAN path.
+    // Right after a loopback sync the transport is a direct LAN path with no
+    // proxy (relay) in the data chain.
     let conn = b_peers[0].conn.as_ref().expect("fresh contact has a live path");
     assert_eq!(conn.transport, "direct");
     assert!(conn.lan, "loopback must classify as LAN: {conn:?}");
+    assert!(!conn.proxied, "direct path must report no proxy: {conn:?}");
 
     // Names went along with the event log (they are annotation events).
     let names = b.journal().device_names().unwrap();

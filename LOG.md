@@ -8,11 +8,13 @@
   "iPhone"); the CLI deliberately doesn't. UNDERSTANDING.md amended.
 - **Peer registry**: `Hello`/`HelloAck` gained an optional `device` field (serde-default,
   old frames still decode), so each side maps the peer's endpoint id → journal device id.
-  `record_sync_contact` also stores a set-once origin ("dialed"/"inbound"). `Node::peers()`
-  reports device id, name, last contact, origin, and — via `Endpoint::remote_info` — the
-  transport in use right now (relay url, or socket addr classified LAN/internet by
-  private-range check). Honest limitation: transport is only known while the endpoint
-  still holds a path; between contacts it's `None`.
+  Two facts per peer, by owner request: **discovery** — set-once "ticket" (we redeemed a
+  pairing ticket carrying its address) or "inbound" (it found us and connected in) — and
+  **transport** via `Endpoint::remote_info`: the active path (relay url, or socket addr
+  classified LAN/internet by private-range check) with an explicit `proxied` flag (relay
+  = data forwarded by a middleman; a standby relay next to an active direct path doesn't
+  count — direct is preferred when both are active). Honest limitation: transport is only
+  known while the endpoint still holds a path; between contacts it's `None`.
 - **Stats**: `Journal::timeline()` (entry count, first/latest recorded_at) and
   `Journal::storage_usage()` (db.sqlite + sidecars, blobs dir walk).
 - **Net config**: per-device `net_config` in journal meta — relay mode (default n0 /

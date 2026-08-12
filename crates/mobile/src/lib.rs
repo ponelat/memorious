@@ -302,7 +302,8 @@ mod tests {
         let me = status["device_id"].as_str().unwrap().to_string();
         assert_eq!(status["names"][&me], "iPhone");
         assert!(status["storage"]["db_bytes"].as_u64().unwrap() > 0);
-        assert_eq!(status["peers"][0]["origin"], "dialed");
+        assert_eq!(status["peers"][0]["discovery"], "ticket");
+        assert_eq!(status["peers"][0]["conn"]["proxied"], false);
         j2.set_device_name(me.clone(), "Josh's phone".into()).unwrap();
         let status: serde_json::Value =
             serde_json::from_str(&j2.status_json().unwrap()).unwrap();

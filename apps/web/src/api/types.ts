@@ -22,13 +22,15 @@ export interface FeedPage {
   next_before: number | null
 }
 
-/** The transport a peer is reached over right now (absent between contacts). */
+/** The data transport a peer is reached over right now (absent between contacts). */
 export interface PeerConn {
   transport: 'relay' | 'direct' | string
   /** Relay url or remote socket address. */
   detail: string
   /** Direct over a private/link-local address — same LAN. */
   lan: boolean
+  /** Data flows through a middleman (relay). False = genuine p2p. */
+  proxied: boolean
 }
 
 /** A known sync peer, as fresh as our last contact with it. */
@@ -36,8 +38,8 @@ export interface PeerInfo {
   endpoint_id: string
   device_id?: string | null
   last_ok_ms: number
-  /** "dialed" (we connect to it) or "inbound" (it connects to us). */
-  origin?: string | null
+  /** How it was discovered: "ticket" (pairing ticket) or "inbound" (it found us). */
+  discovery?: string | null
   conn?: PeerConn | null
 }
 

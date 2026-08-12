@@ -199,14 +199,14 @@ impl Journal {
     /// A completed event sync with `peer` (either direction): remember when,
     /// and snapshot our heads so "pending to push" is detectable later.
     /// `device` maps the peer's endpoint id to its journal device id when the
-    /// peer told us; `origin` records how we first met ("dialed"/"inbound")
-    /// and is never overwritten.
+    /// peer told us; `discovery` records how the peer entered our world
+    /// ("ticket"/"inbound") — set at first contact, never rewritten.
     pub fn record_sync_contact(
         &self,
         peer: &str,
         now_ms: i64,
         device: Option<&str>,
-        origin: &str,
+        discovery: &str,
     ) -> Result<()> {
         self.store
             .meta_set(&format!("peer_last_ok:{peer}"), &now_ms.to_le_bytes())?;
@@ -214,9 +214,9 @@ impl Journal {
             self.store
                 .meta_set(&format!("peer_device:{peer}"), device.as_bytes())?;
         }
-        if self.store.meta_get(&format!("peer_origin:{peer}"))?.is_none() {
+        if self.store.meta_get(&format!("peer_discovery:{peer}"))?.is_none() {
             self.store
-                .meta_set(&format!("peer_origin:{peer}"), origin.as_bytes())?;
+                .meta_set(&format!("peer_discovery:{peer}"), discovery.as_bytes())?;
         }
         let heads = self.store.heads()?;
         self.store

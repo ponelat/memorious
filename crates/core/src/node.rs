@@ -151,7 +151,7 @@ impl Journal {
     }
 }
 
-/// How we reached a peer, as reported on the status screen.
+/// The data transport to a peer, as reported on the status screen.
 #[derive(Debug, Clone, Serialize)]
 pub struct PeerConn {
     /// "relay" or "direct".
@@ -160,6 +160,10 @@ pub struct PeerConn {
     pub detail: String,
     /// Direct over a private/link-local address — the same LAN.
     pub lan: bool,
+    /// Data flows through a middleman (the relay server forwards our
+    /// ciphertext). False = genuine peer-to-peer. A standby relay path next
+    /// to an active direct one does not count as a proxy in the chain.
+    pub proxied: bool,
 }
 
 /// A known sync peer: everything the status screens show about it. Stale by
@@ -171,9 +175,10 @@ pub struct PeerInfo {
     pub device_id: Option<String>,
     /// Last completed event sync, unix ms.
     pub last_ok_ms: i64,
-    /// How we first met: "dialed" (we connected to it) or "inbound" (it
-    /// connected to us).
-    pub origin: Option<String>,
+    /// How this peer entered our world: "ticket" (we redeemed a pairing
+    /// ticket carrying its address) or "inbound" (it discovered us and
+    /// connected in). Recorded at first contact, never rewritten.
+    pub discovery: Option<String>,
     /// The transport in use right now, when the endpoint still holds a live
     /// path to the peer; `None` between contacts.
     pub conn: Option<PeerConn>,
@@ -537,11 +542,13 @@ impl Node {
         }
 
         conn.close(VarInt::from(0u32), b"done");
+        // We dial only addresses that came out of a pairing ticket (fresh or
+        // remembered) — that's how this peer was discovered.
         self.journal.record_sync_contact(
             &addr.id.to_string(),
             unix_now_ms(),
             peer_device.as_deref(),
-            "dialed",
+            "ticket",
         )?;
         Ok(report)
     }
@@ -565,37 +572,48 @@ impl Node {
                     .flatten()
                     .and_then(|b| String::from_utf8(b).ok())
             };
+            // Of the currently-active paths, prefer a direct one — iroh moves
+            // data off the relay as soon as a direct path works, so an active
+            // direct path means the relay (if also active) is only standby.
             let conn = match endpoint_id.parse::<iroh::EndpointId>() {
                 Ok(id) => self.endpoint.remote_info(id).await.and_then(|info| {
-                    info.addrs()
-                        .find(|a| matches!(a.usage(), iroh::endpoint::TransportAddrUsage::Active))
-                        .map(|a| match a.addr() {
-                            iroh::TransportAddr::Relay(url) => PeerConn {
-                                transport: "relay".into(),
-                                detail: url.to_string(),
-                                lan: false,
-                            },
-                            iroh::TransportAddr::Ip(sock) => PeerConn {
+                    let active: Vec<_> = info
+                        .addrs()
+                        .filter(|a| matches!(a.usage(), iroh::endpoint::TransportAddrUsage::Active))
+                        .map(|a| a.addr().clone())
+                        .collect();
+                    active
+                        .iter()
+                        .find_map(|a| match a {
+                            iroh::TransportAddr::Ip(sock) => Some(PeerConn {
                                 transport: "direct".into(),
                                 detail: sock.to_string(),
                                 lan: is_lan_ip(&sock.ip()),
-                            },
-                            other => PeerConn {
-                                transport: "custom".into(),
-                                detail: format!("{other:?}"),
-                                lan: false,
-                            },
+                                proxied: false,
+                            }),
+                            _ => None,
+                        })
+                        .or_else(|| {
+                            active.iter().find_map(|a| match a {
+                                iroh::TransportAddr::Relay(url) => Some(PeerConn {
+                                    transport: "relay".into(),
+                                    detail: url.to_string(),
+                                    lan: false,
+                                    proxied: true,
+                                }),
+                                _ => None,
+                            })
                         })
                 }),
                 Err(_) => None,
             };
             let device_id = meta_str("peer_device:");
-            let origin = meta_str("peer_origin:");
+            let discovery = meta_str("peer_discovery:");
             out.push(PeerInfo {
                 endpoint_id,
                 device_id,
                 last_ok_ms,
-                origin,
+                discovery,
                 conn,
             });
         }

@@ -73,12 +73,20 @@ function deviceRows(status: Status): DeviceRow[] {
   return rows
 }
 
+/** The two facts per peer: how it was discovered, and the data transport in
+ * use right now (with any proxy in the chain called out). */
+function discoveryLabel(peer: PeerInfo): string {
+  if (peer.discovery === 'ticket') return 'discovered: pairing ticket'
+  if (peer.discovery === 'inbound') return 'discovered: it found us'
+  return 'discovered: before this build'
+}
+
 function transportLabel(peer: PeerInfo): string {
   const kind = edgeKind(peer)
-  if (kind === 'lan') return `LAN (${peer.conn!.detail})`
-  if (kind === 'internet') return `internet (${peer.conn!.detail})`
-  if (kind === 'relay') return `public relay (${peer.conn!.detail})`
-  return `last sync ${agoLabel(peer.last_ok_ms)}`
+  if (kind === 'lan') return `transport: direct QUIC on the LAN (${peer.conn!.detail}) · p2p, no proxy`
+  if (kind === 'internet') return `transport: direct QUIC over the internet (${peer.conn!.detail}) · p2p, no proxy`
+  if (kind === 'relay') return `transport: via public relay ${peer.conn!.detail} · proxied`
+  return `transport: idle — last sync ${agoLabel(peer.last_ok_ms)}`
 }
 
 function NameEditor({ deviceId, name, onSaved }: { deviceId: string; name?: string; onSaved: () => void }) {
@@ -236,7 +244,10 @@ export function StatusView() {
   const mapPeers: MapPeer[] = (status.peers ?? []).map((peer) => ({
     key: peer.endpoint_id,
     name: trunc(peer.device_id ? names[peer.device_id] ?? shortId(peer.device_id) : shortId(peer.endpoint_id), 18),
-    sub: peer.conn ? (edgeKind(peer) === 'lan' ? 'on this network' : 'reachable') : `seen ${agoLabel(peer.last_ok_ms)}`,
+    sub:
+      peer.discovery === 'ticket' ? 'via pairing ticket' :
+      peer.discovery === 'inbound' ? 'it found us' :
+      `seen ${agoLabel(peer.last_ok_ms)}`,
     peer,
   }))
   const health = status.health
@@ -280,16 +291,17 @@ export function StatusView() {
               )}
             </span>
             <span className="device-meta hint">
-              {row.isSelf && 'this device'}
+              {row.isSelf && <span>this device{row.headSeq !== undefined && ` · ${row.headSeq} events`}</span>}
               {!row.isSelf && row.peer && (
                 <>
-                  {transportLabel(row.peer)}
-                  {row.peer.origin === 'inbound' && ' · dials us'}
-                  {row.peer.origin === 'dialed' && ' · we dial it'}
+                  <span>{discoveryLabel(row.peer)}</span>
+                  <span>{transportLabel(row.peer)}</span>
+                  {row.headSeq !== undefined && <span>{row.headSeq} events in the log</span>}
                 </>
               )}
-              {!row.isSelf && !row.peer && 'known from the log only'}
-              {row.headSeq !== undefined && ` · ${row.headSeq} events`}
+              {!row.isSelf && !row.peer && (
+                <span>known from the log only{row.headSeq !== undefined && ` · ${row.headSeq} events`}</span>
+              )}
             </span>
           </li>
         ))}
