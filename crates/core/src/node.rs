@@ -408,6 +408,8 @@ impl Node {
         }
 
         conn.close(VarInt::from(0u32), b"done");
+        self.journal
+            .record_sync_contact(&addr.id.to_string(), unix_now_ms())?;
         Ok(report)
     }
 
@@ -450,6 +452,13 @@ async fn fetch_missing_blobs(
     }
     conn.close(VarInt::from(0u32), b"done");
     Ok(fetched)
+}
+
+fn unix_now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
 }
 
 /// anyhow::Error doesn't impl std::error::Error; box it for AcceptError.
@@ -533,6 +542,11 @@ impl ProtocolHandler for SyncProto {
             .await
             .map_err(acc)?;
         send.finish()?;
+
+        // Events are converged both ways at this point — a real contact.
+        let _ = self
+            .journal
+            .record_sync_contact(&connection.remote_id().to_string(), unix_now_ms());
 
         // Pull blobs we now reference but don't hold, dialing back the initiator.
         if let Err(err) =

@@ -136,6 +136,45 @@ async fn interrupted_sync_converges_on_retry() {
 }
 
 #[tokio::test]
+async fn sync_health_traffic_light() {
+    fn now_ms() -> i64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64
+    }
+    let dir = tempdir().unwrap();
+    let ja = Journal::init(&dir.path().join("a"), "pw").unwrap();
+    let secret = *ja.secret();
+    let a = Node::spawn(ja).await.unwrap();
+    a.journal().capture_text("solo entry").unwrap();
+
+    // A journal with no known peers has nowhere to push — green.
+    assert_eq!(a.journal().sync_health(now_ms()).unwrap().color, "green");
+
+    let jb = Journal::init_with_secret(&dir.path().join("b"), secret, "pw").unwrap();
+    let b = Node::spawn(jb).await.unwrap();
+    b.sync_with(&a.addr()).await.unwrap();
+
+    // Converged, fresh contact on both sides (dialer and acceptor).
+    assert_eq!(a.journal().sync_health(now_ms()).unwrap().color, "green");
+    assert_eq!(b.journal().sync_health(now_ms()).unwrap().color, "green");
+
+    // New local data the peer hasn't seen — yellow.
+    a.journal().capture_text("unsent").unwrap();
+    assert_eq!(a.journal().sync_health(now_ms()).unwrap().color, "yellow");
+    a.sync_with(&b.addr()).await.unwrap();
+    assert_eq!(a.journal().sync_health(now_ms()).unwrap().color, "green");
+
+    // No contact for 48h — red, and red outranks pending.
+    let later = now_ms() + 49 * 3600 * 1000;
+    assert_eq!(a.journal().sync_health(later).unwrap().color, "red");
+
+    a.shutdown().await;
+    b.shutdown().await;
+}
+
+#[tokio::test]
 async fn video_capture_round_trips() {
     let dir = tempdir().unwrap();
     let ja = Journal::init(&dir.path().join("a"), "pw").unwrap();

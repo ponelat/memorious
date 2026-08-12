@@ -194,6 +194,16 @@ impl MobileJournal {
         Ok(v.to_string())
     }
 
+    /// Traffic-light replication state: {"color","pending","stalest_ms","peers"}.
+    pub fn sync_health(&self) -> Result<String> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        let h = self.node.journal().sync_health(now).map_err(JournalError::from)?;
+        Ok(serde_json::to_string(&h).map_err(anyhow::Error::from)?)
+    }
+
     pub fn my_ticket(&self) -> Result<String> {
         rt().block_on(self.node.dialable_addr())?;
         Ok(self.node.ticket()?)

@@ -31,6 +31,15 @@ struct KeysFile {
     params: KdfParams,
 }
 
+/// Traffic-light summary of replication state; see [`Journal::sync_health`].
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SyncHealth {
+    pub color: String, // "green" | "yellow" | "red"
+    pub pending: bool,
+    pub stalest_ms: Option<i64>,
+    pub peers: usize,
+}
+
 pub struct Journal {
     pub store: Store,
     root: PathBuf,
@@ -160,6 +169,55 @@ impl Journal {
 
     pub fn secret(&self) -> &[u8; SECRET_LEN] {
         &self.secret
+    }
+
+    // ---- sync health ----
+
+    /// A completed event sync with `peer` (either direction): remember when,
+    /// and snapshot our heads so "pending to push" is detectable later.
+    pub fn record_sync_contact(&self, peer: &str, now_ms: i64) -> Result<()> {
+        self.store
+            .meta_set(&format!("peer_last_ok:{peer}"), &now_ms.to_le_bytes())?;
+        let heads = self.store.heads()?;
+        self.store
+            .meta_set("last_sync_heads", &serde_json::to_vec(&heads)?)?;
+        Ok(())
+    }
+
+    /// Traffic light for the sync status UX (UNDERSTANDING.md): red = a known
+    /// peer unheard-from for 48h (outranks all), yellow = local data no peer
+    /// has picked up yet, green = converged (or solo — nowhere to push).
+    pub fn sync_health(&self, now_ms: i64) -> Result<SyncHealth> {
+        const STALE_MS: i64 = 48 * 3600 * 1000;
+        let peers = self.store.meta_scan("peer_last_ok:")?;
+        if peers.is_empty() {
+            return Ok(SyncHealth { color: "green".into(), pending: false, stalest_ms: None, peers: 0 });
+        }
+        let stalest = peers
+            .iter()
+            .filter_map(|(_, v)| v.as_slice().try_into().ok().map(i64::from_le_bytes))
+            .min()
+            .unwrap_or(0);
+        let pending = match self.store.meta_get("last_sync_heads")? {
+            Some(bytes) => {
+                let then: crate::store::Heads = serde_json::from_slice(&bytes).unwrap_or_default();
+                self.store.heads()? != then
+            }
+            None => true,
+        };
+        let color = if now_ms - stalest > STALE_MS {
+            "red"
+        } else if pending {
+            "yellow"
+        } else {
+            "green"
+        };
+        Ok(SyncHealth {
+            color: color.into(),
+            pending,
+            stalest_ms: Some(stalest),
+            peers: peers.len(),
+        })
     }
 
     // ---- capture ----

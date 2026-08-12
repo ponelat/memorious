@@ -85,6 +85,18 @@ impl Store {
         Ok(v)
     }
 
+    /// All meta entries whose key starts with `prefix`.
+    pub fn meta_scan(&self, prefix: &str) -> Result<Vec<(String, Vec<u8>)>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare("SELECT key, value FROM meta WHERE key LIKE ?1 || '%'")?;
+        let rows = stmt.query_map([prefix], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Vec<u8>>(1)?)))?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
+
     pub fn meta_set(&self, key: &str, value: &[u8]) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
