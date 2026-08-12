@@ -1,8 +1,37 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Entry, mediaObjectUrl } from '../api'
 
 function timeOf(ms: number): string {
   return new Date(ms).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', hour12: false })
+}
+
+/** Transcript/OCR text, capped at 7 lines with a more/less toggle. The
+ * toggle only appears when the text actually overflows the clamp. */
+function Annotation({ text }: { text: string }) {
+  const [expanded, setExpanded] = useState(false)
+  const [overflows, setOverflows] = useState(false)
+  const ref = useRef<HTMLParagraphElement>(null)
+  useEffect(() => {
+    const el = ref.current
+    if (!el) return
+    const check = () => setOverflows(el.scrollHeight > el.clientHeight + 1)
+    check()
+    const ro = new ResizeObserver(check)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [text])
+  return (
+    <div className="annotation">
+      <p ref={ref} className={expanded ? 'annotation-text' : 'annotation-text clamped'}>
+        {text}
+      </p>
+      {(overflows || expanded) && (
+        <button className="ghost more" onClick={() => setExpanded(!expanded)}>
+          {expanded ? 'less' : 'more'}
+        </button>
+      )}
+    </div>
+  )
 }
 
 export function useMediaUrl(entry: Entry | undefined): string | null {
@@ -35,7 +64,7 @@ export function EntryRow({
     <div className="entry text">
       <span className="time">{timeOf(entry.recorded_at)}</span>
       <p>{entry.text}</p>
-      {entry.annotation && <p className="annotation">{entry.annotation}</p>}
+      {entry.annotation && <Annotation text={entry.annotation} />}
       {onRedact && (
         <button className="ghost redact" onClick={() => onRedact(entry)} title="move to trash">
           ×
@@ -53,7 +82,7 @@ function PhotoSingle({ entry, onOpen }: { entry: Entry; onOpen?: () => void }) {
       <button className="polaroid" onClick={onOpen}>
         {url ? <img src={url} alt="" loading="lazy" /> : <span className="ph" />}
       </button>
-      {entry.annotation && <p className="annotation">{entry.annotation}</p>}
+      {entry.annotation && <Annotation text={entry.annotation} />}
     </div>
   )
 }
@@ -73,7 +102,7 @@ function VideoSingle({ entry, onOpen }: { entry: Entry; onOpen?: () => void }) {
           <span className="ph" />
         )}
       </button>
-      {entry.annotation && <p className="annotation">{entry.annotation}</p>}
+      {entry.annotation && <Annotation text={entry.annotation} />}
     </div>
   )
 }
@@ -116,7 +145,7 @@ export function AudioRow({
     <div className="entry audio">
       <span className="time">{timeOf(entry.recorded_at)}</span>
       {url ? <audio controls preload="metadata" src={url} /> : <span className="ph audio-ph">audio…</span>}
-      {entry.annotation && <p className="annotation">{entry.annotation}</p>}
+      {entry.annotation && <Annotation text={entry.annotation} />}
       {onRedact && (
         <button className="ghost redact" onClick={() => onRedact(entry)} title="move to trash">
           ×
