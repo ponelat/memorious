@@ -1,8 +1,28 @@
-import { FormEvent, useRef, useState } from 'react'
+import { ClipboardEvent, FormEvent, useRef, useState } from 'react'
 import { api, Entry } from '../api'
+
+/** Media staged in the capture bar (pasted) before submit, ChatGPT-style. */
+interface Pending {
+  id: string
+  file: Blob
+  kind: 'photo' | 'video' | 'audio'
+  /** Object URL for the thumbnail; revoked when the item leaves the tray. */
+  url: string
+  name: string
+}
+
+let pendingSeq = 0
+
+function pendingKind(type: string): Pending['kind'] | null {
+  if (type.startsWith('image/')) return 'photo'
+  if (type.startsWith('video/')) return 'video'
+  if (type.startsWith('audio/')) return 'audio'
+  return null
+}
 
 export function CaptureBar({ onCaptured }: { onCaptured: (e: Entry) => void }) {
   const [text, setText] = useState('')
+  const [pending, setPending] = useState<Pending[]>([])
   const [busy, setBusy] = useState(false)
   const [recording, setRecording] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -22,13 +42,64 @@ export function CaptureBar({ onCaptured }: { onCaptured: (e: Entry) => void }) {
     }
   }
 
-  async function submitText(e: FormEvent) {
+  function stageFiles(files: File[]): boolean {
+    const staged: Pending[] = []
+    for (const file of files) {
+      const kind = pendingKind(file.type)
+      if (!kind) continue
+      staged.push({
+        id: `p${pendingSeq++}`,
+        file,
+        kind,
+        url: URL.createObjectURL(file),
+        name: file.name || kind,
+      })
+    }
+    if (staged.length > 0) {
+      setPending((cur) => [...cur, ...staged])
+      setError(null)
+    }
+    return staged.length > 0
+  }
+
+  function onPaste(e: ClipboardEvent<HTMLTextAreaElement>) {
+    const files = Array.from(e.clipboardData?.files ?? [])
+    if (files.length === 0) return
+    // Media paste: keep any filename text out of the input.
     e.preventDefault()
-    if (text.trim() === '') return
+    if (!stageFiles(files)) setError('only photos, videos, and audio can be attached')
+  }
+
+  function unstage(item: Pending) {
+    URL.revokeObjectURL(item.url)
+    setPending((cur) => cur.filter((p) => p.id !== item.id))
+  }
+
+  async function submit(e: FormEvent) {
+    e.preventDefault()
+    if (busy || (text.trim() === '' && pending.length === 0)) return
     await guard(async () => {
-      const entry = await api.captureText(text)
-      setText('')
-      onCaptured(entry)
+      // Attachments in the order they were staged, then the text.
+      for (const item of pending) {
+        const capture =
+          item.kind === 'photo'
+            ? api.capturePhoto
+            : item.kind === 'video'
+              ? api.captureVideo
+              : api.captureAudio
+        try {
+          onCaptured(await capture(item.file))
+        } catch (err) {
+          // Leave this item (and the rest) staged so nothing is lost.
+          throw err instanceof Error ? new Error(`${item.name}: ${err.message}`) : err
+        }
+        unstage(item)
+      }
+      if (text.trim() !== '') {
+        const entry = await api.captureText(text)
+        setText('')
+        onCaptured(entry)
+      }
     })
   }
 
@@ -74,20 +145,45 @@ export function CaptureBar({ onCaptured }: { onCaptured: (e: Entry) => void }) {
 
   return (
     <div className="capture">
-      <form onSubmit={submitText} className="capture-text">
+      {pending.length > 0 && (
+        <div className="capture-attachments">
+          {pending.map((item) => (
+            <span key={item.id} className={`attach ${item.kind}`}>
+              {item.kind === 'photo' && <img src={item.url} alt={item.name} />}
+              {item.kind === 'video' && (
+                <>
+                  <video src={item.url} muted playsInline preload="metadata" />
+                  <span className="play-badge">▶</span>
+                </>
+              )}
+              {item.kind === 'audio' && <span className="attach-audio">♪ {item.name}</span>}
+              <button
+                type="button"
+                className="rm"
+                onClick={() => unstage(item)}
+                title="remove"
+              >
+                ×
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
+      <form onSubmit={submit} className="capture-text">
         <textarea
           placeholder="what's happening?"
           value={text}
           rows={text.includes('\n') ? 4 : 1}
           onChange={(e) => setText(e.target.value)}
+          onPaste={onPaste}
           onKeyDown={(e) => {
             if (e.key === 'Enter' && !e.shiftKey) {
               e.preventDefault()
-              submitText(e)
+              submit(e)
             }
           }}
         />
-        <button type="submit" disabled={busy || text.trim() === ''}>
+        <button type="submit" disabled={busy || (text.trim() === '' && pending.length === 0)}>
           add
         </button>
       </form>

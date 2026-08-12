@@ -113,6 +113,73 @@ textarea:focus {
   margin-bottom: 1.2rem;
 }
 
+/* media staged by paste, ChatGPT-style tray above the input */
+.capture-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  margin-bottom: 0.6rem;
+}
+
+.attach {
+  position: relative;
+  display: inline-block;
+}
+
+.attach img,
+.attach video {
+  display: block;
+  width: 4.5rem;
+  height: 4.5rem;
+  object-fit: cover;
+  border: 1px solid var(--line);
+  background: #000;
+}
+
+.attach-audio {
+  display: inline-block;
+  border: 1px solid var(--line);
+  color: var(--faint);
+  padding: 0.3rem 0.6rem;
+  max-width: 12rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.85rem;
+}
+
+.attach .rm {
+  position: absolute;
+  top: -0.5rem;
+  right: -0.5rem;
+  border: 1px solid var(--line);
+  background: var(--paper);
+  border-radius: 999px;
+  width: 1.3rem;
+  height: 1.3rem;
+  padding: 0;
+  line-height: 1;
+  display: grid;
+  place-items: center;
+  font-size: 0.85rem;
+}
+
+.attach .rm:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.play-badge {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: #fff;
+  text-shadow: 0 1px 4px rgb(0 0 0 / 0.6);
+  font-size: 1.1rem;
+  pointer-events: none;
+}
+
 .capture-text {
   display: flex;
   gap: 0.6rem;
@@ -223,11 +290,26 @@ textarea:focus {
   display: inline-block;
 }
 
-.polaroid img {
+.polaroid img,
+.polaroid video {
   display: block;
   width: 9rem;
   height: 9rem;
   object-fit: cover;
+}
+
+.polaroid.video {
+  position: relative;
+}
+
+.polaroid.video video {
+  background: #000;
+}
+
+.polaroid.video .play-badge {
+  font-size: 1.6rem;
+  /* keep the badge over the frame, not the caption strip */
+  inset: 0.4rem 0.4rem 1.1rem;
 }
 
 .ph {
@@ -310,7 +392,8 @@ textarea:focus {
   max-width: min(94vw, 60rem);
 }
 
-.lightbox-inner img {
+.lightbox-inner img,
+.lightbox-inner video {
   max-width: 94vw;
   max-height: 82dvh;
   display: block;
@@ -386,6 +469,7 @@ h2 {
   }
 
   .polaroid img,
+  .polaroid video,
   .ph {
     width: 7rem;
     height: 7rem;

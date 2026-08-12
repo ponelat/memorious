@@ -1,5 +1,20 @@
 # LOG
 
+## 2026-08-12 (video everywhere; paste-to-capture)
+- The Video media kind (introduced with the mobile bindings) now reaches every face:
+  server route `POST /api/capture/video` (mp4-family passes through; webm transcoded to
+  H.264/AAC MP4 via system ffmpeg, mirroring audio), `video/mp4` on media fetch, desktop
+  `capture_media` kind `"video"`, and web rendering (polaroid thumbnail with a play
+  badge; lightbox plays with controls). Server captures video without the will-enrich
+  flag — there is no video enrichment engine, so peers shouldn't hold a grace period.
+- Capture bar accepts pasted media: pasted photos/videos/audio stage in a small tray
+  above the input (thumbnails, remove buttons) and are captured on submit — attachments
+  in paste order, then the text, each its own capture event (flat stream, no grouping
+  stored). Unsupported clipboard files are refused with a visible error.
+- Boring choices: paste is the only staging path (the photo button still captures
+  immediately); staged previews are object URLs revoked on unstage; a failed attachment
+  capture stops the submit and leaves the rest staged.
+
 ## 2026-08-12 (pairing defers media)
 - `Node::join_from_ticket` split: new `pair_from_ticket` pulls the event log and proves
   the master password (key unwrap needs no blob bytes), leaving media for a later
