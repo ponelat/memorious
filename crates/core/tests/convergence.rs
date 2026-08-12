@@ -136,6 +136,49 @@ async fn interrupted_sync_converges_on_retry() {
 }
 
 #[tokio::test]
+async fn pairing_defers_media_to_background_sync() {
+    let dir = tempdir().unwrap();
+    let ja = Journal::init(&dir.path().join("a"), "pw").unwrap();
+    let a = Node::spawn(ja).await.unwrap();
+    a.journal().capture_text("hello new device").unwrap();
+    let photo_bytes = b"heavy pixels".to_vec();
+    let photo = a
+        .capture_blob(memorious_core::event::MediaKind::Photo, photo_bytes.clone())
+        .await
+        .unwrap();
+
+    // Pairing converges the event log but leaves media for a later sync, so a
+    // device joining a media-heavy journal is usable immediately.
+    let ticket = a.ticket().unwrap();
+    let (b, report) = Node::pair_from_ticket(&dir.path().join("b"), &ticket, "pw")
+        .await
+        .unwrap();
+    assert_eq!(timeline_ids(a.journal()), timeline_ids(b.journal()));
+    assert_eq!(report.blobs_fetched, 0);
+    let hash = photo.blob_hash().unwrap();
+    assert!(!b.has_blob(hash).await.unwrap());
+
+    // The wrong master password is still caught at pair time — the proof
+    // unwraps a media key from the event log, no blob bytes needed.
+    let err = Node::pair_from_ticket(&dir.path().join("c"), &a.ticket().unwrap(), "wrong")
+        .await
+        .err()
+        .expect("wrong password must be rejected at pair time");
+    assert!(
+        format!("{err:#}").contains("master password"),
+        "unexpected error: {err:#}"
+    );
+
+    // An ordinary follow-up sync brings the media across.
+    let report = b.sync_with(&a.addr()).await.unwrap();
+    assert_eq!(report.blobs_fetched, 1);
+    assert_eq!(b.blob_bytes(hash).await.unwrap(), photo_bytes);
+
+    a.shutdown().await;
+    b.shutdown().await;
+}
+
+#[tokio::test]
 async fn ticket_pairing_round_trip() {
     let dir = tempdir().unwrap();
     let ja = Journal::init(&dir.path().join("a"), "pw").unwrap();

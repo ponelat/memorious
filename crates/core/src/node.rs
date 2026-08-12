@@ -189,12 +189,14 @@ impl Node {
         })
     }
 
-    /// Redeem a ticket: create the local journal from its secret, then pull
-    /// everything. The ticket authorizes replication; the master password
-    /// (entered separately, never in the ticket) authorizes reading — after
-    /// the first sync we prove it by unwrapping a media key, so a typo can't
-    /// silently produce a journal whose media never decrypts.
-    pub async fn join_from_ticket(
+    /// Redeem a ticket: create the local journal from its secret, pull the
+    /// event log, and prove the master password — but leave media blobs for a
+    /// later [`Self::sync_with`], so joining a media-heavy journal is usable
+    /// immediately. The ticket authorizes replication; the password (entered
+    /// separately, never in the ticket) authorizes reading — proven by
+    /// unwrapping a media key from the event log, so a typo can't silently
+    /// produce a journal whose media never decrypts.
+    pub async fn pair_from_ticket(
         root: &Path,
         ticket: &str,
         password: &str,
@@ -203,7 +205,7 @@ impl Node {
         let peer_addr = ticket.addr()?;
         let journal = Journal::init_with_secret(root, ticket.secret, password)?;
         let node = Self::spawn(journal).await?;
-        let report = node.sync_with(&peer_addr).await?;
+        let report = node.sync_events_with(&peer_addr).await?;
         for ev in node.journal.store.all_events()? {
             if let Some(crypto) = ev.payload.blob_crypto() {
                 node.journal
@@ -212,6 +214,22 @@ impl Node {
                 break;
             }
         }
+        Ok((node, report))
+    }
+
+    /// [`Self::pair_from_ticket`] plus the full media fetch, for callers that
+    /// want everything before returning (CLI join).
+    pub async fn join_from_ticket(
+        root: &Path,
+        ticket: &str,
+        password: &str,
+    ) -> Result<(Self, SyncReport)> {
+        let (node, mut report) = Self::pair_from_ticket(root, ticket, password).await?;
+        let peer_addr = JournalTicket::decode(ticket)?.addr()?;
+        report.blobs_fetched =
+            fetch_missing_blobs(&node.endpoint, &node.blobs, &node.journal, &peer_addr)
+                .await
+                .context("fetch blobs")?;
         Ok((node, report))
     }
 
@@ -326,8 +344,17 @@ impl Node {
         Ok(self.blobs.has(hash).await?)
     }
 
-    /// One full sync round-trip with the peer at `addr`.
+    /// One full sync round-trip with the peer at `addr`: events, then media.
     pub async fn sync_with(&self, addr: &EndpointAddr) -> Result<SyncReport> {
+        let mut report = self.sync_events_with(addr).await?;
+        report.blobs_fetched = fetch_missing_blobs(&self.endpoint, &self.blobs, &self.journal, addr)
+            .await
+            .context("fetch blobs")?;
+        Ok(report)
+    }
+
+    /// Event-log-only round-trip: timelines converge, media stays deferred.
+    pub async fn sync_events_with(&self, addr: &EndpointAddr) -> Result<SyncReport> {
         let conn = self
             .endpoint
             .connect(addr.clone(), SYNC_ALPN)
@@ -379,10 +406,6 @@ impl Node {
             Some(Msg::Done) => {}
             other => bail!("protocol violation: expected Done, got {other:?}"),
         }
-
-        report.blobs_fetched = fetch_missing_blobs(&self.endpoint, &self.blobs, &self.journal, addr)
-            .await
-            .context("fetch blobs")?;
 
         conn.close(VarInt::from(0u32), b"done");
         Ok(report)

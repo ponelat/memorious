@@ -75,12 +75,13 @@ pub fn init_fresh(dir: String, password: String) -> Result<Arc<MobileJournal>> {
     Ok(Arc::new(MobileJournal { node }))
 }
 
-/// Join an existing journal from a pairing ticket (initial sync included).
-/// The password is checked against the journal's media keys after the sync.
+/// Join an existing journal from a pairing ticket. Pairing pulls the event log
+/// and proves the password, but defers media to the next `sync_now` — the app
+/// runs that in the background so joining isn't blocked by the media fetch.
 #[uniffi::export]
 pub fn join_ticket(dir: String, ticket: String, password: String) -> Result<Arc<MobileJournal>> {
     let (node, _report) =
-        rt().block_on(Node::join_from_ticket(&PathBuf::from(dir), &ticket, &password))?;
+        rt().block_on(Node::pair_from_ticket(&PathBuf::from(dir), &ticket, &password))?;
     node.journal()
         .store
         .meta_set(LAST_PEER_TICKET, ticket.trim().as_bytes())

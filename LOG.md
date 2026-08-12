@@ -1,5 +1,13 @@
 # LOG
 
+## 2026-08-12 (pairing defers media)
+- `Node::join_from_ticket` split: new `pair_from_ticket` pulls the event log and proves
+  the master password (key unwrap needs no blob bytes), leaving media for a later
+  `sync_with`; `join_from_ticket` keeps the everything-before-returning behavior (CLI).
+  `sync_events_with` is the new events-only round-trip underneath. Motivation: joining a
+  media-heavy journal from a phone should be usable immediately — capture-first — with
+  the blob fetch happening as an ordinary background sync.
+
 ## 2026-08-11 (encryption at rest)
 - **Everything at rest is now encrypted** under a single master password per journal
   (design in UNDERSTANDING.md §"Encryption at rest"): SQLCipher (community, vendored
