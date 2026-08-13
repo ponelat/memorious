@@ -269,6 +269,10 @@ textarea:focus {
   display: flex;
   gap: 0.15rem;
   align-items: baseline;
+  /* Top-right of the row, level with the timestamp, whatever the row height. */
+  grid-column: 3;
+  grid-row: 1;
+  align-self: start;
 }
 
 .entry .redact,

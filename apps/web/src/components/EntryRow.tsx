@@ -5,6 +5,13 @@ function timeOf(ms: number): string {
   return new Date(ms).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', hour12: false })
 }
 
+/** The copyable text of an entry: its own text, else its transcript/OCR. */
+function copyableOf(entry: Entry): string | null {
+  if (entry.text) return entry.text
+  if (entry.annotation) return entry.annotation
+  return null
+}
+
 /** Clipboard write with a fallback for webviews without navigator.clipboard
  * (the Tauri shell's WKWebView, older mobile browsers). */
 function copyText(text: string) {
@@ -99,7 +106,7 @@ export function EntryRow({
       <span className="time">{timeOf(entry.recorded_at)}</span>
       <p>{entry.text}</p>
       <span className="actions">
-        {entry.text && <CopyButton text={entry.text} />}
+        {copyableOf(entry) && <CopyButton text={copyableOf(entry)!} />}
         {onRedact && (
           <button className="ghost redact" onClick={() => onRedact(entry)} title="move to trash">
             ×
@@ -119,6 +126,11 @@ function PhotoSingle({ entry, onOpen }: { entry: Entry; onOpen?: () => void }) {
         {url ? <img src={url} alt="" loading="lazy" /> : <span className="ph" />}
       </button>
       {entry.annotation && <Annotation text={entry.annotation} />}
+      {copyableOf(entry) && (
+        <span className="actions">
+          <CopyButton text={copyableOf(entry)!} />
+        </span>
+      )}
     </div>
   )
 }
@@ -139,6 +151,11 @@ function VideoSingle({ entry, onOpen }: { entry: Entry; onOpen?: () => void }) {
         )}
       </button>
       {entry.annotation && <Annotation text={entry.annotation} />}
+      {copyableOf(entry) && (
+        <span className="actions">
+          <CopyButton text={copyableOf(entry)!} />
+        </span>
+      )}
     </div>
   )
 }
@@ -182,11 +199,14 @@ export function AudioRow({
       <span className="time">{timeOf(entry.recorded_at)}</span>
       {url ? <audio controls preload="metadata" src={url} /> : <span className="ph audio-ph">audio…</span>}
       {entry.annotation && <Annotation text={entry.annotation} />}
-      {onRedact && (
-        <button className="ghost redact" onClick={() => onRedact(entry)} title="move to trash">
-          ×
-        </button>
-      )}
+      <span className="actions">
+        {copyableOf(entry) && <CopyButton text={copyableOf(entry)!} />}
+        {onRedact && (
+          <button className="ghost redact" onClick={() => onRedact(entry)} title="move to trash">
+            ×
+          </button>
+        )}
+      </span>
     </div>
   )
 }
