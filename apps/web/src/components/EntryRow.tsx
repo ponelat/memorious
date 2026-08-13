@@ -5,6 +5,40 @@ function timeOf(ms: number): string {
   return new Date(ms).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', hour12: false })
 }
 
+/** Clipboard write with a fallback for webviews without navigator.clipboard
+ * (the Tauri shell's WKWebView, older mobile browsers). */
+function copyText(text: string) {
+  if (navigator.clipboard?.writeText) {
+    navigator.clipboard.writeText(text)
+    return
+  }
+  const ta = document.createElement('textarea')
+  ta.value = text
+  document.body.appendChild(ta)
+  ta.select()
+  document.execCommand('copy')
+  ta.remove()
+}
+
+/** Subtle per-entry copy control (ChatGPT-thread style): fades in on row
+ * hover, always faintly visible on touch screens, flashes a ✓ once copied. */
+function CopyButton({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false)
+  return (
+    <button
+      className={copied ? 'ghost copy copied' : 'ghost copy'}
+      title="copy text"
+      onClick={() => {
+        copyText(text)
+        setCopied(true)
+        setTimeout(() => setCopied(false), 1500)
+      }}
+    >
+      {copied ? '✓' : '⧉'}
+    </button>
+  )
+}
+
 /** Transcript/OCR text, capped at 7 lines with a more/less toggle. The
  * toggle only appears when the text actually overflows the clamp. */
 function Annotation({ text }: { text: string }) {
@@ -64,12 +98,14 @@ export function EntryRow({
     <div className="entry text">
       <span className="time">{timeOf(entry.recorded_at)}</span>
       <p>{entry.text}</p>
-      {entry.annotation && <Annotation text={entry.annotation} />}
-      {onRedact && (
-        <button className="ghost redact" onClick={() => onRedact(entry)} title="move to trash">
-          ×
-        </button>
-      )}
+      <span className="actions">
+        {entry.text && <CopyButton text={entry.text} />}
+        {onRedact && (
+          <button className="ghost redact" onClick={() => onRedact(entry)} title="move to trash">
+            ×
+          </button>
+        )}
+      </span>
     </div>
   )
 }

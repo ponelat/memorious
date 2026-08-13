@@ -265,12 +265,32 @@ textarea:focus {
   font-size: 0.75rem;
 }
 
-.entry .redact {
+.entry .actions {
+  display: flex;
+  gap: 0.15rem;
+  align-items: baseline;
+}
+
+.entry .redact,
+.entry .copy {
   opacity: 0;
 }
 
-.entry:hover .redact {
+.entry:hover .redact,
+.entry:hover .copy {
   opacity: 1;
+}
+
+.entry .copy.copied {
+  opacity: 1;
+  color: var(--t-lan);
+}
+
+/* No hover on touch screens: keep the copy control faintly visible. */
+@media (hover: none) {
+  .entry .copy {
+    opacity: 0.45;
+  }
 }
 
 .annotation {
