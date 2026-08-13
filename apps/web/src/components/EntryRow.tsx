@@ -46,9 +46,9 @@ function CopyButton({ text }: { text: string }) {
   )
 }
 
-/** Transcript/OCR text, capped at 7 lines with a more/less toggle. The
- * toggle only appears when the text actually overflows the clamp. */
-function Annotation({ text }: { text: string }) {
+/** Text capped at 7 lines with a more/less toggle — used for entry text and
+ * transcripts alike. The toggle only appears when the clamp hides lines. */
+function ClampedText({ text, className }: { text: string; className?: string }) {
   const [expanded, setExpanded] = useState(false)
   const [overflows, setOverflows] = useState(false)
   const ref = useRef<HTMLParagraphElement>(null)
@@ -62,8 +62,8 @@ function Annotation({ text }: { text: string }) {
     return () => ro.disconnect()
   }, [text])
   return (
-    <div className="annotation">
-      <p ref={ref} className={expanded ? 'annotation-text' : 'annotation-text clamped'}>
+    <div className={className ? `clampable ${className}` : 'clampable'}>
+      <p ref={ref} className={expanded ? undefined : 'clamped'}>
         {text}
       </p>
       {(overflows || expanded) && (
@@ -73,6 +73,11 @@ function Annotation({ text }: { text: string }) {
       )}
     </div>
   )
+}
+
+/** Transcript/OCR text: the clamp plus the annotation left-rule styling. */
+function Annotation({ text }: { text: string }) {
+  return <ClampedText text={text} className="annotation" />
 }
 
 export function useMediaUrl(entry: Entry | undefined): string | null {
@@ -104,7 +109,7 @@ export function EntryRow({
   return (
     <div className="entry text">
       <span className="time">{timeOf(entry.recorded_at)}</span>
-      <p>{entry.text}</p>
+      <ClampedText text={entry.text ?? ''} />
       <span className="actions">
         {copyableOf(entry) && <CopyButton text={copyableOf(entry)!} />}
         {onRedact && (

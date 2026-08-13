@@ -305,7 +305,7 @@ textarea:focus {
   padding-left: 0.6rem;
 }
 
-.annotation-text.clamped {
+.clampable .clamped {
   display: -webkit-box;
   -webkit-line-clamp: 7;
   line-clamp: 7;
@@ -313,7 +313,7 @@ textarea:focus {
   overflow: hidden;
 }
 
-.annotation .more {
+.clampable .more {
   padding: 0 0.2rem;
   font-size: 0.8rem;
 }
