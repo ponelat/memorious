@@ -10,6 +10,10 @@ use tauri::webview::InvokeRequest;
 use tauri::WebviewWindow;
 
 fn invoke_request(cmd: &str, args: Value) -> InvokeRequest {
+    request(cmd, InvokeBody::Json(args), Default::default())
+}
+
+fn request(cmd: &str, body: InvokeBody, headers: tauri::http::HeaderMap) -> InvokeRequest {
     InvokeRequest {
         cmd: cmd.into(),
         callback: tauri::ipc::CallbackFn(0),
@@ -21,16 +25,31 @@ fn invoke_request(cmd: &str, args: Value) -> InvokeRequest {
         }
         .parse()
         .unwrap(),
-        body: InvokeBody::Json(args),
-        headers: Default::default(),
+        body,
+        headers,
         invoke_key: INVOKE_KEY.into(),
     }
 }
 
+/// Media travels as a raw request body with the kind in a header — exactly what
+/// the web adapter sends. (A JSON array of numbers is what the webview chokes on.)
+fn media_request(kind: &str, bytes: Vec<u8>) -> InvokeRequest {
+    let mut headers = tauri::http::HeaderMap::new();
+    headers.insert("media-kind", kind.parse().unwrap());
+    request("capture_media", InvokeBody::Raw(bytes), headers)
+}
+
 async fn invoke(webview: &WebviewWindow<tauri::test::MockRuntime>, cmd: &str, args: Value) -> Result<Value, Value> {
+    send(webview, invoke_request(cmd, args)).await
+}
+
+async fn send(
+    webview: &WebviewWindow<tauri::test::MockRuntime>,
+    req: InvokeRequest,
+) -> Result<Value, Value> {
     let (tx, rx) = std::sync::mpsc::channel();
     webview.clone().on_message(
-        invoke_request(cmd, args),
+        req,
         Box::new(move |_webview, _cmd, response, _callback, _error| {
             let _ = tx.send(response);
         }),
@@ -84,13 +103,7 @@ async fn desktop_command_layer_end_to_end() {
     assert_eq!(entry["kind"], "text");
 
     let img = image_png_bytes();
-    let photo = invoke(
-        &webview,
-        "capture_media",
-        json!({"kind": "photo", "bytes": img}),
-    )
-    .await
-    .unwrap();
+    let photo = send(&webview, media_request("photo", img)).await.unwrap();
     assert_eq!(photo["kind"], "photo");
     let hash = photo["media"]["hash"].as_str().unwrap().to_string();
 
@@ -98,18 +111,26 @@ async fn desktop_command_layer_end_to_end() {
     let mut mp4 = vec![0u8, 0, 0, 24];
     mp4.extend_from_slice(b"ftypisom");
     mp4.extend_from_slice(&[7; 64]);
-    let video = invoke(
+    let video = send(&webview, media_request("video", mp4)).await.unwrap();
+    assert_eq!(video["kind"], "video");
+    assert!(send(&webview, media_request("video", b"not a video".to_vec()))
+        .await
+        .is_err());
+    // Kind is required and must be one we know.
+    assert!(send(&webview, media_request("hologram", image_png_bytes()))
+        .await
+        .is_err());
+    assert!(send(
         &webview,
-        "capture_media",
-        json!({"kind": "video", "bytes": mp4}),
+        request("capture_media", InvokeBody::Raw(image_png_bytes()), Default::default()),
     )
     .await
-    .unwrap();
-    assert_eq!(video["kind"], "video");
+    .is_err());
+    // Legacy JSON payloads (a megabyte-long array of numbers) are refused outright.
     assert!(invoke(
         &webview,
         "capture_media",
-        json!({"kind": "video", "bytes": b"not a video".to_vec()}),
+        json!({"kind": "photo", "bytes": image_png_bytes()}),
     )
     .await
     .is_err());

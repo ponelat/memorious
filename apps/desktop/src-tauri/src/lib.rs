@@ -185,13 +185,29 @@ async fn capture_text<R: tauri::Runtime>(
     Ok(entry_json(&e))
 }
 
+/// Media kind travels as a header because the body is the bytes themselves.
+const MEDIA_KIND_HEADER: &str = "media-kind";
+
+/// Media arrives as a raw request body — an `ArrayBuffer` from the webview, not a
+/// JSON array of numbers. A pasted screenshot is megabytes, and the JSON shape
+/// costs ~30x that in transient allocation on both sides; on Linux that killed the
+/// WebKit web process (the app looked like it crashed).
 #[tauri::command]
 async fn capture_media<R: tauri::Runtime>(
     app: AppHandle<R>,
     state: State<'_, NodeState>,
-    kind: String,
-    bytes: Vec<u8>,
+    request: tauri::ipc::Request<'_>,
 ) -> Result<Value, String> {
+    let kind = request
+        .headers()
+        .get(MEDIA_KIND_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .ok_or_else(|| format!("missing {MEDIA_KIND_HEADER} header"))?
+        .to_owned();
+    let tauri::ipc::InvokeBody::Raw(bytes) = request.body() else {
+        return Err("media must be sent as raw bytes".into());
+    };
+    let bytes = bytes.clone();
     let n = node(&app, &state).await.map_err(estr)?;
     let (kind, bytes) = match kind.as_str() {
         "photo" => {

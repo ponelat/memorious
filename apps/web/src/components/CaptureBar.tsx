@@ -13,6 +13,20 @@ interface Pending {
 
 let pendingSeq = 0
 
+/**
+ * Files on the clipboard. `files` is what most engines fill in, but some only
+ * expose the image through `items` (and WebKitGTK before 2.50.2 exposes neither —
+ * that one is fixed by the webkitgtk the Nix build pins, not by anything here).
+ */
+function pastedFiles(data: DataTransfer | null): File[] {
+  const files = Array.from(data?.files ?? [])
+  if (files.length > 0) return files
+  return Array.from(data?.items ?? [])
+    .filter((i) => i.kind === 'file')
+    .map((i) => i.getAsFile())
+    .filter((f): f is File => f !== null)
+}
+
 function pendingKind(type: string): Pending['kind'] | null {
   if (type.startsWith('image/')) return 'photo'
   if (type.startsWith('video/')) return 'video'
@@ -63,8 +77,8 @@ export function CaptureBar({ onCaptured }: { onCaptured: (e: Entry) => void }) {
   }
 
   function onPaste(e: ClipboardEvent<HTMLTextAreaElement>) {
-    const files = Array.from(e.clipboardData?.files ?? [])
-    if (files.length === 0) return
+    const files = pastedFiles(e.clipboardData)
+    if (files.length === 0) return // plain text: let it land in the input
     // Media paste: keep any filename text out of the input.
     e.preventDefault()
     if (!stageFiles(files)) setError('only photos, videos, and audio can be attached')

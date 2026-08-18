@@ -1,8 +1,16 @@
 import { invoke } from '@tauri-apps/api/core'
 import type { Entry, FeedPage, JournalApi, MediaRef, NetConfig, Status, SyncReport } from './types'
 
-async function blobToBytes(blob: Blob): Promise<number[]> {
-  return Array.from(new Uint8Array(await blob.arrayBuffer()))
+/**
+ * Media goes over as a raw request body, never as a JSON array of numbers: a
+ * pasted screenshot is megabytes, and the number-array shape costs ~30x that in
+ * transient allocation — enough to take the Linux webview's web process down.
+ * The kind rides along in a header (see `capture_media` in the Tauri shell).
+ */
+async function captureMedia(kind: 'photo' | 'audio' | 'video', blob: Blob): Promise<Entry> {
+  return invoke<Entry>('capture_media', await blob.arrayBuffer(), {
+    headers: { 'media-kind': kind },
+  })
 }
 
 export const tauriApi: JournalApi = {
@@ -16,16 +24,16 @@ export const tauriApi: JournalApi = {
     return invoke<Entry>('capture_text', { text })
   },
 
-  async capturePhoto(file: Blob) {
-    return invoke<Entry>('capture_media', { kind: 'photo', bytes: await blobToBytes(file) })
+  capturePhoto(file: Blob) {
+    return captureMedia('photo', file)
   },
 
-  async captureAudio(file: Blob) {
-    return invoke<Entry>('capture_media', { kind: 'audio', bytes: await blobToBytes(file) })
+  captureAudio(file: Blob) {
+    return captureMedia('audio', file)
   },
 
-  async captureVideo(file: Blob) {
-    return invoke<Entry>('capture_media', { kind: 'video', bytes: await blobToBytes(file) })
+  captureVideo(file: Blob) {
+    return captureMedia('video', file)
   },
 
   feed(before?: number) {
