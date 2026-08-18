@@ -93,7 +93,12 @@ nix build .#memorious-desktop      # Linux build NOT yet verified on a real box
 
 - Pinned to **nixpkgs-unstable** — iroh needs rustc ≥ 1.91, 25.05 ships 1.86.
 - The desktop derivation overrides `installPhase`: the cargo-tauri hook's own install only
-  handles bundles, and we build `--no-bundle`.
+  handles bundles, and we build `--no-bundle`. It also installs a `.desktop` entry and
+  hicolor icons on Linux (`--no-bundle` gives a bare binary, so launchers would otherwise
+  never see the app).
+- **Pasting images into the capture bar needs webkitgtk ≥ 2.50.2** (WebKit bug 218519:
+  before that fix, clipboard images never reach `clipboardData` on GTK). Check a build
+  with `nix eval --raw .#packages.x86_64-linux.memorious-desktop.buildInputs`.
 - `.app`-domain whois lies about registration; check `dig NS` and the registrar.
 
 ## Hosted downloads

@@ -1,5 +1,30 @@
 # LOG
 
+## 2026-08-18 (desktop: pasted media over raw IPC, Linux desktop entry)
+- **Pasting a photo into the desktop capture bar killed the app on Linux.** The Tauri
+  adapter sent media as `{kind, bytes: number[]}`, and Tauri only treats a payload as
+  binary when the *whole* payload is an ArrayBuffer/typed array — nested buffers are
+  expanded back into a JSON array of numbers. A 4 MB screenshot became ~4M JSON numbers:
+  roughly 30x the bytes in transient allocation across the webview and serde, which the
+  WebKitGTK web process does not survive. Media now goes over as a raw request body
+  (`invoke('capture_media', arrayBuffer, { headers: { 'media-kind': … } })` →
+  `tauri::ipc::Request` + `InvokeBody::Raw`), the kind in a header because the body is
+  the bytes. JSON payloads are refused outright rather than silently costing 30x.
+- The capture bar's paste tray (thumbnail + `×`, text typed alongside, attachments
+  captured in paste order then the text) is the same shared UI the browser uses — it was
+  only ever the desktop transport that broke. It also now reads `clipboardData.items`
+  when `files` is empty, for engines that only fill the former.
+- Pasting images needs **WebKitGTK ≥ 2.50.2** ([WebKit bug 218519], fixed 2025-10-21):
+  before that, `clipboardData` is simply empty for clipboard images on GTK/WPE — no
+  frontend workaround exists. The flake's pinned nixpkgs carries 2.52.x.
+- **Linux desktop entry**: `nix build .#memorious-desktop` now installs
+  `memorious-desktop.desktop` + hicolor icons, so Memorious shows up in application
+  launchers. The entry is named after the binary deliberately: with no GTK app id set,
+  both the Wayland `app_id` and the X11 `WM_CLASS` come from the program name, so the
+  running window matches the entry (and gets its icon).
+
+[WebKit bug 218519]: https://bugs.webkit.org/show_bug.cgi?id=218519
+
 ## 2026-08-12 (sync page: peers, names, stats, net config)
 - **Device names**: an annotation event may now target a *device id* instead of an event
   id (`dev-` prefix separates the namespaces) — that annotation is the device's friendly

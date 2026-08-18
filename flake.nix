@@ -49,7 +49,10 @@
               pkgs.cargo-tauri.hook
               pkgs.pkg-config
               pkgs.perl
-            ] ++ lib.optionals pkgs.stdenv.isLinux [ pkgs.wrapGAppsHook3 ];
+            ] ++ lib.optionals pkgs.stdenv.isLinux [
+              pkgs.wrapGAppsHook3
+              pkgs.copyDesktopItems
+            ];
             buildInputs = lib.optionals pkgs.stdenv.isLinux [
               pkgs.webkitgtk_4_1
               pkgs.gtk3
@@ -58,6 +61,25 @@
               pkgs.glib-networking
             ];
             tauriBuildFlags = [ "--no-bundle" ];
+            # Linux desktops list apps from .desktop files; --no-bundle only gives
+            # us a binary, so install the entry + hicolor icons ourselves. The file
+            # is named after the binary on purpose: with no GTK app id set, both the
+            # Wayland app_id and the X11 WM_CLASS come from the program name, so
+            # launchers match the running window to this entry (and its icon).
+            desktopItems = lib.optionals pkgs.stdenv.isLinux [
+              (pkgs.makeDesktopItem {
+                name = "memorious-desktop";
+                desktopName = "Memorious";
+                genericName = "Journal";
+                comment = "Local-first capture: text, audio, photos";
+                exec = "memorious-desktop";
+                icon = "memorious";
+                terminal = false;
+                startupWMClass = "memorious-desktop";
+                categories = [ "Utility" "Office" ];
+                keywords = [ "journal" "notes" "capture" "diary" ];
+              })
+            ];
             # We build with --no-bundle, so the hook's installPhase (which mv's
             # bundle output) has nothing to move — defining installPhase makes
             # the hook skip its own, and we install the plain binary instead.
@@ -67,6 +89,13 @@
                 -exec install -Dm755 {} $out/bin/memorious-desktop \; -quit
               test -x "$out/bin/memorious-desktop"
               runHook postInstall
+            '';
+            postInstall = lib.optionalString pkgs.stdenv.isLinux ''
+              icons=${self}/apps/desktop/src-tauri/icons
+              install -Dm644 $icons/32x32.png       $out/share/icons/hicolor/32x32/apps/memorious.png
+              install -Dm644 $icons/128x128.png     $out/share/icons/hicolor/128x128/apps/memorious.png
+              install -Dm644 $icons/128x128@2x.png  $out/share/icons/hicolor/256x256/apps/memorious.png
+              install -Dm644 $icons/icon.png        $out/share/icons/hicolor/512x512/apps/memorious.png
             '';
           });
 
