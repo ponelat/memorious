@@ -1,5 +1,6 @@
 import { ClipboardEvent, FormEvent, useRef, useState } from 'react'
 import { api, Entry } from '../api'
+import type { AudioKind } from '../api/types'
 
 /** Media staged in the capture bar (pasted) before submit, ChatGPT-style. */
 interface Pending {
@@ -38,7 +39,7 @@ export function CaptureBar({ onCaptured }: { onCaptured: (e: Entry) => void }) {
   const [text, setText] = useState('')
   const [pending, setPending] = useState<Pending[]>([])
   const [busy, setBusy] = useState(false)
-  const [recording, setRecording] = useState(false)
+  const [recording, setRecording] = useState<AudioKind | null>(null)
   const [error, setError] = useState<string | null>(null)
   const fileInput = useRef<HTMLInputElement>(null)
   const recorder = useRef<MediaRecorder | null>(null)
@@ -125,33 +126,53 @@ export function CaptureBar({ onCaptured }: { onCaptured: (e: Entry) => void }) {
     if (fileInput.current) fileInput.current.value = ''
   }
 
-  async function toggleRecording() {
+  /**
+   * Voice vs music is decided here, at capture (crates/core/src/retention.rs).
+   * A voice note gets the browser's speech pipeline (echo cancellation, noise
+   * suppression, gain control) — fine for dictation, ruinous for music. Music
+   * turns all of that off and records stereo at a music bitrate; still AAC/m4a
+   * where the browser can, so the one-format rule holds.
+   */
+  async function toggleRecording(kind: AudioKind) {
     if (recording) {
       recorder.current?.stop()
       return
     }
     setError(null)
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      const music = kind === 'music'
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: music
+          ? {
+              echoCancellation: false,
+              noiseSuppression: false,
+              autoGainControl: false,
+              channelCount: 2,
+            }
+          : true,
+      })
       // Safari records audio/mp4 (AAC) natively; Chrome falls back to webm and
       // the server transcodes.
       const mime = MediaRecorder.isTypeSupported('audio/mp4')
         ? 'audio/mp4'
         : 'audio/webm'
-      const rec = new MediaRecorder(stream, { mimeType: mime })
+      const rec = new MediaRecorder(stream, {
+        mimeType: mime,
+        audioBitsPerSecond: music ? 256_000 : 96_000,
+      })
       chunks.current = []
       rec.ondataavailable = (e) => chunks.current.push(e.data)
       rec.onstop = async () => {
         stream.getTracks().forEach((t) => t.stop())
-        setRecording(false)
+        setRecording(null)
         const blob = new Blob(chunks.current, { type: mime })
         if (blob.size > 0) {
-          await guard(async () => onCaptured(await api.captureAudio(blob)))
+          await guard(async () => onCaptured(await api.captureAudio(blob, kind)))
         }
       }
       rec.start()
       recorder.current = rec
-      setRecording(true)
+      setRecording(kind)
     } catch {
       setError('microphone unavailable')
     }
@@ -216,11 +237,21 @@ export function CaptureBar({ onCaptured }: { onCaptured: (e: Entry) => void }) {
         />
         <button
           type="button"
-          className={recording ? 'recording' : ''}
-          onClick={toggleRecording}
-          disabled={busy && !recording}
+          className={recording === 'voice' ? 'recording' : ''}
+          onClick={() => toggleRecording('voice')}
+          disabled={(busy && !recording) || recording === 'music'}
+          title="voice note: transcribed, audio pruned later"
         >
-          {recording ? '■ stop' : '● rec'}
+          {recording === 'voice' ? '■ stop' : '● rec'}
+        </button>
+        <button
+          type="button"
+          className={recording === 'music' ? 'recording' : ''}
+          onClick={() => toggleRecording('music')}
+          disabled={(busy && !recording) || recording === 'voice'}
+          title="music: clean recording, kept as is"
+        >
+          {recording === 'music' ? '■ stop' : '♪ rec'}
         </button>
       </div>
       {error && <p className="error">{error}</p>}

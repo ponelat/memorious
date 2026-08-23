@@ -10,8 +10,10 @@
 //! (the responder dials back using the addr carried in Hello). Fetching *all* missing
 //! referenced blobs each sync also heals earlier interrupted transfers.
 
+use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 use iroh::endpoint::{presets, Connection, RecvStream, SendStream, VarInt};
@@ -22,9 +24,12 @@ use iroh_blobs::store::fs::FsStore;
 use iroh_blobs::{BlobsProtocol, Hash};
 use serde::{Deserialize, Serialize};
 
-use crate::event::{Event, MediaKind, Payload};
+use crate::event::{AudioKind, Event, MediaKind, Payload};
 use crate::journal::{Journal, SECRET_LEN};
 use crate::store::Heads;
+
+/// Blob GC cadence for real peers; see retention.rs for what GC may drop.
+pub const DEFAULT_GC_INTERVAL: Duration = Duration::from_secs(10 * 60);
 
 pub const SYNC_ALPN: &[u8] = b"memorious/sync/1";
 const AUTH_CONTEXT: &[u8; 32] = b"memorious auth v0 context key 32";
@@ -257,9 +262,45 @@ pub struct Node {
 impl Node {
     /// Bind an endpoint, register sync + blobs protocols, and start accepting.
     pub async fn spawn(journal: Journal) -> Result<Self> {
+        Self::spawn_with_gc_interval(journal, DEFAULT_GC_INTERVAL).await
+    }
+
+    /// `spawn` with an explicit blob-GC cadence (tests use a fast one).
+    pub async fn spawn_with_gc_interval(journal: Journal, gc_interval: Duration) -> Result<Self> {
         let journal = Arc::new(journal);
-        let fs_store = FsStore::load(journal.blobs_dir()).await?;
+        let fs_store = {
+            // Retention: the event log is the only GC root. Before each GC pass
+            // iroh-blobs asks us which hashes are live; we answer "everything
+            // the log references, minus what retention.rs says this device may
+            // drop". Ingest tags are removed once the capture event exists
+            // (see `drop_ingest_tag`), so a tag only ever protects an
+            // in-flight capture.
+            let protect_journal = journal.clone();
+            let cb: iroh_blobs::store::ProtectCb = Arc::new(move |live: &mut HashSet<Hash>| {
+                let journal = protect_journal.clone();
+                Box::pin(async move {
+                    match live_blob_hashes(&journal) {
+                        Ok(hashes) => {
+                            live.extend(hashes);
+                            iroh_blobs::store::ProtectOutcome::Continue
+                        }
+                        Err(err) => {
+                            tracing::warn!("retention: skipping GC pass: {err:#}");
+                            iroh_blobs::store::ProtectOutcome::Abort
+                        }
+                    }
+                })
+            });
+            let root = journal.blobs_dir();
+            let mut options = iroh_blobs::store::fs::options::Options::new(&root);
+            options.gc = Some(iroh_blobs::store::GcConfig {
+                interval: gc_interval,
+                add_protected: Some(cb),
+            });
+            FsStore::load_with_opts(root.join("blobs.db"), options).await?
+        };
         let blobs: BlobStore = fs_store.clone().into();
+        drop_ingest_tags_for_referenced(&blobs, &journal).await?;
 
         // Endpoint identity is per-device and persistent, so peers can re-dial us.
         let secret_key = match journal.store.meta_get("endpoint_secret")? {
@@ -401,6 +442,7 @@ impl Node {
     }
 
     /// Store media bytes in the blob store and append a capture event referencing them.
+    /// Audio captured this way is `AudioKind::Voice`; use `capture_audio` for music.
     pub async fn capture_blob(&self, kind: MediaKind, bytes: Vec<u8>) -> Result<Event> {
         self.capture_blob_with_intent(kind, bytes, false).await
     }
@@ -413,13 +455,50 @@ impl Node {
         bytes: Vec<u8>,
         will_enrich: bool,
     ) -> Result<Event> {
-        let (payload, _) = self.seal_and_store(kind, bytes).await?;
-        self.journal.store.append_local(
+        self.capture_with(kind, bytes, AudioKind::Voice, will_enrich).await
+    }
+
+    /// Audio capture with its kind decided up front (retention.rs). Music is
+    /// never enriched, so `will_enrich` only applies to voice.
+    pub async fn capture_audio(&self, bytes: Vec<u8>, audio_kind: AudioKind) -> Result<Event> {
+        self.capture_audio_with_intent(bytes, audio_kind, false).await
+    }
+
+    pub async fn capture_audio_with_intent(
+        &self,
+        bytes: Vec<u8>,
+        audio_kind: AudioKind,
+        will_enrich: bool,
+    ) -> Result<Event> {
+        let will_enrich = will_enrich && audio_kind == AudioKind::Voice;
+        self.capture_with(MediaKind::Audio, bytes, audio_kind, will_enrich).await
+    }
+
+    async fn capture_with(
+        &self,
+        kind: MediaKind,
+        bytes: Vec<u8>,
+        audio_kind: AudioKind,
+        will_enrich: bool,
+    ) -> Result<Event> {
+        let (payload, tag) = self.seal_and_store(kind, bytes, audio_kind).await?;
+        let event = self.journal.store.append_local(
             self.journal.device_id(),
             crate::event::EventKind::Capture,
             payload,
             will_enrich,
-        )
+        )?;
+        self.drop_ingest_tag(tag).await;
+        Ok(event)
+    }
+
+    /// Once the capture event exists the log protects the blob; the ingest
+    /// tag would otherwise pin it past retention forever. Best effort — a
+    /// leftover tag is cleaned up at the next spawn.
+    async fn drop_ingest_tag(&self, tag: iroh_blobs::api::tags::TagInfo) {
+        if let Err(err) = self.blobs.tags().delete(tag.name).await {
+            tracing::debug!("ingest tag not dropped: {err:#}");
+        }
     }
 
     /// Media capture with an explicit `recorded_at` (import tool).
@@ -429,29 +508,35 @@ impl Node {
         bytes: Vec<u8>,
         recorded_at: i64,
     ) -> Result<Event> {
-        let (payload, _) = self.seal_and_store(kind, bytes).await?;
-        self.journal.store.append_local_at(
+        let (payload, tag) = self.seal_and_store(kind, bytes, AudioKind::Voice).await?;
+        let event = self.journal.store.append_local_at(
             self.journal.device_id(),
             crate::event::EventKind::Capture,
             payload,
             false,
             recorded_at,
-        )
+        )?;
+        self.drop_ingest_tag(tag).await;
+        Ok(event)
     }
 
     /// Encrypt-at-ingest: seal plaintext under a fresh content key, store the
     /// ciphertext (the blob identity is the ciphertext hash), wrap the key
     /// into the payload. The blob store never sees plaintext.
-    async fn seal_and_store(&self, kind: MediaKind, bytes: Vec<u8>) -> Result<(Payload, Hash)> {
+    async fn seal_and_store(
+        &self,
+        kind: MediaKind,
+        bytes: Vec<u8>,
+        audio_kind: AudioKind,
+    ) -> Result<(Payload, iroh_blobs::api::tags::TagInfo)> {
         let size = bytes.len() as u64;
         let mut sealed = tokio::task::spawn_blocking(move || crate::crypto::seal(&bytes)).await??;
         let envelope = self.journal.wrap_blob_keys(&sealed)?;
         let ciphertext = std::mem::take(&mut sealed.ciphertext);
         let tag = self.blobs.add_bytes(ciphertext).await?;
-        Ok((
-            Payload::media(kind, tag.hash.to_hex().to_string(), size, envelope),
-            tag.hash,
-        ))
+        let payload =
+            Payload::media_audio_kind(kind, tag.hash.to_hex().to_string(), size, envelope, audio_kind);
+        Ok((payload, tag))
     }
 
     /// Whole blob plaintext, by (ciphertext) hex hash: fetch, unwrap the
@@ -657,8 +742,17 @@ async fn fetch_missing_blobs(
     journal: &Journal,
     provider: &EndpointAddr,
 ) -> Result<usize> {
+    // Retention: don't pull back what this device's policy says it may drop
+    // (retention.rs) — the GC would only remove it again.
+    let evictable: HashSet<String> = journal
+        .evictable_blob_hashes(&journal.retention_policy()?, unix_now_ms())?
+        .into_iter()
+        .collect();
     let mut missing = Vec::new();
     for hex in journal.store.referenced_blob_hashes()? {
+        if evictable.contains(&hex) {
+            continue;
+        }
         let hash: Hash = hex.parse().context("bad hash in log")?;
         if !blobs.has(hash).await? {
             missing.push(hash);
@@ -682,6 +776,65 @@ async fn fetch_missing_blobs(
     }
     conn.close(VarInt::from(0u32), b"done");
     Ok(fetched)
+}
+
+impl Drop for Node {
+    /// The blob store's GC task (retention) holds its own handle to the store
+    /// actor, so merely dropping `FsStore` no longer closes the database — a
+    /// Node dropped without `shutdown()` would keep `blobs.db` locked for the
+    /// life of the process. Ask the actor to stop explicitly (idempotent after
+    /// `shutdown`; best effort outside a runtime).
+    fn drop(&mut self) {
+        let blobs = self.blobs.clone();
+        if let Ok(rt) = tokio::runtime::Handle::try_current() {
+            rt.spawn(async move {
+                let _ = blobs.shutdown().await;
+            });
+        }
+    }
+}
+
+/// Hashes the GC must keep: everything the log references minus what this
+/// device's retention policy lets go. The policy itself is `retention.rs`.
+fn live_blob_hashes(journal: &Journal) -> Result<Vec<Hash>> {
+    let evictable: HashSet<String> = journal
+        .evictable_blob_hashes(&journal.retention_policy()?, unix_now_ms())?
+        .into_iter()
+        .collect();
+    let mut live = Vec::new();
+    for hex in journal.store.referenced_blob_hashes()? {
+        if evictable.contains(&hex) {
+            continue;
+        }
+        live.push(hex.parse::<Hash>().context("bad hash in log")?);
+    }
+    Ok(live)
+}
+
+/// Remove ingest tags for blobs the log already references, so the log is the
+/// only GC root (older journals tagged every blob at ingest). Tags on
+/// *unreferenced* blobs are left alone: they belong to captures still in
+/// flight between ingest and event append.
+async fn drop_ingest_tags_for_referenced(blobs: &BlobStore, journal: &Journal) -> Result<()> {
+    use n0_future::StreamExt;
+    let referenced: HashSet<Hash> = journal
+        .store
+        .referenced_blob_hashes()?
+        .iter()
+        .filter_map(|h| h.parse().ok())
+        .collect();
+    let mut tags = blobs.tags().list().await?;
+    let mut names = Vec::new();
+    while let Some(tag) = tags.next().await {
+        let tag = tag?;
+        if referenced.contains(&tag.hash) {
+            names.push(tag.name);
+        }
+    }
+    for name in names {
+        blobs.tags().delete(name).await?;
+    }
+    Ok(())
 }
 
 fn unix_now_ms() -> i64 {

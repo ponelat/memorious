@@ -64,6 +64,10 @@ impl Journal {
             if redacted.contains(&e.event_id) || annotated.contains_key(&e.event_id) {
                 continue;
             }
+            // Music is the record, not a transcript source (retention.rs).
+            if !crate::retention::wants_transcription(&e) {
+                continue;
+            }
             let ours = e.device_id == self.device_id();
             let grace_over = self
                 .store
@@ -88,7 +92,7 @@ mod tests {
             .append_local(
                 j.device_id(),
                 EventKind::Capture,
-                Payload::Audio { hash: "cafe".into(), size: 9, crypto: None },
+                Payload::Audio { hash: "cafe".into(), size: 9, crypto: None, audio_kind: crate::event::AudioKind::Voice },
                 will_enrich,
             )
             .unwrap()
@@ -166,6 +170,26 @@ mod tests {
         j.annotate(&plain.event_id, "done").unwrap();
         j.redact("evt-remote").unwrap();
         assert!(j.pending_enrichment(0).unwrap().is_empty());
+    }
+
+    #[test]
+    fn music_is_never_pending_enrichment() {
+        let dir = tempdir().unwrap();
+        let j = Journal::init(&dir.path().join("j"), "pw").unwrap();
+        j.store
+            .append_local(
+                j.device_id(),
+                EventKind::Capture,
+                Payload::Audio {
+                    hash: "beat".into(),
+                    size: 9,
+                    crypto: None,
+                    audio_kind: crate::event::AudioKind::Music,
+                },
+                false,
+            )
+            .unwrap();
+        assert!(j.pending_enrichment(0).unwrap().is_empty(), "music is the record, not a transcript source");
     }
 
     #[test]

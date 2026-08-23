@@ -72,7 +72,7 @@ export const httpApi: JournalApi = {
   },
 
   capturePhoto: (file) => upload('/api/capture/photo', file),
-  captureAudio: (file) => upload('/api/capture/audio', file),
+  captureAudio: (file, kind = 'voice') => upload(`/api/capture/audio?kind=${kind}`, file),
   captureVideo: (file) => upload('/api/capture/video', file),
 
   feed(before?: number) {

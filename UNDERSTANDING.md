@@ -97,6 +97,39 @@ Exactly one stored format per type, chosen for native-iOS-capture + universal pl
 - Audio: **AAC in m4a**.
 - Photos: **JPEG**, normalized on capture. No originals kept.
 
+## Audio kinds and media retention (decided 2026-08-23)
+
+An audio capture is one of two things, decided **at capture** and carried on the payload
+(`audio_kind`, absent = `voice` so older events and peers stay valid):
+
+- **voice** — a dictated note. The transcript is the record; the audio was only the means.
+  Captured through the platform's speech pipeline (AGC, noise suppression, headset mic).
+- **music** — a recording. The audio *is* the record. Captured clean (voice processing off,
+  stereo where available, music bitrate — still AAC/m4a), **never transcribed, never
+  evicted**.
+
+This is not a tag: it is a property of the recording like photo-vs-audio, immutable once
+captured. There is no reclassification.
+
+**Retention is cache eviction, not deletion.** The log is never touched. A device may drop
+the *bytes* of a blob it can always fetch again from a peer that still holds them. Eligibility
+is **derived** from facts in the log plus a **per-device policy** stored in that device's
+local meta — nothing is marked, nothing is synced, no fifth event kind. Two rules:
+
+1. Transcribed voice audio (non-empty winning annotation), after a per-device window
+   counted from *local receipt* of the transcript (same reasoning as enrichment's grace).
+2. Media of redacted entries, after a window counted from local receipt of the redaction.
+
+Photos, video, music, untranscribed or silently-transcribed voice: kept unconditionally.
+Shipped defaults are asymmetric: **phones evict** (7 days / 30 days), **the always-on
+server keeps everything** — so a pruned phone is always recoverable, and "latest annotation
+wins, re-run a better model next year" still holds somewhere. Turning eviction on at the
+last peer holding a blob is a deliberate choice to make the transcript the only record.
+
+The single executable statement of all of this — rules, policy, defaults, and the tests
+that are the contract — is **`crates/core/src/retention.rs`**. Every face calls it; none
+re-implements it.
+
 ## Storage (per peer)
 
 - **SQLite** — the event log (canonical), indexes, and **FTS5** full-text search over entry

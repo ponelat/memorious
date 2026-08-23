@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core'
-import type { Entry, FeedPage, JournalApi, MediaRef, NetConfig, Status, SyncReport } from './types'
+import type { AudioKind, Entry, FeedPage, JournalApi, MediaRef, NetConfig, Status, SyncReport } from './types'
 
 /**
  * Media goes over as a raw request body, never as a JSON array of numbers: a
@@ -7,7 +7,7 @@ import type { Entry, FeedPage, JournalApi, MediaRef, NetConfig, Status, SyncRepo
  * transient allocation — enough to take the Linux webview's web process down.
  * The kind rides along in a header (see `capture_media` in the Tauri shell).
  */
-async function captureMedia(kind: 'photo' | 'audio' | 'video', blob: Blob): Promise<Entry> {
+async function captureMedia(kind: 'photo' | 'audio' | 'music' | 'video', blob: Blob): Promise<Entry> {
   return invoke<Entry>('capture_media', await blob.arrayBuffer(), {
     headers: { 'media-kind': kind },
   })
@@ -28,8 +28,8 @@ export const tauriApi: JournalApi = {
     return captureMedia('photo', file)
   },
 
-  captureAudio(file: Blob) {
-    return captureMedia('audio', file)
+  captureAudio(file: Blob, kind: AudioKind = 'voice') {
+    return captureMedia(kind === 'music' ? 'music' : 'audio', file)
   },
 
   captureVideo(file: Blob) {

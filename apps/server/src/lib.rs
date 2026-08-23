@@ -13,7 +13,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use memorious_core::api_json::entry_json;
-use memorious_core::event::{EventKind, MediaKind, Payload};
+use memorious_core::event::{AudioKind, EventKind, MediaKind, Payload};
 use memorious_core::media::{is_mp4_family, normalize_photo, sniff_audio, AudioContainer};
 use memorious_core::Node;
 use serde::{Deserialize, Serialize};
@@ -184,7 +184,25 @@ async fn capture_photo(State(state): State<SharedState>, multipart: Multipart) -
     }
 }
 
-async fn capture_audio(State(state): State<SharedState>, multipart: Multipart) -> Response {
+#[derive(Deserialize)]
+struct AudioParams {
+    /// "voice" (default) | "music" — decided at capture, see
+    /// crates/core/src/retention.rs.
+    kind: Option<String>,
+}
+
+async fn capture_audio(
+    State(state): State<SharedState>,
+    Query(p): Query<AudioParams>,
+    multipart: Multipart,
+) -> Response {
+    let audio_kind = match p.kind.as_deref() {
+        None => AudioKind::Voice,
+        Some(k) => match AudioKind::parse(k) {
+            Some(k) => k,
+            None => return err(StatusCode::BAD_REQUEST, "kind must be voice or music"),
+        },
+    };
     let bytes = match read_upload(multipart).await {
         Ok(b) => b,
         Err(e) => return err(StatusCode::BAD_REQUEST, &format!("{e:#}")),
@@ -201,7 +219,7 @@ async fn capture_audio(State(state): State<SharedState>, multipart: Multipart) -
             return err(StatusCode::UNPROCESSABLE_ENTITY, "unrecognized audio container")
         }
     };
-    match state.node.capture_blob_with_intent(MediaKind::Audio, m4a, true).await {
+    match state.node.capture_audio_with_intent(m4a, audio_kind, true).await {
         Ok(e) => Json(entry_json(&e)).into_response(),
         Err(e) => internal(e),
     }

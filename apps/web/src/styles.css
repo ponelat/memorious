@@ -363,6 +363,11 @@ textarea:focus {
   color: var(--faint);
 }
 
+.entry.audio .music-mark {
+  color: var(--faint);
+  margin-right: 0.4rem;
+}
+
 .fan {
   border: none;
   padding: 0.5rem 0;

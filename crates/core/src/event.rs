@@ -20,6 +20,38 @@ pub enum MediaKind {
     Video,
 }
 
+/// What an audio capture is for. Not a tag: it is a property of the recording
+/// itself, fixed at capture, like photo-vs-audio. `Voice` is a dictated note —
+/// the transcript is the record and the blob is disposable. `Music` is the
+/// record itself — captured clean, never transcribed, never evicted.
+/// The full policy lives in one place: `crates/core/src/retention.rs`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AudioKind {
+    #[default]
+    Voice,
+    Music,
+}
+
+impl AudioKind {
+    pub fn is_voice(&self) -> bool {
+        *self == AudioKind::Voice
+    }
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            AudioKind::Voice => "voice",
+            AudioKind::Music => "music",
+        }
+    }
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "voice" => Some(AudioKind::Voice),
+            "music" => Some(AudioKind::Music),
+            _ => None,
+        }
+    }
+}
+
 /// Per-blob encryption envelope carried inside a media capture payload: the
 /// wrapped content key and STREAM nonce base. The event log *is* the manifest
 /// — an unlocked log is possession of every media key (UNDERSTANDING.md
@@ -53,6 +85,11 @@ pub enum Payload {
         size: u64,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         crypto: Option<BlobCrypto>,
+        /// What the recording *is* — decided once, at capture. Absent on the
+        /// wire means `Voice`, so pre-2026-08-23 events and peers stay valid.
+        /// Drives capture quality, enrichment and retention — see `retention.rs`.
+        #[serde(default, skip_serializing_if = "AudioKind::is_voice")]
+        audio_kind: AudioKind,
     },
     Video {
         hash: String,
@@ -90,11 +127,30 @@ pub struct Event {
 
 impl Payload {
     pub fn media(kind: MediaKind, hash: String, size: u64, crypto: BlobCrypto) -> Self {
+        Self::media_audio_kind(kind, hash, size, crypto, AudioKind::Voice)
+    }
+
+    /// `media` with an explicit audio kind (ignored for photo/video).
+    pub fn media_audio_kind(
+        kind: MediaKind,
+        hash: String,
+        size: u64,
+        crypto: BlobCrypto,
+        audio_kind: AudioKind,
+    ) -> Self {
         let crypto = Some(crypto);
         match kind {
             MediaKind::Photo => Payload::Photo { hash, size, crypto },
-            MediaKind::Audio => Payload::Audio { hash, size, crypto },
+            MediaKind::Audio => Payload::Audio { hash, size, crypto, audio_kind },
             MediaKind::Video => Payload::Video { hash, size, crypto },
+        }
+    }
+
+    /// The audio kind of an audio payload; `None` for everything else.
+    pub fn audio_kind(&self) -> Option<AudioKind> {
+        match self {
+            Payload::Audio { audio_kind, .. } => Some(*audio_kind),
+            _ => None,
         }
     }
 

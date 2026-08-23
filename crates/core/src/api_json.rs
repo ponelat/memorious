@@ -39,8 +39,10 @@ pub fn entry_json(e: &Event) -> serde_json::Value {
                 json!({"hash": hash, "size": size, "url": format!("/api/media/{hash}")}),
             );
         }
-        Payload::Audio { hash, size, .. } => {
+        Payload::Audio { hash, size, audio_kind, .. } => {
             obj.insert("kind".into(), "audio".into());
+            // "voice" | "music" — see crates/core/src/retention.rs.
+            obj.insert("audio_kind".into(), audio_kind.as_str().into());
             obj.insert(
                 "media".into(),
                 json!({"hash": hash, "size": size, "url": format!("/api/media/{hash}")}),

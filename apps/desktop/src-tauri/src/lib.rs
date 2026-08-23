@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use anyhow::{anyhow, Context, Result};
 use memorious_core::api_json::{entry_json, entry_json_annotated};
-use memorious_core::event::MediaKind;
+use memorious_core::event::{AudioKind, MediaKind};
 use memorious_core::node::JournalTicket;
 use memorious_core::{Journal, Node};
 use serde_json::{json, Value};
@@ -209,6 +209,9 @@ async fn capture_media<R: tauri::Runtime>(
     };
     let bytes = bytes.clone();
     let n = node(&app, &state).await.map_err(estr)?;
+    // "music" is audio whose recording is the record — never transcribed,
+    // never evicted (crates/core/src/retention.rs).
+    let mut audio_kind = AudioKind::Voice;
     let (kind, bytes) = match kind.as_str() {
         "photo" => {
             let jpeg = tokio::task::spawn_blocking(move || {
@@ -219,9 +222,12 @@ async fn capture_media<R: tauri::Runtime>(
             .map_err(estr)?;
             (MediaKind::Photo, jpeg)
         }
-        "audio" => {
+        "audio" | "music" => {
             if !memorious_core::media::is_mp4_family(&bytes) {
                 return Err("audio must be an m4a/mp4 recording".into());
+            }
+            if kind == "music" {
+                audio_kind = AudioKind::Music;
             }
             (MediaKind::Audio, bytes)
         }
@@ -233,7 +239,11 @@ async fn capture_media<R: tauri::Runtime>(
         }
         other => return Err(format!("unknown media kind {other}")),
     };
-    let e = n.capture_blob(kind, bytes).await.map_err(estr)?;
+    let e = match kind {
+        MediaKind::Audio => n.capture_audio(bytes, audio_kind).await,
+        other => n.capture_blob(other, bytes).await,
+    }
+    .map_err(estr)?;
     Ok(entry_json(&e))
 }
 

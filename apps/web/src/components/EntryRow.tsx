@@ -198,12 +198,23 @@ export function AudioRow({
   entry: Entry
   onRedact?: (e: Entry) => void
 }) {
-  const url = useMediaUrl(entry)
+  const music = entry.audio_kind === 'music'
+  const evicted = entry.media?.evicted === true
+  const url = useMediaUrl(evicted ? undefined : entry)
   return (
-    <div className="entry audio">
+    <div className={`entry audio${music ? ' music' : ''}`}>
       <span className="time">{timeOf(entry.recorded_at)}</span>
-      {url ? <audio controls preload="metadata" src={url} /> : <span className="ph audio-ph">audio…</span>}
-      {entry.annotation && <Annotation text={entry.annotation} />}
+      {music && <span className="music-mark" title="music recording">♪</span>}
+      {evicted ? (
+        <span className="ph audio-ph" title="audio pruned from this device; the transcript is the record">
+          audio pruned
+        </span>
+      ) : url ? (
+        <audio controls preload="metadata" src={url} />
+      ) : (
+        <span className="ph audio-ph">audio…</span>
+      )}
+      {!music && entry.annotation && <Annotation text={entry.annotation} />}
       <span className="actions">
         {copyableOf(entry) && <CopyButton text={copyableOf(entry)!} />}
         {onRedact && (

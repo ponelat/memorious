@@ -6,7 +6,8 @@ use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 
 use memorious_core::api_json::{entry_json, entry_json_annotated};
-use memorious_core::event::MediaKind;
+use memorious_core::event::{AudioKind, MediaKind};
+use memorious_core::retention::RetentionPolicy;
 use memorious_core::node::JournalTicket;
 use memorious_core::{Journal, Node};
 use serde_json::json;
@@ -61,6 +62,18 @@ fn spawn_node(journal: Journal) -> Result<Arc<Node>> {
     Ok(Arc::new(rt().block_on(Node::spawn(journal))?))
 }
 
+/// A phone frees space: transcribed voice notes and redacted media are
+/// evicted after `RetentionPolicy::PHONE`'s windows (the always-on server
+/// keeps everything). Installed once; a policy set later via
+/// `set_retention_policy_json` is never overridden. Rules live in
+/// crates/core/src/retention.rs.
+fn ensure_phone_retention(journal: &Journal) -> Result<()> {
+    if journal.retention_policy_if_set()?.is_none() {
+        journal.set_retention_policy(&RetentionPolicy::PHONE)?;
+    }
+    Ok(())
+}
+
 /// This face only ships on the iPhone today; revisit when an iPad/Android
 /// build exists.
 const DEFAULT_DEVICE_NAME: &str = "iPhone";
@@ -71,6 +84,7 @@ const DEFAULT_DEVICE_NAME: &str = "iPhone";
 pub fn open_journal(dir: String, password: String) -> Result<Arc<MobileJournal>> {
     let journal = Journal::open(&PathBuf::from(dir), &password)?;
     journal.ensure_device_name(DEFAULT_DEVICE_NAME)?;
+    ensure_phone_retention(&journal)?;
     let node = spawn_node(journal)?;
     Ok(Arc::new(MobileJournal { node }))
 }
@@ -79,6 +93,7 @@ pub fn open_journal(dir: String, password: String) -> Result<Arc<MobileJournal>>
 pub fn init_fresh(dir: String, password: String) -> Result<Arc<MobileJournal>> {
     let journal = Journal::init(&PathBuf::from(dir), &password)?;
     journal.ensure_device_name(DEFAULT_DEVICE_NAME)?;
+    ensure_phone_retention(&journal)?;
     let node = spawn_node(journal)?;
     Ok(Arc::new(MobileJournal { node }))
 }
@@ -91,6 +106,7 @@ pub fn join_ticket(dir: String, ticket: String, password: String) -> Result<Arc<
     let (node, _report) =
         rt().block_on(Node::pair_from_ticket(&PathBuf::from(dir), &ticket, &password))?;
     node.journal().ensure_device_name(DEFAULT_DEVICE_NAME)?;
+    ensure_phone_retention(node.journal())?;
     node.journal()
         .store
         .meta_set(LAST_PEER_TICKET, ticket.trim().as_bytes())
@@ -98,6 +114,30 @@ pub fn join_ticket(dir: String, ticket: String, password: String) -> Result<Arc<
     Ok(Arc::new(MobileJournal {
         node: Arc::new(node),
     }))
+}
+
+impl MobileJournal {
+    /// `media.evicted = true` on entries whose blob this phone no longer holds
+    /// (retention.rs) — the UI shows the transcript with a "pruned" marker
+    /// instead of a play button that would fail.
+    fn mark_evicted(&self, entries: &mut [serde_json::Value]) {
+        for e in entries.iter_mut() {
+            let Some(hash) = e["media"]["hash"].as_str().map(str::to_string) else { continue };
+            if let Ok(false) = rt().block_on(self.node.has_blob(&hash)) {
+                e["media"]["evicted"] = true.into();
+            }
+        }
+    }
+
+    fn capture_audio_kind(&self, bytes: Vec<u8>, kind: AudioKind) -> Result<String> {
+        if !memorious_core::media::is_mp4_family(&bytes) {
+            return Err(JournalError::Failure {
+                msg: "audio must be an m4a recording".into(),
+            });
+        }
+        let e = rt().block_on(self.node.capture_audio(bytes, kind))?;
+        Ok(entry_json(&e).to_string())
+    }
 }
 
 #[uniffi::export]
@@ -114,15 +154,29 @@ impl MobileJournal {
         Ok(entry_json(&e).to_string())
     }
 
-    /// iOS records AAC/m4a natively; anything else is refused.
+    /// iOS records AAC/m4a natively; anything else is refused. This is a
+    /// voice note: transcribed by a peer, audio evictable afterwards.
     pub fn capture_audio(&self, bytes: Vec<u8>) -> Result<String> {
-        if !memorious_core::media::is_mp4_family(&bytes) {
-            return Err(JournalError::Failure {
-                msg: "audio must be an m4a recording".into(),
-            });
-        }
-        let e = rt().block_on(self.node.capture_blob(MediaKind::Audio, bytes))?;
-        Ok(entry_json(&e).to_string())
+        self.capture_audio_kind(bytes, AudioKind::Voice)
+    }
+
+    /// A music recording: the audio *is* the record — never transcribed,
+    /// never evicted (crates/core/src/retention.rs).
+    pub fn capture_music(&self, bytes: Vec<u8>) -> Result<String> {
+        self.capture_audio_kind(bytes, AudioKind::Music)
+    }
+
+    /// This device's retention policy as JSON (see retention.rs for the shape).
+    pub fn retention_policy_json(&self) -> Result<String> {
+        let p = self.node.journal().retention_policy().map_err(JournalError::from)?;
+        Ok(serde_json::to_string(&p).map_err(|e| JournalError::Failure { msg: e.to_string() })?)
+    }
+
+    pub fn set_retention_policy_json(&self, json: String) -> Result<()> {
+        let p: RetentionPolicy =
+            serde_json::from_str(&json).map_err(|e| JournalError::Failure { msg: e.to_string() })?;
+        self.node.journal().set_retention_policy(&p)?;
+        Ok(())
     }
 
     /// H.264/AAC MP4 — the canonical video format; anything else is refused.
@@ -141,12 +195,13 @@ impl MobileJournal {
         let annotations = self.node.journal().annotations().map_err(JournalError::from)?;
         let mut entries = self.node.journal().list().map_err(JournalError::from)?;
         entries.reverse();
-        let page: Vec<_> = entries
+        let mut page: Vec<_> = entries
             .iter()
             .filter(|e| before.map(|b| e.recorded_at < b).unwrap_or(true))
             .take(limit.clamp(1, 500) as usize)
             .map(|e| entry_json_annotated(e, &annotations))
             .collect();
+        self.mark_evicted(&mut page);
         let next_before = page.last().and_then(|e| e["recorded_at"].as_i64());
         Ok(json!({"entries": page, "next_before": next_before}).to_string())
     }

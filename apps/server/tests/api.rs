@@ -514,3 +514,67 @@ async fn server_peer_converges_with_core_peer() {
 
     peer.shutdown().await;
 }
+
+#[tokio::test]
+async fn music_uploads_carry_their_kind_and_are_never_transcribed() {
+    // `?kind=music` is the only way a browser says "this is a recording, not
+    // a note". The kind rides the entry JSON so the UI can render it; the
+    // sweeper must leave it alone (crates/core/src/retention.rs).
+    let (_dir, state) = test_state().await;
+    let router = app(state.clone(), None);
+    let mut m4a = vec![0, 0, 0, 24];
+    m4a.extend_from_slice(b"ftypM4A ");
+    m4a.extend_from_slice(&[7; 64]);
+
+    for (query, expect) in [("?kind=music", "music"), ("", "voice")] {
+        let (ct, body) = multipart_body(&m4a);
+        let resp = router
+            .clone()
+            .oneshot(
+                authed(Request::post(format!("/api/capture/audio{query}")))
+                    .header(header::CONTENT_TYPE, ct)
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let entry = body_json(resp).await;
+        assert_eq!(entry["kind"], "audio");
+        assert_eq!(entry["audio_kind"], expect, "query {query:?}");
+    }
+
+    let (ct, body) = multipart_body(&m4a);
+    let resp = router
+        .clone()
+        .oneshot(
+            authed(Request::post("/api/capture/audio?kind=polka"))
+                .header(header::CONTENT_TYPE, ct)
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+    // Feed shows both kinds; only voice is pending enrichment.
+    let resp = router
+        .clone()
+        .oneshot(authed(Request::get("/api/feed")).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let feed = body_json(resp).await;
+    let kinds: Vec<_> = feed["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["audio_kind"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(kinds, vec!["voice", "music"]);
+    let pending = state.node.journal().pending_enrichment(0).unwrap();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(
+        pending[0].payload.audio_kind(),
+        Some(memorious_core::AudioKind::Voice)
+    );
+}

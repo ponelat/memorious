@@ -1,9 +1,18 @@
 export type EntryKind = 'text' | 'photo' | 'audio' | 'video' | 'other'
 
+/**
+ * What an audio capture is, decided at record time (crates/core/src/retention.rs):
+ * 'voice' — a dictated note; the transcript is the record, the audio may be pruned.
+ * 'music' — a recording; captured clean, never transcribed, never pruned.
+ */
+export type AudioKind = 'voice' | 'music'
+
 export interface MediaRef {
   hash: string
   size: number
   url: string
+  /** This device no longer holds the bytes (retention); the entry still stands. */
+  evicted?: boolean
 }
 
 export interface Entry {
@@ -11,6 +20,8 @@ export interface Entry {
   device_id: string
   recorded_at: number
   kind: EntryKind
+  /** Present on audio entries. */
+  audio_kind?: AudioKind
   text?: string
   media?: MediaRef
   /** Enrichment text (transcription/OCR), attached by the adapter when present. */
@@ -108,7 +119,7 @@ export interface JournalApi {
   checkPasscode(passcode: string): Promise<boolean>
   captureText(text: string): Promise<Entry>
   capturePhoto(file: Blob): Promise<Entry>
-  captureAudio(file: Blob): Promise<Entry>
+  captureAudio(file: Blob, kind?: AudioKind): Promise<Entry>
   captureVideo(file: Blob): Promise<Entry>
   feed(before?: number): Promise<FeedPage>
   mediaBlob(media: MediaRef): Promise<Blob>

@@ -1,5 +1,34 @@
 # LOG
 
+## 2026-08-23 (audio kinds + media retention)
+- **Voice vs music.** `Payload::Audio` gains `audio_kind` (`voice` default — absent on the
+  wire, so old events/peers are untouched; `music`). Decided at capture, never changed.
+  Voice: speech pipeline, transcribed by a peer, audio evictable once the transcript
+  exists. Music: clean capture (no AGC/noise suppression/HFP, stereo, 256 kbps — still
+  m4a), never transcribed (`pending_enrichment` skips it), never evicted.
+- **Retention = cache eviction, derived per device.** No flag, no event, nothing synced.
+  `retention.rs` is the one home for the rules (doc-comment is the spec; tests are the
+  contract); `Journal::evictable_blob_hashes` gathers facts and asks it. Policy is local
+  meta (`retention_policy`), default keep-everything; the mobile face installs
+  `RetentionPolicy::PHONE` (7 d voice / 30 d redacted) once. Windows count from *local
+  receipt* of the transcript/redaction, like the enrichment grace period.
+- **GC mechanics.** iroh-blobs' GC runs on an interval (`Node::spawn_with_gc_interval`,
+  10 min default) with a protect callback = referenced hashes minus evictable. The log is
+  the only GC root: ingest tags are dropped right after the capture event is appended, and
+  tags for already-referenced blobs are dropped at spawn (older journals tagged every
+  blob). Tags on *unreferenced* blobs are left alone — they protect captures between
+  ingest and append. `fetch_missing_blobs` skips evictable hashes so sync doesn't undo GC;
+  relaxing the policy makes the next sync restore them. Gotcha: iroh's GC task keeps its
+  own store handle, so a Node dropped *without* `shutdown()` would hold `blobs.db` locked
+  for the life of the process — `Drop for Node` now requests store shutdown explicitly.
+- **Faces.** Server: `POST /api/capture/audio?kind=music`; entry JSON carries
+  `audio_kind`. Desktop: `media-kind: music` header. Web: second ♪ rec button with clean
+  `getUserMedia` constraints; music rows show ♪ and no transcript; `media.evicted` renders
+  "audio pruned". Mobile face: `capture_music`, `retention_policy_json`/`set_…`, feed marks
+  `media.evicted`. Server keeps everything — no policy knob exposed there on purpose.
+- Trade-off named in UNDERSTANDING.md: once the last holder evicts a voice blob, a better
+  model next year can't re-transcribe that note. The asymmetric defaults are the answer.
+
 ## 2026-08-18 (desktop: pasted media over raw IPC, Linux desktop entry)
 - **Pasting a photo into the desktop capture bar killed the app on Linux.** The Tauri
   adapter sent media as `{kind, bytes: number[]}`, and Tauri only treats a payload as

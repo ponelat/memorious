@@ -8,9 +8,10 @@ pub mod journal;
 pub mod media;
 pub mod migrate;
 pub mod node;
+pub mod retention;
 pub mod store;
 
-pub use event::{BlobCrypto, Event, EventKind, MediaKind, Payload};
+pub use event::{AudioKind, BlobCrypto, Event, EventKind, MediaKind, Payload};
 pub use journal::Journal;
 pub use node::{JournalTicket, Node, SyncReport};
 pub use store::{Heads, Store};

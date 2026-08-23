@@ -38,6 +38,9 @@ touching storage, sync, or key handling.
 - **No accounts.** Trust = possession of the journal secret (QR/ticket pairing). Browser auth
   = one active bearer passcode (hash stored in a token-set event, latest wins).
 - **One media format each:** AAC/m4a audio, JPEG photos. No originals kept.
+- **Retention lives in one file.** Which blobs a device may evict (and that music is never
+  transcribed) is decided only in `crates/core/src/retention.rs` — faces gather facts and
+  call it, never re-implement it. See UNDERSTANDING.md §"Audio kinds and media retention".
 - **Minimalism is a feature.** When in doubt, leave it out.
 - **Failing test first.** Before implementing any behavior or bug fix, write the test that
   fails for the right reason, watch it fail, then make it pass.
