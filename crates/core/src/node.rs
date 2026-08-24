@@ -635,6 +635,7 @@ impl Node {
             peer_device.as_deref(),
             "ticket",
         )?;
+        self.remember_peer_addr(addr);
         Ok(report)
     }
 
@@ -776,6 +777,90 @@ async fn fetch_missing_blobs(
     }
     conn.close(VarInt::from(0u32), b"done");
     Ok(fetched)
+}
+
+/// One peer's answer to "can I reach you right now?".
+#[derive(Debug, Clone, Serialize)]
+pub struct PeerPing {
+    pub endpoint_id: String,
+    pub device_id: Option<String>,
+    pub ok: bool,
+    /// Handshake-to-Done round trip, when reachable.
+    pub rtt_ms: Option<u64>,
+    pub error: Option<String>,
+}
+
+impl Node {
+    /// Remember the address a peer was actually reached at (latest wins), so
+    /// it can be probed later without a fresh ticket. Best effort — meta only.
+    fn remember_peer_addr(&self, addr: &EndpointAddr) {
+        if let Ok(json) = serde_json::to_vec(&AddrWire::from_addr(addr)) {
+            let _ = self
+                .journal
+                .store
+                .meta_set(&format!("peer_addr:{}", addr.id), &json);
+        }
+    }
+
+    fn stored_peer_addr(&self, endpoint_id: &str) -> Result<Option<EndpointAddr>> {
+        match self.journal.store.meta_get(&format!("peer_addr:{endpoint_id}"))? {
+            Some(bytes) => {
+                let wire: AddrWire = serde_json::from_slice(&bytes)?;
+                Ok(Some(wire.to_addr()?))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Probe one known peer: the ordinary event sync with a stopwatch and a
+    /// timeout. Reachable literally means "able to sync", and a behind peer is
+    /// healed by the probe. Never errors — the answer *is* the outcome.
+    pub async fn ping_peer(&self, endpoint_id: &str, device_id: Option<String>, timeout: Duration) -> PeerPing {
+        let mut ping = PeerPing {
+            endpoint_id: endpoint_id.to_string(),
+            device_id,
+            ok: false,
+            rtt_ms: None,
+            error: None,
+        };
+        let addr = match self.stored_peer_addr(endpoint_id) {
+            Ok(Some(addr)) => addr,
+            Ok(None) => {
+                // Synced before this build (or never): no address on file yet;
+                // the next real sync records one.
+                ping.error = Some("no known address for this peer yet".into());
+                return ping;
+            }
+            Err(err) => {
+                ping.error = Some(format!("{err:#}"));
+                return ping;
+            }
+        };
+        let start = std::time::Instant::now();
+        match tokio::time::timeout(timeout, self.sync_events_with(&addr)).await {
+            Ok(Ok(_)) => {
+                ping.ok = true;
+                ping.rtt_ms = Some(start.elapsed().as_millis() as u64);
+            }
+            Ok(Err(err)) => ping.error = Some(format!("{err:#}")),
+            Err(_) => ping.error = Some(format!("no answer within {}s", timeout.as_secs())),
+        }
+        ping
+    }
+
+    /// Probe every known peer concurrently. Order matches `peers()`
+    /// (most recently heard from first).
+    pub async fn ping_peers(&self, timeout: Duration) -> Result<Vec<PeerPing>> {
+        let peers = self.peers().await?;
+        let probes = peers
+            .into_iter()
+            .map(|p| self.ping_peer_owned(p.endpoint_id, p.device_id, timeout));
+        Ok(n0_future::join_all(probes).await)
+    }
+
+    async fn ping_peer_owned(&self, endpoint_id: String, device_id: Option<String>, timeout: Duration) -> PeerPing {
+        self.ping_peer(&endpoint_id, device_id, timeout).await
+    }
 }
 
 impl Drop for Node {
@@ -940,6 +1025,12 @@ impl ProtocolHandler for SyncProto {
             initiator_device.as_deref(),
             "inbound",
         );
+        if let Ok(json) = serde_json::to_vec(&AddrWire::from_addr(&initiator_addr)) {
+            let _ = self
+                .journal
+                .store
+                .meta_set(&format!("peer_addr:{}", connection.remote_id()), &json);
+        }
 
         // Pull blobs we now reference but don't hold, dialing back the initiator.
         if let Err(err) =

@@ -247,6 +247,19 @@ async fn capture_media<R: tauri::Runtime>(
     Ok(entry_json(&e))
 }
 
+#[tauri::command]
+async fn ping_peers<R: tauri::Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, NodeState>,
+) -> Result<Value, String> {
+    let n = node(&app, &state).await.map_err(estr)?;
+    let pings = n
+        .ping_peers(std::time::Duration::from_secs(4))
+        .await
+        .map_err(estr)?;
+    Ok(serde_json::json!({ "pings": pings }))
+}
+
 // ---- reading ----
 
 #[tauri::command]
@@ -408,6 +421,7 @@ pub fn handlers<R: tauri::Runtime>(
         setup_join,
         capture_text,
         capture_media,
+        ping_peers,
         feed,
         media_bytes,
         redact,

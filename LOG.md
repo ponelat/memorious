@@ -1,5 +1,19 @@
 # LOG
 
+## 2026-08-24 (peer ping)
+- **"Which peers can I reach right now?"** A ping is the ordinary event-sync handshake
+  with a stopwatch and a timeout — no protocol change (deployed peers unaffected), and
+  reachable literally means "able to sync": a behind peer is healed by the probe itself.
+  `Node::ping_peer/ping_peers` (concurrent, ~4s timeout), `PeerPing {ok, rtt_ms, error}`.
+- Peers are re-dialable now: `peer_addr:<endpoint-id>` meta remembers the address a peer
+  was actually reached at (latest wins) — initiator stores what it dialed, responder
+  stores the dialable addr the Hello already carried. Peers synced before this build show
+  "no known address yet" until one real sync records it.
+- A successful probe calls `record_sync_contact`, so last-contact and the health light
+  stay honest, and transports go Active on the status page as a side effect.
+- Faces: `POST /api/peers/ping`; web sync page "⇄ ping peers" button + per-peer verdict
+  line; desktop `ping_peers` command; FFI `ping_peers_json` (iOS pings on sheet open).
+
 ## 2026-08-23 (audio kinds + media retention)
 - **Voice vs music.** `Payload::Audio` gains `audio_kind` (`voice` default — absent on the
   wire, so old events/peers are untouched; `music`). Decided at capture, never changed.

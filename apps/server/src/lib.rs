@@ -49,6 +49,7 @@ pub fn app(state: SharedState, web_dist: Option<PathBuf>) -> Router {
         .route("/trash", get(trash))
         .route("/search", get(search))
         .route("/status", get(status))
+        .route("/peers/ping", post(ping_peers))
         .route("/device-name", post(set_device_name))
         .route("/net-config", post(set_net_config))
         .route("/downloads", get(downloads_list))
@@ -221,6 +222,15 @@ async fn capture_audio(
     };
     match state.node.capture_audio_with_intent(m4a, audio_kind, true).await {
         Ok(e) => Json(entry_json(&e)).into_response(),
+        Err(e) => internal(e),
+    }
+}
+
+/// Probe every known peer: reachable = the ordinary sync handshake answered
+/// (crates/core: Node::ping_peers). Cheap when converged; heals when behind.
+async fn ping_peers(State(state): State<SharedState>) -> Response {
+    match state.node.ping_peers(std::time::Duration::from_secs(4)).await {
+        Ok(pings) => Json(json!({ "pings": pings })).into_response(),
         Err(e) => internal(e),
     }
 }

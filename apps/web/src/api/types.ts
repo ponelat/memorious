@@ -93,6 +93,16 @@ export interface Status {
   net?: NetConfig
 }
 
+/** One peer's answer to "can I reach you right now?" — the ordinary sync
+ * handshake with a stopwatch (a behind peer is healed by the probe). */
+export interface PeerPing {
+  endpoint_id: string
+  device_id?: string | null
+  ok: boolean
+  rtt_ms?: number | null
+  error?: string | null
+}
+
 export interface SyncReport {
   sent?: number
   received: number
@@ -131,6 +141,8 @@ export interface JournalApi {
   setDeviceName(deviceId: string, name: string): Promise<void>
   /** Store relay/lookup config; the node applies it on next launch. */
   setNetConfig(net: NetConfig): Promise<void>
+  /** Probe every known peer; resolves when all answered or timed out (~4s). */
+  pingPeers(): Promise<PeerPing[]>
   /** Present only on hosts that dial peers themselves (desktop). */
   setup?: SetupApi
   syncNow?(ticket?: string): Promise<SyncReport>

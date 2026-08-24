@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core'
-import type { AudioKind, Entry, FeedPage, JournalApi, MediaRef, NetConfig, Status, SyncReport } from './types'
+import type { AudioKind, Entry, FeedPage, PeerPing, JournalApi, MediaRef, NetConfig, Status, SyncReport } from './types'
 
 /**
  * Media goes over as a raw request body, never as a JSON array of numbers: a
@@ -38,6 +38,11 @@ export const tauriApi: JournalApi = {
 
   feed(before?: number) {
     return invoke<FeedPage>('feed', { before })
+  },
+
+  async pingPeers() {
+    const r = await invoke<{ pings: PeerPing[] }>('ping_peers')
+    return r.pings
   },
 
   async mediaBlob(media: MediaRef) {

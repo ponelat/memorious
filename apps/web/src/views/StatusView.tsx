@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { api, DownloadFile, NetConfig, PeerInfo, Status } from '../api'
+import { api, DownloadFile, NetConfig, PeerInfo, PeerPing, Status } from '../api'
 import { agoLabel, edgeKind, MapPeer, PeerMap } from '../components/PeerMap'
 
 function prettySize(bytes: number): string {
@@ -87,6 +87,14 @@ function transportLabel(peer: PeerInfo): string {
   if (kind === 'internet') return `transport: direct QUIC over the internet (${peer.conn!.detail}) · p2p, no proxy`
   if (kind === 'relay') return `transport: via public relay ${peer.conn!.detail} · proxied`
   return `transport: idle — last sync ${agoLabel(peer.last_ok_ms)}`
+}
+
+/** The probe verdict, spelled out: reachable (with round trip) or not (why). */
+function PingLine({ ping }: { ping: PeerPing }) {
+  if (ping.ok) {
+    return <span className="ping-ok">ping: reachable · {ping.rtt_ms} ms — able to sync</span>
+  }
+  return <span className="ping-fail">ping: unreachable — {ping.error ?? 'no answer'}</span>
 }
 
 function NameEditor({ deviceId, name, onSaved }: { deviceId: string; name?: string; onSaved: () => void }) {
@@ -220,6 +228,20 @@ export function StatusView() {
     api.downloads?.().then(setDownloads).catch(() => {})
   }, [])
 
+  // endpoint_id → outcome of the latest probe round; 'probing' while in flight.
+  const [pings, setPings] = useState<Record<string, PeerPing> | 'probing' | null>(null)
+
+  async function pingPeers() {
+    setPings('probing')
+    try {
+      const results = await api.pingPeers()
+      setPings(Object.fromEntries(results.map((p) => [p.endpoint_id, p])))
+      refresh() // a successful probe refreshes last-contact and transports
+    } catch {
+      setPings(null)
+    }
+  }
+
   async function syncNow() {
     if (!api.syncNow) return
     setBusy(true)
@@ -278,7 +300,15 @@ export function StatusView() {
         </>
       )}
 
-      <h3>devices</h3>
+      <h3>
+        devices
+        {(status.peers ?? []).length > 0 && (
+          <button className="ghost ping" onClick={pingPeers} disabled={pings === 'probing'}
+            title="probe every known peer — reachable means able to sync right now">
+            {pings === 'probing' ? 'pinging…' : '⇄ ping peers'}
+          </button>
+        )}
+      </h3>
       <ul className="devices">
         {rows.map((row) => (
           <li key={row.key}>
@@ -296,6 +326,9 @@ export function StatusView() {
                 <>
                   <span>{discoveryLabel(row.peer)}</span>
                   <span>{transportLabel(row.peer)}</span>
+                  {pings && pings !== 'probing' && pings[row.peer.endpoint_id] && (
+                    <PingLine ping={pings[row.peer.endpoint_id]} />
+                  )}
                   {row.headSeq !== undefined && <span>{row.headSeq} events in the log</span>}
                 </>
               )}

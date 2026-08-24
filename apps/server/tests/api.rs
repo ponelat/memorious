@@ -578,3 +578,30 @@ async fn music_uploads_carry_their_kind_and_are_never_transcribed() {
         Some(memorious_core::AudioKind::Voice)
     );
 }
+
+#[tokio::test]
+async fn ping_endpoint_reports_reachable_peers() {
+    let dir = tempfile::tempdir().unwrap();
+    let peer = Node::spawn(Journal::init(&dir.path().join("peer"), "pw").unwrap())
+        .await
+        .unwrap();
+    let sj = Journal::init_with_secret(&dir.path().join("server"), *peer.journal().secret(), "pw")
+        .unwrap();
+    sj.set_passcode("sesame").unwrap();
+    let state = Arc::new(AppState { node: Node::spawn(sj).await.unwrap(), downloads_dir: None });
+    state.node.sync_with(&peer.addr()).await.unwrap();
+    let router = app(state, None);
+
+    let resp = router
+        .clone()
+        .oneshot(authed(Request::post("/api/peers/ping")).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    let pings = body["pings"].as_array().unwrap();
+    assert_eq!(pings.len(), 1);
+    assert_eq!(pings[0]["ok"], true);
+    assert!(pings[0]["rtt_ms"].as_u64().is_some());
+    assert_eq!(pings[0]["endpoint_id"].as_str().unwrap(), peer.addr().id.to_string());
+}

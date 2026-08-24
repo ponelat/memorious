@@ -191,6 +191,15 @@ impl MobileJournal {
         Ok(entry_json(&e).to_string())
     }
 
+    /// Probe every known peer (~4s worst case; blocking like the rest of this
+    /// face — call it off the main thread). Same JSON shape as the server's
+    /// POST /api/peers/ping.
+    pub fn ping_peers_json(&self) -> Result<String> {
+        let pings = rt()
+            .block_on(self.node.ping_peers(std::time::Duration::from_secs(4)))?;
+        Ok(serde_json::json!({ "pings": pings }).to_string())
+    }
+
     pub fn feed(&self, before: Option<i64>, limit: u32) -> Result<String> {
         let annotations = self.node.journal().annotations().map_err(JournalError::from)?;
         let mut entries = self.node.journal().list().map_err(JournalError::from)?;

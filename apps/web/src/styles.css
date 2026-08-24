@@ -363,6 +363,10 @@ textarea:focus {
   color: var(--faint);
 }
 
+.ping-ok { color: var(--ok, #2e7d32); }
+.ping-fail { color: var(--accent); }
+h3 .ping { margin-left: 0.75rem; font-size: 0.8rem; }
+
 .entry.audio .music-mark {
   color: var(--faint);
   margin-right: 0.4rem;

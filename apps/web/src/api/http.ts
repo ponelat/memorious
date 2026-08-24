@@ -75,6 +75,11 @@ export const httpApi: JournalApi = {
   captureAudio: (file, kind = 'voice') => upload(`/api/capture/audio?kind=${kind}`, file),
   captureVideo: (file) => upload('/api/capture/video', file),
 
+  async pingPeers() {
+    const r = await json<{ pings: import('./types').PeerPing[] }>('/api/peers/ping', { method: 'POST' })
+    return r.pings
+  },
+
   feed(before?: number) {
     const q = before ? `?before=${before}` : ''
     return json<FeedPage>(`/api/feed${q}`)
