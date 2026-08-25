@@ -8,6 +8,10 @@ export PATH="$HOME/.cargo/bin:$PATH"
 OUT="$PWD/downloads"
 mkdir -p "$OUT"
 
+# License attribution must travel with the binaries (SQLCipher/OpenSSL are
+# statically linked): serve the notices next to every download.
+cp THIRD-PARTY-NOTICES.md "$OUT/"
+
 # CLI (host arch).
 cargo build --release -p memorious-core --bin memorious
 cp target/release/memorious "$OUT/memorious-cli-macos-arm64"
@@ -24,9 +28,12 @@ else
   echo "cargo-zigbuild not installed — skipping Linux CLI builds"
 fi
 
-# Desktop app bundle, zipped for download.
+# Desktop app bundle, zipped for download — notices ride inside the zip.
 (cd apps/desktop && cargo tauri build 2>&1 | tail -1)
-ditto -c -k --keepParent "target/release/bundle/macos/Memorious.app" \
-  "$OUT/memorious-desktop-macos-arm64.zip"
+STAGE="$(mktemp -d)"
+ditto "target/release/bundle/macos/Memorious.app" "$STAGE/Memorious.app"
+cp THIRD-PARTY-NOTICES.md "$STAGE/"
+ditto -c -k "$STAGE" "$OUT/memorious-desktop-macos-arm64.zip"
+rm -r "$STAGE"
 
 ls -lh "$OUT"

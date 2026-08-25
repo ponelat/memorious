@@ -74,6 +74,10 @@ Pin note: nixpkgs-unstable, because iroh needs rustc ≥ 1.91.
 Licensed under either of the [MIT license](LICENSE-MIT) or the
 [Apache License, Version 2.0](LICENSE-APACHE), at your option.
 
+Binaries statically link SQLCipher (Zetetic LLC, BSD-style) and OpenSSL
+(Apache-2.0) — see [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md), which must
+accompany binary redistributions.
+
 Unless you explicitly state otherwise, any contribution intentionally submitted
 for inclusion in the work by you, as defined in the Apache-2.0 license, shall be
 dual licensed as above, without any additional terms or conditions.

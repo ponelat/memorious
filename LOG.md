@@ -1,5 +1,12 @@
 # LOG
 
+## 2026-08-25 (third-party license compliance)
+- Binaries statically link SQLCipher (Zetetic BSD-style — notice must accompany binary
+  redistributions) and vendored OpenSSL 3 (Apache-2.0) via rusqlite's
+  `bundled-sqlcipher-vendored-openssl`. Added THIRD-PARTY-NOTICES.md (repo root, linked
+  from README §License); make-downloads.sh now serves it next to the CLI binaries and
+  ships it inside the desktop zip. The iOS app carries the same notice in-app.
+
 ## 2026-08-25 (photo orientation)
 - **Portrait shots rendered landscape.** Cameras store portrait photos as landscape
   pixels + an EXIF "rotate to view" tag; `normalize_photo` re-encoded via the image
