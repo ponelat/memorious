@@ -1,5 +1,13 @@
 # LOG
 
+## 2026-08-25 (photo orientation)
+- **Portrait shots rendered landscape.** Cameras store portrait photos as landscape
+  pixels + an EXIF "rotate to view" tag; `normalize_photo` re-encoded via the image
+  crate, which ignores EXIF — the tag was stripped without rotating the pixels.
+  Now the decoder's `orientation()` is applied to the pixels before the EXIF-less
+  JPEG re-encode (one fix for all faces — every photo path funnels through core).
+  Already-captured photos are stored rotated (immutable log): redact + recapture.
+
 ## 2026-08-24 (peer ping)
 - **"Which peers can I reach right now?"** A ping is the ordinary event-sync handshake
   with a stopwatch and a timeout — no protocol change (deployed peers unaffected), and

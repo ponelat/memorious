@@ -7,9 +7,22 @@ use anyhow::{Context, Result};
 
 pub const JPEG_QUALITY: u8 = 85;
 
-/// Decode any supported image format and re-encode as JPEG. No resize; EXIF dropped.
+/// Decode any supported image format and re-encode as JPEG. No resize; EXIF
+/// dropped — which is exactly why the orientation flag must be *applied* to
+/// the pixels first: cameras store portrait shots as landscape pixels plus a
+/// "rotate to view" tag, and stripping the tag without rotating shows every
+/// portrait photo landscape.
 pub fn normalize_photo(bytes: &[u8]) -> Result<Vec<u8>> {
-    let img = image::load_from_memory(bytes).context("decode image")?;
+    use image::ImageDecoder;
+    let reader = image::ImageReader::new(std::io::Cursor::new(bytes))
+        .with_guessed_format()
+        .context("sniff image format")?;
+    let mut decoder = reader.into_decoder().context("decode image")?;
+    let orientation = decoder
+        .orientation()
+        .unwrap_or(image::metadata::Orientation::NoTransforms);
+    let mut img = image::DynamicImage::from_decoder(decoder).context("decode image")?;
+    img.apply_orientation(orientation);
     let mut out = Vec::new();
     let mut enc = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, JPEG_QUALITY);
     enc.encode_image(&img).context("encode jpeg")?;
@@ -65,6 +78,57 @@ mod tests {
 
         // Garbage is rejected.
         assert!(normalize_photo(b"not an image").is_err());
+    }
+
+    /// A JPEG the way a phone camera writes portrait shots: landscape pixels
+    /// plus an EXIF orientation tag ("rotate 90° CW to view"). Built by
+    /// splicing a minimal EXIF APP1 segment right after SOI.
+    fn portrait_jpeg_4x2_left_red() -> Vec<u8> {
+        let mut img = image::RgbImage::from_pixel(4, 2, image::Rgb([0, 0, 255]));
+        for y in 0..2 {
+            for x in 0..2 {
+                img.put_pixel(x, y, image::Rgb([255, 0, 0]));
+            }
+        }
+        let mut jpeg = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgb8(img)
+            .write_to(&mut jpeg, image::ImageFormat::Jpeg)
+            .unwrap();
+        let jpeg = jpeg.into_inner();
+
+        // Minimal EXIF: TIFF header + one IFD entry, tag 0x0112 = 6 (Rotate90).
+        let mut exif: Vec<u8> = Vec::new();
+        exif.extend_from_slice(b"Exif\0\0");
+        exif.extend_from_slice(b"II\x2a\0\x08\0\0\0"); // little-endian TIFF, IFD at 8
+        exif.extend_from_slice(&1u16.to_le_bytes()); // one entry
+        exif.extend_from_slice(&0x0112u16.to_le_bytes()); // Orientation
+        exif.extend_from_slice(&3u16.to_le_bytes()); // SHORT
+        exif.extend_from_slice(&1u32.to_le_bytes()); // count
+        exif.extend_from_slice(&6u32.to_le_bytes()); // value 6, padded
+        exif.extend_from_slice(&0u32.to_le_bytes()); // no next IFD
+        let mut app1 = vec![0xFF, 0xE1];
+        app1.extend_from_slice(&((exif.len() + 2) as u16).to_be_bytes());
+        app1.extend_from_slice(&exif);
+
+        let mut out = jpeg[..2].to_vec(); // SOI
+        out.extend_from_slice(&app1);
+        out.extend_from_slice(&jpeg[2..]);
+        out
+    }
+
+    #[test]
+    fn normalize_applies_exif_orientation() {
+        // The camera's "portrait" flag must become rotated pixels — the flag
+        // itself is stripped with the rest of the metadata, so without this
+        // the photo renders landscape everywhere ("shot portrait, shown
+        // landscape").
+        let jpeg = normalize_photo(&portrait_jpeg_4x2_left_red()).unwrap();
+        let round = image::load_from_memory(&jpeg).unwrap().to_rgb8();
+        assert_eq!((round.width(), round.height()), (2, 4), "dimensions rotated");
+        let top = round.get_pixel(0, 0);
+        let bottom = round.get_pixel(0, 3);
+        assert!(top[0] > 180 && top[2] < 80, "red edge on top after 90° CW: {top:?}");
+        assert!(bottom[2] > 180 && bottom[0] < 80, "blue edge at bottom: {bottom:?}");
     }
 
     #[test]
