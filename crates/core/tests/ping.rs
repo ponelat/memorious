@@ -53,6 +53,48 @@ async fn ping_reports_reachable_then_unreachable() {
     assert!(pings[0].rtt_ms.is_none());
 }
 
+/// A peer that silently drops packets (phone on a different network than the
+/// stored LAN addr; relay reachable but the peer absent from it) must still
+/// answer within the caller's timeout. Regression guard for a reported
+/// "ping hangs" — which turned out to be the bounded 4s spent on an
+/// unreachable-only peer set, not an actual hang.
+#[tokio::test]
+async fn ping_blackholed_peer_returns_within_timeout() {
+    let dir = tempdir().unwrap();
+    let ja = Journal::init(&dir.path().join("a"), "pw").unwrap();
+    let jb = Journal::init_with_secret(&dir.path().join("b"), *ja.secret(), "pw").unwrap();
+    let a = Node::spawn(ja).await.unwrap();
+    let b = Node::spawn(jb).await.unwrap();
+    let b_id = b.addr().id.to_string();
+    b.sync_with(&a.addr()).await.unwrap();
+    b.shutdown().await;
+
+    // Rewrite b's remembered address: a blackholed IP (drops packets, no RST)
+    // plus a real relay host b is not connected to.
+    let wire = serde_json::json!({
+        "id_hex": b_id,
+        "relays": ["https://euw1.relay.iroh.network./"],
+        "ips": ["10.255.255.1:9"],
+    });
+    a.journal()
+        .store
+        .meta_set(&format!("peer_addr:{b_id}"), &serde_json::to_vec(&wire).unwrap())
+        .unwrap();
+
+    let start = std::time::Instant::now();
+    let pings = tokio::time::timeout(Duration::from_secs(30), a.ping_peers(Duration::from_secs(2)))
+        .await
+        .expect("ping_peers hung far past its own timeout")
+        .unwrap();
+    let took = start.elapsed();
+    assert_eq!(pings.len(), 1);
+    assert!(!pings[0].ok);
+    assert!(
+        took < Duration::from_secs(6),
+        "ping took {took:?}, should be bounded by the 2s timeout"
+    );
+}
+
 #[tokio::test]
 async fn ping_heals_a_behind_peer() {
     // "Able to sync" is proven by syncing: a probe against a peer that has
