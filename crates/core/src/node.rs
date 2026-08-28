@@ -32,6 +32,12 @@ use crate::store::Heads;
 pub const DEFAULT_GC_INTERVAL: Duration = Duration::from_secs(10 * 60);
 
 pub const SYNC_ALPN: &[u8] = b"memorious/sync/1";
+
+/// Budget for *reaching* a sync peer (dial + QUIC handshake). Iroh's own dial
+/// timeout is ~30s, which every foreground sync against a dead peer would
+/// otherwise pay in full. Data transfer is deliberately unbudgeted — a big
+/// media sync over a slow link may take minutes.
+pub const SYNC_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const AUTH_CONTEXT: &[u8; 32] = b"memorious auth v0 context key 32";
 /// Close code used when the peer fails journal-secret auth.
 const CLOSE_BAD_AUTH: u32 = 1;
@@ -573,10 +579,11 @@ impl Node {
 
     /// Event-log-only round-trip: timelines converge, media stays deferred.
     pub async fn sync_events_with(&self, addr: &EndpointAddr) -> Result<SyncReport> {
-        let conn = self
-            .endpoint
-            .connect(addr.clone(), SYNC_ALPN)
+        let conn = tokio::time::timeout(SYNC_CONNECT_TIMEOUT, self.endpoint.connect(addr.clone(), SYNC_ALPN))
             .await
+            .map_err(|_| {
+                anyhow::anyhow!("peer unreachable ({}s)", SYNC_CONNECT_TIMEOUT.as_secs())
+            })?
             .context("connect to peer")?;
         let (mut send, mut recv) = conn.open_bi().await?;
 
@@ -762,9 +769,9 @@ async fn fetch_missing_blobs(
     if missing.is_empty() {
         return Ok(0);
     }
-    let conn = endpoint
-        .connect(provider.clone(), iroh_blobs::ALPN)
+    let conn = tokio::time::timeout(SYNC_CONNECT_TIMEOUT, endpoint.connect(provider.clone(), iroh_blobs::ALPN))
         .await
+        .map_err(|_| anyhow::anyhow!("peer unreachable ({}s)", SYNC_CONNECT_TIMEOUT.as_secs()))?
         .context("connect for blobs")?;
     let mut fetched = 0;
     for hash in missing {

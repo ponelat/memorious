@@ -37,4 +37,5 @@ uuid = { version = "1", features = ["v7", "serde"] }
 zeroize = { version = "1", features = ["derive"] }
 
 [dev-dependencies]
+iroh = "1"
 tempfile = "3"
