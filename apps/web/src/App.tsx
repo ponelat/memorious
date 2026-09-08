@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { api, getToken } from './api'
 import { Login } from './views/Login'
 import { Setup } from './views/Setup'
@@ -10,8 +10,29 @@ import { Wordmark } from './components/Wordmark'
 
 export type View = 'stream' | 'trash' | 'status'
 
+/** Marks the frame `scrolling` while the page moves and for a beat after it stops.
+ *  The stream's timestamps and row rules only show in that state — at rest the
+ *  page is just the entries. Class toggling on a ref, no re-render per scroll. */
+function useScrollingClass(ref: React.RefObject<HTMLElement>) {
+  useEffect(() => {
+    let timer: number | undefined
+    const onScroll = () => {
+      ref.current?.classList.add('scrolling')
+      window.clearTimeout(timer)
+      timer = window.setTimeout(() => ref.current?.classList.remove('scrolling'), 900)
+    }
+    window.addEventListener('scroll', onScroll, { passive: true })
+    return () => {
+      window.removeEventListener('scroll', onScroll)
+      window.clearTimeout(timer)
+    }
+  }, [ref])
+}
+
 export function App() {
   const [authed, setAuthed] = useState(() => !api.needsAuth || getToken() !== null)
+  const frame = useRef<HTMLDivElement>(null)
+  useScrollingClass(frame)
   const [setupState, setSetupState] = useState<'unknown' | 'ready' | 'empty' | 'locked'>(
     api.setup ? 'unknown' : 'ready',
   )
@@ -51,7 +72,7 @@ export function App() {
   if (!authed) return <Login onSubmit={login} />
 
   return (
-    <div className="app">
+    <div className="app" ref={frame}>
       <header className="topbar">
         <button
           className={view === 'stream' ? 'tab home active' : 'tab home'}

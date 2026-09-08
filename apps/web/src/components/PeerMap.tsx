@@ -48,6 +48,7 @@ export function PeerMap({ self, selfSub, peers }: { self: string; selfSub: strin
   const peerY = (i: number) => 40 + ROW / 2 + i * ROW + (anyRelay ? 18 : 0)
 
   return (
+    <div className="peer-map-wrap">
     <svg
       className="peer-map"
       viewBox={`0 0 ${W} ${H}`}
@@ -126,5 +127,6 @@ export function PeerMap({ self, selfSub, peers }: { self: string; selfSub: strin
         )
       })}
     </svg>
+    </div>
   )
 }

@@ -4,14 +4,17 @@
    recording, sync health) and white-on-media overlays keep their own colour.
 
    The rhythm is the landing page's demo stream: white ground, a narrow timestamp
-   column, roomy 17–18px body copy, grey hairlines between rows, plain photos. */
+   column, roomy 17–18px body copy, plain photos. Rules between rows and the
+   timestamps only show while the page is scrolling (`.app.scrolling`, set in
+   App.tsx); at rest the stream is just the entries. */
 :root {
   --brand: #ff5200;
   --ink: var(--brand);
   --paper: #ffffff;
   --faint: rgb(255 82 0 / 0.55);
-  --line: #ecede8;
-  --line-strong: #e3e4e0;
+  --line: rgb(255 82 0 / 0.3);
+  --line-strong: rgb(255 82 0 / 0.45);
+  --small: 14px; /* nothing on the page goes under 10pt */
   --accent: var(--brand);
   --danger: #b3261e;
   font-family: Georgia, 'Times New Roman', serif;
@@ -254,7 +257,7 @@ a:hover {
   line-height: 1;
   display: grid;
   place-items: center;
-  font-size: 13px;
+  font-size: var(--small);
   font-style: normal;
 }
 
@@ -342,9 +345,10 @@ a:hover {
 
 .day {
   color: var(--faint);
-  font-size: 13.5px;
+  font-size: var(--small);
   padding: 34px 0 6px;
-  border-bottom: 1px solid var(--line-strong);
+  border-bottom: 1px solid transparent;
+  transition: border-color 0.6s ease;
 }
 
 .day:first-child {
@@ -357,7 +361,15 @@ a:hover {
   gap: 16px;
   padding: 18px 0;
   align-items: start;
-  border-bottom: 1px solid var(--line);
+  border-bottom: 1px solid transparent;
+  transition: border-color 0.6s ease;
+}
+
+/* while scrolling: orange rules between rows and the timestamps beside them */
+.scrolling .entry,
+.scrolling .day {
+  border-bottom-color: var(--line);
+  transition-duration: 0.15s;
 }
 
 .entry p {
@@ -372,8 +384,23 @@ a:hover {
 .entry .time {
   grid-column: 1;
   color: var(--faint);
-  font-size: 13.5px;
+  font-size: var(--small);
   padding-top: 5px;
+  opacity: 0;
+  transition: opacity 0.6s ease;
+}
+
+.scrolling .entry .time {
+  opacity: 1;
+  transition-duration: 0.15s;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .entry,
+  .day,
+  .entry .time {
+    transition: none;
+  }
 }
 
 /* everything that isn't the timestamp or the actions lives in the body column */
@@ -442,7 +469,7 @@ a:hover {
 
 .clampable .more {
   padding: 0 4px;
-  font-size: 13px;
+  font-size: var(--small);
 }
 
 /* photos: plain, sized to the column like the landing's stream */
@@ -560,7 +587,7 @@ h3 .ping { margin-left: 12px; font-size: 14px; font-weight: 400; }
   padding: 0 6px;
   display: grid;
   place-items: center;
-  font-size: 13px;
+  font-size: var(--small);
 }
 
 .entry audio {
@@ -779,14 +806,20 @@ h2 {
 .health-dot.yellow { background: var(--t-relay); }
 .health-dot.red { background: var(--danger); }
 
+.peer-map-wrap {
+  overflow-x: auto;
+  margin-bottom: 8px;
+}
+
 .peer-map {
+  display: block;
   width: 100%;
+  min-width: 560px; /* the svg's own width — never scaled below it, so its text keeps ≥10pt */
   height: auto;
   border: 1px solid var(--line-strong);
   background:
     radial-gradient(circle, #c6c7c1 1px, transparent 1.4px) 0 0 / 22px 22px,
     #fff;
-  margin-bottom: 8px;
 }
 
 .pm-node rect {
@@ -802,18 +835,18 @@ h2 {
 
 .pm-node.pm-relay text {
   fill: var(--t-relay);
-  font-size: 11px;
+  font-size: 14px;
 }
 
 .pm-node .pm-name {
   fill: var(--brand);
-  font-size: 12.5px;
+  font-size: 15px;
   font-weight: 600;
 }
 
 .pm-node .pm-sub {
   fill: var(--faint);
-  font-size: 10px;
+  font-size: 14px;
 }
 
 .pm-node .pm-dot { fill: var(--line-strong); }
@@ -826,7 +859,7 @@ h2 {
 }
 
 .pm-edge .pm-label {
-  font-size: 10px;
+  font-size: 14px;
   stroke: none;
 }
 
@@ -858,7 +891,7 @@ h2 {
   display: flex;
   flex-wrap: wrap;
   gap: 14px;
-  font-size: 13.5px;
+  font-size: var(--small);
   color: var(--faint);
   margin-bottom: 26px;
 }
