@@ -68,6 +68,44 @@ export function StreamView() {
   const [lightbox, setLightbox] = useState<Entry[] | null>(null)
   const sentinel = useRef<HTMLDivElement>(null)
   const loading = useRef(false)
+  const dayMarker = useRef<HTMLDivElement>(null)
+
+  // The floating day label: whichever day header has scrolled up past the top bar
+  // is the day the reader is in. Written straight to the DOM on scroll (no
+  // re-render); only visible while the frame is `scrolling` (see App.tsx).
+  useEffect(() => {
+    let raf = 0
+    const update = () => {
+      raf = 0
+      const marker = dayMarker.current
+      if (!marker) return
+      // A day counts as passed once its own label has slid up under the marker —
+      // until then the in-flow label is right there and the marker would double it.
+      const edge = marker.getBoundingClientRect().top + 18
+      let current: Element | null = null
+      let next: Element | null = null
+      for (const day of document.querySelectorAll('.entries > .day')) {
+        if (day.getBoundingClientRect().bottom < edge) current = day
+        else {
+          next = day
+          break
+        }
+      }
+      // ...and it steps aside while the next day's label is about to take its place.
+      const crowded = next !== null && next.getBoundingClientRect().bottom < edge + 40
+      marker.textContent = current?.textContent ?? ''
+      marker.classList.toggle('has-day', current !== null && !crowded)
+    }
+    const onScroll = () => {
+      if (!raf) raf = window.requestAnimationFrame(update)
+    }
+    window.addEventListener('scroll', onScroll, { passive: true })
+    update()
+    return () => {
+      window.removeEventListener('scroll', onScroll)
+      window.cancelAnimationFrame(raf)
+    }
+  }, [])
 
   const loadMore = useCallback(async (before?: number) => {
     if (loading.current) return
@@ -143,6 +181,7 @@ export function StreamView() {
         onChange={(e) => setQuery(e.target.value)}
       />
       {results && <p className="hint">{results.length} result{results.length === 1 ? '' : 's'}</p>}
+      <div className="day-marker" ref={dayMarker} aria-hidden="true" />
       <ol className="entries">
         {items.map((item) => {
           if (item.type === 'day') {
