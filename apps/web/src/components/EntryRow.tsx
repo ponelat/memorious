@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { Entry, mediaObjectUrl } from '../api'
+import { AudioPlayer } from './AudioPlayer'
 
 function timeOf(ms: number): string {
   return new Date(ms).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', hour12: false })
@@ -204,13 +205,13 @@ export function AudioRow({
   return (
     <div className={`entry audio${music ? ' music' : ''}`}>
       <span className="time">{timeOf(entry.recorded_at)}</span>
-      {music && <span className="music-mark" title="music recording">♪</span>}
+      {music && !url && <span className="music-mark" title="music recording">♪</span>}
       {evicted ? (
         <span className="ph audio-ph" title="audio pruned from this device; the transcript is the record">
           audio pruned
         </span>
       ) : url ? (
-        <audio controls preload="metadata" src={url} />
+        <AudioPlayer src={url} music={music} />
       ) : (
         <span className="ph audio-ph">audio…</span>
       )}
