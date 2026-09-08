@@ -1,10 +1,26 @@
+/* Brand rule (2026-09-05/07, shared with memorious.app and the iPhone app): one font,
+   Georgia; one colour, flame orange — every piece of text, what you type included.
+   Quieter text is the same orange at lower alpha. Only semantic red/green (errors,
+   recording, sync health) and white-on-media overlays keep their own colour. */
 :root {
-  --ink: #161616;
-  --paper: #fbfaf8;
-  --faint: #8a8781;
-  --line: #e4e1db;
-  --accent: #b3261e;
-  font-family: ui-monospace, 'SF Mono', SFMono-Regular, Menlo, monospace;
+  --brand: #ff5200;
+  --ink: var(--brand);
+  --paper: #f4f5f2;
+  --faint: rgb(255 82 0 / 0.55);
+  --line: rgb(255 82 0 / 0.35);
+  --accent: var(--brand);
+  --danger: #b3261e;
+  font-family: Georgia, 'Times New Roman', serif;
+  accent-color: var(--brand);
+}
+
+::selection {
+  background: var(--brand);
+  color: #fff;
+}
+
+::placeholder {
+  color: rgb(255 82 0 / 0.5);
 }
 
 * {
@@ -21,11 +37,17 @@ body {
 
 button {
   font: inherit;
-  color: inherit;
+  font-style: italic;
+  color: var(--brand);
   background: none;
-  border: 1px solid var(--ink);
+  border: 1px solid var(--brand);
   padding: 0.3rem 0.9rem;
   cursor: pointer;
+}
+
+button:hover:not(:disabled) {
+  background: var(--brand);
+  color: #fff;
 }
 
 button:disabled {
@@ -39,8 +61,9 @@ button.ghost {
   padding: 0.2rem 0.4rem;
 }
 
-button.ghost:hover {
-  color: var(--accent);
+button.ghost:hover:not(:disabled) {
+  background: none;
+  color: var(--brand);
 }
 
 input,
@@ -69,8 +92,20 @@ textarea:focus {
 }
 
 .login h1 {
-  font-weight: 500;
-  letter-spacing: 0.3em;
+  margin: 0 0 0.5rem;
+  line-height: 0;
+}
+
+/* the handwritten wordmark, inline SVG filled with the text colour */
+.wordmark {
+  display: block;
+  width: min(15rem, 70vw);
+  height: auto;
+  color: var(--brand);
+}
+
+.wordmark.small {
+  width: 5.2rem;
 }
 
 /* frame */
@@ -96,14 +131,34 @@ textarea:focus {
 
 .tab {
   border: none;
+  font-style: normal;
   color: var(--faint);
   padding: 0.2rem 0.4rem;
 }
 
+.tab:hover:not(:disabled) {
+  background: none;
+  color: var(--brand);
+}
+
 .tab.active {
-  color: var(--ink);
+  color: var(--brand);
   text-decoration: underline;
   text-underline-offset: 0.3em;
+}
+
+.tab.home {
+  padding: 0;
+  display: flex;
+  align-items: center;
+}
+
+.tab.home.active {
+  text-decoration: none;
+}
+
+.tab.home .wordmark {
+  color: inherit;
 }
 
 /* capture */
@@ -164,9 +219,10 @@ textarea:focus {
   font-size: 0.85rem;
 }
 
-.attach .rm:hover {
-  color: var(--accent);
-  border-color: var(--accent);
+.attach .rm:hover:not(:disabled) {
+  background: var(--brand);
+  color: #fff;
+  border-color: var(--brand);
 }
 
 .play-badge {
@@ -200,18 +256,22 @@ textarea:focus {
 }
 
 .capture-media button {
+  font-style: normal;
   border-color: var(--line);
   color: var(--faint);
 }
 
-.capture-media button:hover {
-  border-color: var(--ink);
-  color: var(--ink);
+.capture-media button:hover:not(:disabled) {
+  background: none;
+  border-color: var(--brand);
+  color: var(--brand);
 }
 
-.capture-media button.recording {
-  border-color: var(--accent);
-  color: var(--accent);
+.capture-media button.recording,
+.capture-media button.recording:hover:not(:disabled) {
+  background: none;
+  border-color: var(--danger);
+  color: var(--danger);
   animation: pulse 1.2s infinite;
 }
 
@@ -238,8 +298,6 @@ textarea:focus {
 
 .day {
   color: var(--faint);
-  text-transform: lowercase;
-  letter-spacing: 0.15em;
   font-size: 0.8rem;
   padding: 1.4rem 0 0.4rem;
   border-bottom: 1px solid var(--line);
@@ -364,7 +422,7 @@ textarea:focus {
 }
 
 .ping-ok { color: var(--ok, #2e7d32); }
-.ping-fail { color: var(--accent); }
+.ping-fail { color: var(--danger); }
 h3 .ping { margin-left: 0.75rem; font-size: 0.8rem; }
 
 .entry.audio .music-mark {
@@ -393,8 +451,8 @@ h3 .ping { margin-left: 0.75rem; font-size: 0.8rem; }
   position: absolute;
   right: -0.4rem;
   bottom: 0.2rem;
-  background: var(--ink);
-  color: var(--paper);
+  background: var(--brand);
+  color: #fff;
   border-radius: 999px;
   min-width: 1.5rem;
   height: 1.5rem;
@@ -419,7 +477,7 @@ h3 .ping { margin-left: 0.75rem; font-size: 0.8rem; }
 }
 
 .error {
-  color: var(--accent);
+  color: var(--danger);
   font-size: 0.85rem;
 }
 
@@ -459,9 +517,15 @@ h3 .ping { margin-left: 0.75rem; font-size: 0.8rem; }
   top: 50%;
   transform: translateY(-50%);
   border: none;
+  font-style: normal;
   color: #fff;
   font-size: 2.5rem;
   padding: 1rem;
+}
+
+.lightbox .nav:hover:not(:disabled) {
+  background: none;
+  color: #fff;
 }
 
 .lightbox .prev {
@@ -480,8 +544,6 @@ h3 .ping { margin-left: 0.75rem; font-size: 0.8rem; }
 
 h2 {
   font-weight: 500;
-  letter-spacing: 0.2em;
-  text-transform: lowercase;
 }
 
 .status dl {
@@ -498,6 +560,7 @@ h2 {
   margin: 0;
 }
 
+/* ids and hashes: same font, just smaller and allowed to break anywhere */
 .mono {
   font-size: 0.8rem;
   word-break: break-all;
@@ -567,7 +630,7 @@ h2 {
 
 .health-dot.green { background: var(--t-lan); }
 .health-dot.yellow { background: var(--t-relay); }
-.health-dot.red { background: var(--accent); }
+.health-dot.red { background: var(--danger); }
 
 .peer-map {
   width: 100%;
@@ -581,7 +644,7 @@ h2 {
 
 .pm-node rect {
   fill: var(--paper);
-  stroke: var(--ink);
+  stroke: var(--brand);
   stroke-width: 1.2;
 }
 
@@ -593,11 +656,10 @@ h2 {
 .pm-node.pm-relay text {
   fill: var(--t-relay);
   font-size: 11px;
-  letter-spacing: 0.12em;
 }
 
 .pm-node .pm-name {
-  fill: var(--ink);
+  fill: var(--brand);
   font-size: 12.5px;
   font-weight: 600;
 }
@@ -618,7 +680,6 @@ h2 {
 
 .pm-edge .pm-label {
   font-size: 10px;
-  letter-spacing: 0.08em;
   stroke: none;
 }
 
@@ -662,8 +723,6 @@ h2 {
 /* sync page: devices */
 .status h3 {
   font-weight: 500;
-  letter-spacing: 0.15em;
-  text-transform: lowercase;
   font-size: 0.95rem;
   margin: 1.2rem 0 0.5rem;
 }
@@ -694,6 +753,11 @@ h2 {
 .device-name .rename {
   opacity: 0;
   transition: opacity 0.15s;
+}
+
+.device-name .rename:hover:not(:disabled) {
+  background: none;
+  color: var(--brand);
 }
 
 .devices li:hover .rename,

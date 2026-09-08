@@ -6,6 +6,7 @@ import { Unlock } from './views/Unlock'
 import { StreamView } from './views/StreamView'
 import { TrashView } from './views/TrashView'
 import { StatusView } from './views/StatusView'
+import { Wordmark } from './components/Wordmark'
 
 export type View = 'stream' | 'trash' | 'status'
 
@@ -53,10 +54,11 @@ export function App() {
     <div className="app">
       <header className="topbar">
         <button
-          className={view === 'stream' ? 'tab active' : 'tab'}
+          className={view === 'stream' ? 'tab home active' : 'tab home'}
           onClick={() => setView('stream')}
+          title="memorious"
         >
-          memorious
+          <Wordmark className="small" />
         </button>
         <span className="spacer" />
         <button

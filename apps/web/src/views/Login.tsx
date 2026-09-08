@@ -1,4 +1,5 @@
 import { FormEvent, useState } from 'react'
+import { Wordmark } from '../components/Wordmark'
 
 export function Login({ onSubmit }: { onSubmit: (passcode: string) => Promise<boolean> }) {
   const [passcode, setPasscode] = useState('')
@@ -21,7 +22,9 @@ export function Login({ onSubmit }: { onSubmit: (passcode: string) => Promise<bo
 
   return (
     <form className="login" onSubmit={submit}>
-      <h1>memorious</h1>
+      <h1>
+        <Wordmark />
+      </h1>
       <input
         type="password"
         inputMode="numeric"

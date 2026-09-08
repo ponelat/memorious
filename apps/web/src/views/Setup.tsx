@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import type { SetupApi } from '../api'
+import { Wordmark } from '../components/Wordmark'
 
 export function Setup({ setup, onDone }: { setup: SetupApi; onDone: () => void }) {
   const [ticket, setTicket] = useState('')
@@ -33,7 +34,9 @@ export function Setup({ setup, onDone }: { setup: SetupApi; onDone: () => void }
 
   return (
     <div className="login setup">
-      <h1>memorious</h1>
+      <h1>
+        <Wordmark />
+      </h1>
       <p className="hint">this device has no journal yet</p>
       <input
         type="password"
