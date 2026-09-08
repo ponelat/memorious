@@ -11,7 +11,7 @@
     "windows": [
       {
         "title": "memorious",
-        "backgroundColor": "#f4f5f2",
+        "backgroundColor": "#ffffff",
         "width": 1000,
         "height": 760,
         "resizable": true,
