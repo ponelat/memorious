@@ -102,6 +102,20 @@ a:hover {
   text-decoration-thickness: 2px;
 }
 
+/* urls inside entries: same orange, underlined, allowed to break anywhere */
+.entry a.link {
+  color: inherit;
+  text-decoration: underline;
+  text-decoration-color: var(--line-strong);
+  text-underline-offset: 3px;
+  word-break: break-all;
+  overflow-wrap: anywhere;
+}
+
+.entry a.link:hover {
+  text-decoration-color: currentColor;
+}
+
 /* login / setup / unlock */
 .login {
   min-height: 100dvh;

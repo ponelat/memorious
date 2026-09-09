@@ -2,7 +2,7 @@ import type { JournalApi, MediaRef } from './types'
 import { httpApi } from './http'
 import { tauriApi } from './tauri'
 
-const inTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
+export const inTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
 
 export const api: JournalApi = inTauri ? tauriApi : httpApi
 

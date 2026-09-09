@@ -438,6 +438,9 @@ pub fn handlers<R: tauri::Runtime>(
 pub fn run() {
     tauri::Builder::default()
         .manage(NodeState::default())
+        // Links in entries open in the system browser; without this the webview
+        // silently drops target=_blank navigations.
+        .plugin(tauri_plugin_opener::init())
         .invoke_handler(handlers())
         .setup(|app| {
             if cfg!(debug_assertions) {
