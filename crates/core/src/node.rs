@@ -25,7 +25,7 @@ use iroh_blobs::{BlobsProtocol, Hash};
 use serde::{Deserialize, Serialize};
 
 use crate::event::{AudioKind, Event, MediaKind, Payload};
-use crate::journal::{Journal, SECRET_LEN};
+use crate::journal::{Journal, MediaHeld, SECRET_LEN};
 use crate::store::Heads;
 
 /// Blob GC cadence for real peers; see retention.rs for what GC may drop.
@@ -84,11 +84,17 @@ enum Msg {
         /// id → device id. Optional for wire compat with older builds.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         device: Option<String>,
+        /// What the sender holds of the journal's media (heads already say
+        /// what it holds of the events). Optional for wire compat.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        media: Option<MediaHeld>,
     },
     HelloAck {
         heads: Heads,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         device: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        media: Option<MediaHeld>,
     },
     Event(Event),
     EndEvents,
@@ -193,6 +199,17 @@ pub struct PeerInfo {
     /// The transport in use right now, when the endpoint still holds a live
     /// path to the peer; `None` between contacts.
     pub conn: Option<PeerConn>,
+    /// Per-device heads the peer was holding at our last completed
+    /// handshake (`None` = synced only before this build).
+    pub heads: Option<Heads>,
+    /// Sum of `heads` — "the peer has x events"; pair with our own total.
+    pub events_held: Option<u64>,
+    /// Events we hold that the peer lacked as of last contact.
+    pub events_missing: Option<u64>,
+    /// The peer's own media tally at last contact.
+    pub media: Option<MediaHeld>,
+    /// Referenced media the peer lacked beyond its retention policy.
+    pub media_missing: Option<u64>,
 }
 
 /// Private, loopback, or link-local — "same network" for the status UI.
@@ -568,6 +585,12 @@ impl Node {
         Ok(self.blobs.has(hash).await?)
     }
 
+    /// This device's media tally — what it tells peers in the handshake and
+    /// what the status screen shows for "this device".
+    pub async fn media_held(&self) -> Result<MediaHeld> {
+        media_held(&self.blobs, &self.journal).await
+    }
+
     /// One full sync round-trip with the peer at `addr`: events, then media.
     pub async fn sync_with(&self, addr: &EndpointAddr) -> Result<SyncReport> {
         let mut report = self.sync_events_with(addr).await?;
@@ -595,12 +618,13 @@ impl Node {
                 heads: self.journal.store.heads()?,
                 addr: AddrWire::from_addr(&my_addr),
                 device: Some(self.journal.device_id().to_string()),
+                media: self.media_held().await.ok(),
             },
         )
         .await?;
 
-        let (peer_heads, peer_device) = match read_msg(&mut recv).await? {
-            Some(Msg::HelloAck { heads, device }) => (heads, device),
+        let (peer_heads, peer_device, peer_media) = match read_msg(&mut recv).await? {
+            Some(Msg::HelloAck { heads, device, media }) => (heads, device, media),
             Some(other) => bail!("protocol violation: expected HelloAck, got {other:?}"),
             None => bail!("peer closed during handshake (bad journal secret?)"),
         };
@@ -641,6 +665,12 @@ impl Node {
             unix_now_ms(),
             peer_device.as_deref(),
             "ticket",
+        )?;
+        // Converged: the peer now holds exactly our heads.
+        self.journal.record_peer_holdings(
+            &addr.id.to_string(),
+            &self.journal.store.heads()?,
+            peer_media.as_ref(),
         )?;
         self.remember_peer_addr(addr);
         Ok(report)
@@ -702,12 +732,24 @@ impl Node {
             };
             let device_id = meta_str("peer_device:");
             let discovery = meta_str("peer_discovery:");
+            let holdings = self.journal.peer_holdings(&endpoint_id)?;
+            let events_held = holdings.heads.as_ref().map(|h| h.values().sum());
+            let events_missing = match &holdings.heads {
+                Some(h) => Some(self.journal.peer_events_missing(h)?),
+                None => None,
+            };
+            let media_missing = holdings.media.as_ref().map(MediaHeld::missing);
             out.push(PeerInfo {
                 endpoint_id,
                 device_id,
                 last_ok_ms,
                 discovery,
                 conn,
+                heads: holdings.heads,
+                events_held,
+                events_missing,
+                media: holdings.media,
+                media_missing,
             });
         }
         out.sort_by_key(|p| std::cmp::Reverse(p.last_ok_ms));
@@ -723,6 +765,8 @@ impl Node {
             "entries": timeline.entries,
             "trash": journal.trash()?.len(),
             "heads": journal.store.heads()?,
+            "events_total": journal.events_total()?,
+            "media": self.media_held().await?,
             "timeline": timeline,
             "storage": journal.storage_usage()?,
             "health": journal.sync_health(unix_now_ms())?,
@@ -744,6 +788,31 @@ impl Node {
 }
 
 /// Pull every blob referenced by the log that we don't hold, from `provider`.
+/// Count referenced blobs against the store. One `has` per referenced hash:
+/// local lookups, cheap enough for every handshake.
+async fn media_held(blobs: &BlobStore, journal: &Journal) -> Result<MediaHeld> {
+    let policy = journal.retention_policy()?;
+    let evictable: HashSet<String> = journal
+        .evictable_blob_hashes(&policy, unix_now_ms())?
+        .into_iter()
+        .collect();
+    let mut tally = MediaHeld {
+        policy: Some(policy),
+        bytes: journal.storage_usage()?.blobs_bytes,
+        ..MediaHeld::default()
+    };
+    for hex in journal.store.referenced_blob_hashes()? {
+        tally.referenced += 1;
+        let hash: Hash = hex.parse().context("bad hash in log")?;
+        if blobs.has(hash).await? {
+            tally.held += 1;
+        } else if evictable.contains(&hex) {
+            tally.evictable += 1;
+        }
+    }
+    Ok(tally)
+}
+
 async fn fetch_missing_blobs(
     endpoint: &Endpoint,
     blobs: &BlobStore,
@@ -958,16 +1027,16 @@ impl ProtocolHandler for SyncProto {
     async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
         let (mut send, mut recv) = connection.accept_bi().await?;
 
-        let (heads, initiator_addr, initiator_device) =
+        let (heads, initiator_addr, initiator_device, initiator_media) =
             match read_msg(&mut recv).await.map_err(acc)? {
-                Some(Msg::Hello { auth, heads, addr, device }) => {
+                Some(Msg::Hello { auth, heads, addr, device, media }) => {
                     if auth != auth_token(self.journal.secret()) {
                         connection.close(VarInt::from(CLOSE_BAD_AUTH), b"bad auth");
                         return Err(AcceptError::from_err(std::io::Error::other(
                             "peer failed journal auth",
                         )));
                     }
-                    (heads, addr.to_addr().map_err(acc)?, device)
+                    (heads, addr.to_addr().map_err(acc)?, device, media)
                 }
                 _ => {
                     return Err(AcceptError::from_err(std::io::Error::other(
@@ -977,11 +1046,13 @@ impl ProtocolHandler for SyncProto {
             };
 
         let my_heads = self.journal.store.heads().map_err(acc)?;
+        let my_media = media_held(&self.blobs, &self.journal).await.ok();
         write_msg(
             &mut send,
             &Msg::HelloAck {
                 heads: my_heads,
                 device: Some(self.journal.device_id().to_string()),
+                media: my_media,
             },
         )
         .await
@@ -1032,6 +1103,13 @@ impl ProtocolHandler for SyncProto {
             initiator_device.as_deref(),
             "inbound",
         );
+        if let Ok(heads) = self.journal.store.heads() {
+            let _ = self.journal.record_peer_holdings(
+                &connection.remote_id().to_string(),
+                &heads,
+                initiator_media.as_ref(),
+            );
+        }
         if let Ok(json) = serde_json::to_vec(&AddrWire::from_addr(&initiator_addr)) {
             let _ = self
                 .journal
@@ -1108,10 +1186,10 @@ mod tests {
             }
         });
         let msg: Msg = serde_json::from_value(old_hello).unwrap();
-        assert!(matches!(msg, Msg::Hello { device: None, .. }));
+        assert!(matches!(msg, Msg::Hello { device: None, media: None, .. }));
         let old_ack = serde_json::json!({ "HelloAck": { "heads": crate::store::Heads::new() } });
         let msg: Msg = serde_json::from_value(old_ack).unwrap();
-        assert!(matches!(msg, Msg::HelloAck { device: None, .. }));
+        assert!(matches!(msg, Msg::HelloAck { device: None, media: None, .. }));
     }
 
     #[test]

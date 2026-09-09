@@ -44,6 +44,17 @@ export interface PeerConn {
   proxied: boolean
 }
 
+/** A device's media tally: blobs its log references vs blobs it holds;
+ * `evictable` is what its retention policy currently lets go, so
+ * held + evictable >= referenced means complete by its own rules. */
+export interface MediaHeld {
+  referenced: number
+  held: number
+  evictable: number
+  bytes: number
+  policy?: unknown
+}
+
 /** A known sync peer, as fresh as our last contact with it. */
 export interface PeerInfo {
   endpoint_id: string
@@ -52,6 +63,16 @@ export interface PeerInfo {
   /** How it was discovered: "ticket" (pairing ticket) or "inbound" (it found us). */
   discovery?: string | null
   conn?: PeerConn | null
+  /** Per-device heads it held at our last handshake (the version-vector ack). */
+  heads?: Record<string, number> | null
+  /** Sum of `heads`; pair with Status.events_total. Null = synced before this build. */
+  events_held?: number | null
+  /** Events we hold that it lacked, judged live against our heads. */
+  events_missing?: number | null
+  /** Its own media tally at last contact. */
+  media?: MediaHeld | null
+  /** Referenced media it lacked beyond its retention policy. */
+  media_missing?: number | null
 }
 
 export interface TimelineStats {
@@ -70,6 +91,8 @@ export interface SyncHealth {
   pending: boolean
   stalest_ms: number | null
   peers: number
+  /** Peers last seen holding less than we do (events, or unexcused media). */
+  peers_behind?: number
 }
 
 export interface NetConfig {
@@ -83,6 +106,10 @@ export interface Status {
   entries: number
   trash: number
   heads: Record<string, number>
+  /** Sum of heads — the "y" in a peer's "x of y events". */
+  events_total?: number
+  /** This device's own media tally. */
+  media?: MediaHeld
   ticket?: string
   timeline?: TimelineStats
   storage?: StorageUsage

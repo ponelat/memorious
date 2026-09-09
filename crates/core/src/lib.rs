@@ -12,6 +12,6 @@ pub mod retention;
 pub mod store;
 
 pub use event::{AudioKind, BlobCrypto, Event, EventKind, MediaKind, Payload};
-pub use journal::Journal;
+pub use journal::{Journal, MediaHeld, PeerHoldings};
 pub use node::{JournalTicket, Node, SyncReport};
 pub use store::{Heads, Store};

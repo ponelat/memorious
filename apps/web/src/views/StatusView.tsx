@@ -73,6 +73,32 @@ function deviceRows(status: Status): DeviceRow[] {
   return rows
 }
 
+/** What a peer holds, as of our last handshake with it: events as x of y
+ * (version vectors, so "behind" is exact), media by its own tally — a gap
+ * its retention policy excuses is named, not counted against it. */
+function holdingsLabel(peer: PeerInfo, status: Status): { text: string; behind: boolean } {
+  if (peer.events_held === null || peer.events_held === undefined) {
+    return { text: 'holds: unknown — synced before this build', behind: false }
+  }
+  const total = status.events_total ?? Object.values(status.heads).reduce((a, b) => a + b, 0)
+  const missing = peer.events_missing ?? 0
+  let text = `holds ${peer.events_held} of ${total} events`
+  text += missing > 0 ? ` · ${missing} behind` : ' · complete'
+  let behind = missing > 0
+  const m = peer.media
+  if (m) {
+    const mediaMissing = peer.media_missing ?? 0
+    text += ` · media ${m.held} of ${m.referenced}`
+    if (mediaMissing > 0) {
+      text += ` · ${mediaMissing} missing`
+      behind = true
+    } else if (m.evictable > 0) {
+      text += ` · ${m.evictable} let go by its policy`
+    }
+  }
+  return { text, behind }
+}
+
 /** The two facts per peer: how it was discovered, and the data transport in
  * use right now (with any proxy in the chain called out). */
 function discoveryLabel(peer: PeerInfo): string {
@@ -280,8 +306,12 @@ export function StatusView() {
         sync
         {health && (
           <span className={`health-dot ${health.color}`} title={
-            health.color === 'green' ? 'all peers up to date' :
-            health.color === 'yellow' ? 'local entries not yet picked up by any peer' :
+            health.color === 'green' ? 'every peer holds everything' :
+            health.color === 'yellow' ? (
+              (health.peers_behind ?? 0) > 0
+                ? `${health.peers_behind} peer${health.peers_behind === 1 ? '' : 's'} behind (events or media)`
+                : 'local entries not yet picked up by any peer'
+            ) :
             'a peer has been out of touch for 48h+'
           } />
         )}
@@ -321,7 +351,13 @@ export function StatusView() {
               )}
             </span>
             <span className="device-meta hint">
-              {row.isSelf && <span>this device{row.headSeq !== undefined && ` · ${row.headSeq} events`}</span>}
+              {row.isSelf && (
+                <span>
+                  this device{row.headSeq !== undefined && ` · ${row.headSeq} events`}
+                  {status.media && ` · media ${status.media.held} of ${status.media.referenced}`}
+                  {status.media && status.media.evictable > 0 && ` (${status.media.evictable} let go by policy)`}
+                </span>
+              )}
               {!row.isSelf && row.peer && (
                 <>
                   <span>{discoveryLabel(row.peer)}</span>
@@ -329,6 +365,10 @@ export function StatusView() {
                   {pings && pings !== 'probing' && pings[row.peer.endpoint_id] && (
                     <PingLine ping={pings[row.peer.endpoint_id]} />
                   )}
+                  {(() => {
+                    const h = holdingsLabel(row.peer, status)
+                    return <span className={h.behind ? 'behind' : undefined}>{h.text}</span>
+                  })()}
                   {row.headSeq !== undefined && <span>{row.headSeq} events in the log</span>}
                 </>
               )}

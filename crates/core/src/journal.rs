@@ -61,6 +61,45 @@ pub struct SyncHealth {
     pub pending: bool,
     pub stalest_ms: Option<i64>,
     pub peers: usize,
+    /// Known peers whose last-seen holdings fall short of ours: behind on
+    /// events, or missing media their own retention policy does not excuse.
+    pub peers_behind: usize,
+}
+
+/// What a device holds of the journal's media, as it reports itself in the
+/// sync handshake (and as we remember it for each peer). Counts are over the
+/// blobs the event log references; `evictable` is the slice its retention
+/// policy currently lets go, so `held + evictable >= referenced` means
+/// "complete, by its own rules". `policy` explains the gap.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MediaHeld {
+    pub referenced: u64,
+    pub held: u64,
+    pub evictable: u64,
+    /// Bytes in the blob store (everything on disk, not just referenced).
+    pub bytes: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub policy: Option<crate::retention::RetentionPolicy>,
+}
+
+impl MediaHeld {
+    /// Referenced blobs neither held nor excused by policy.
+    pub fn missing(&self) -> u64 {
+        self.referenced
+            .saturating_sub(self.held)
+            .saturating_sub(self.evictable)
+    }
+    pub fn complete(&self) -> bool {
+        self.missing() == 0
+    }
+}
+
+/// A peer's holdings as of our last completed handshake with it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PeerHoldings {
+    pub heads: Option<crate::store::Heads>,
+    pub media: Option<MediaHeld>,
 }
 
 pub struct Journal {
@@ -224,14 +263,66 @@ impl Journal {
         Ok(())
     }
 
+    /// Remember what a peer holds, as of a completed handshake: the heads
+    /// both sides converged on (events sync both ways, so ours after the
+    /// exchange are exactly the peer's) and the media tally it reported in
+    /// its Hello/HelloAck (taken before that sync's blob fetch — the next
+    /// handshake corrects it). This is the version-vector "ack": what the
+    /// peer has, per device, not merely when we last heard from it.
+    pub fn record_peer_holdings(
+        &self,
+        peer: &str,
+        heads: &crate::store::Heads,
+        media: Option<&MediaHeld>,
+    ) -> Result<()> {
+        self.store
+            .meta_set(&format!("peer_heads:{peer}"), &serde_json::to_vec(heads)?)?;
+        if let Some(media) = media {
+            self.store
+                .meta_set(&format!("peer_media:{peer}"), &serde_json::to_vec(media)?)?;
+        }
+        Ok(())
+    }
+
+    pub fn peer_holdings(&self, peer: &str) -> Result<PeerHoldings> {
+        let heads = match self.store.meta_get(&format!("peer_heads:{peer}"))? {
+            Some(bytes) => serde_json::from_slice(&bytes).ok(),
+            None => None,
+        };
+        let media = match self.store.meta_get(&format!("peer_media:{peer}"))? {
+            Some(bytes) => serde_json::from_slice(&bytes).ok(),
+            None => None,
+        };
+        Ok(PeerHoldings { heads, media })
+    }
+
+    /// Events a peer lacks, judged by its last-seen heads against ours: the
+    /// sum over devices of `ours - theirs`. `None` when we have never
+    /// recorded the peer's heads (synced before this build).
+    pub fn peer_events_missing(&self, peer_heads: &crate::store::Heads) -> Result<u64> {
+        let mut missing = 0u64;
+        for (device, ours) in self.store.heads()? {
+            let theirs = peer_heads.get(&device).copied().unwrap_or(0);
+            missing += ours.saturating_sub(theirs);
+        }
+        Ok(missing)
+    }
+
+    /// Sum of heads: how many events the log holds across all devices.
+    pub fn events_total(&self) -> Result<u64> {
+        Ok(self.store.heads()?.values().sum())
+    }
+
     /// Traffic light for the sync status UX (UNDERSTANDING.md): red = a known
     /// peer unheard-from for 48h (outranks all), yellow = local data no peer
-    /// has picked up yet, green = converged (or solo — nowhere to push).
+    /// has picked up yet OR a known peer last seen holding less than we do
+    /// (events, or media its retention policy doesn't excuse), green =
+    /// every peer holds everything (or solo — nowhere to push).
     pub fn sync_health(&self, now_ms: i64) -> Result<SyncHealth> {
         const STALE_MS: i64 = 48 * 3600 * 1000;
         let peers = self.store.meta_scan("peer_last_ok:")?;
         if peers.is_empty() {
-            return Ok(SyncHealth { color: "green".into(), pending: false, stalest_ms: None, peers: 0 });
+            return Ok(SyncHealth { color: "green".into(), pending: false, stalest_ms: None, peers: 0, peers_behind: 0 });
         }
         let stalest = peers
             .iter()
@@ -245,9 +336,26 @@ impl Journal {
             }
             None => true,
         };
+        // A peer counts as behind when its last-seen holdings fall short of
+        // ours: events (version vector) or media beyond what its own retention
+        // policy excuses. Peers we never recorded holdings for don't count —
+        // there is nothing to judge them by.
+        let mut peers_behind = 0;
+        for (key, _) in &peers {
+            let peer = key.trim_start_matches("peer_last_ok:");
+            let holdings = self.peer_holdings(peer)?;
+            let events_behind = match &holdings.heads {
+                Some(h) => self.peer_events_missing(h)? > 0,
+                None => false,
+            };
+            let media_behind = holdings.media.as_ref().is_some_and(|m| !m.complete());
+            if events_behind || media_behind {
+                peers_behind += 1;
+            }
+        }
         let color = if now_ms - stalest > STALE_MS {
             "red"
-        } else if pending {
+        } else if pending || peers_behind > 0 {
             "yellow"
         } else {
             "green"
@@ -257,6 +365,7 @@ impl Journal {
             pending,
             stalest_ms: Some(stalest),
             peers: peers.len(),
+            peers_behind,
         })
     }
 

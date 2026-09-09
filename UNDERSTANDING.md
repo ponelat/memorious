@@ -84,6 +84,16 @@ pair first met (who dialed whom), and — while the endpoint still holds a live 
 transport in use (direct LAN / direct internet / public relay). The status screen additionally
 shows journal stats (entry count, first→latest entry dates, disk usage of database and media
 store) and the network config knobs above.
+**Holdings (2026-09-09):** every handshake already carries per-device heads (version vectors
+— the TCP-style "what I have acked"); the engine now *keeps* them per peer (`peer_heads:`
+meta = the heads both sides converged on) and adds a media tally to Hello/HelloAck
+(`MediaHeld`: referenced / held / evictable / bytes / policy, optional on the wire for old
+peers; `peer_media:` meta). Status therefore says "peer holds x of y events, media a of b",
+with a peer counted as *behind* when its last-seen heads fall short of ours or it lacks
+media its own retention policy doesn't excuse. The health light is yellow while any known
+peer is behind and green only when every peer holds everything. Caveats stay: numbers are
+as of the last handshake (the media tally predates that handshake's blob fetch), and heads
+say a peer *received* events, not that its disk is intact.
 
 ## Browser auth
 

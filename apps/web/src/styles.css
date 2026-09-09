@@ -1136,3 +1136,6 @@ h2 {
   gap: 14px;
   margin-top: 6px;
 }
+
+/* A peer last seen holding less than we do (StatusView holdingsLabel). */
+.device-meta .behind { color: var(--accent, #FF5200); }
