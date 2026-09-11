@@ -57,7 +57,7 @@ cd apps/desktop && cargo tauri build            # → target/release/bundle/maco
 - Tests use tauri's mock runtime: invoke origin must be `tauri://localhost` on macOS and all
   commands are generic over `tauri::Runtime` — keep new commands that way.
 - The desktop is **its own peer** (embeds core, own data dir under
-  `~/Library/Application Support/com.ponelat.memorious/journal`), never a client of the
+  `~/Library/Application Support/app.memorious/journal`), never a client of the
   server. `MEMORIOUS_DATA_DIR` env overrides the data dir (used by tests).
 - Unsigned/un-notarized: first launch needs right-click → Open.
 

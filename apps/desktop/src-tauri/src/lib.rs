@@ -18,7 +18,7 @@ const LAST_PEER_TICKET: &str = "last_peer_ticket";
 
 /// OS keychain slot for the master password: unlock once, then app launches
 /// are silent. Tests set MEMORIOUS_NO_KEYRING to stay off the real keychain.
-const KEYRING_SERVICE: &str = "com.ponelat.memorious";
+const KEYRING_SERVICE: &str = "app.memorious";
 const KEYRING_USER: &str = "master-password";
 
 fn keyring_entry() -> Option<keyring::Entry> {
