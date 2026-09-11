@@ -290,6 +290,29 @@ impl MobileJournal {
         Ok(self.node.ticket()?)
     }
 
+    /// Write the markdown mirror (`YYYY/MM/DD.md` + `media/`, see
+    /// core::export_md) into `out_dir`; the app zips and shares it. Media this
+    /// phone let go of by retention is skipped, not an error. Returns a JSON
+    /// report `{ "days": n, "media": n }`.
+    pub fn export_markdown(&self, out_dir: String) -> Result<String> {
+        let report = rt().block_on(memorious_core::export_md::export_markdown(
+            &self.node,
+            &PathBuf::from(out_dir),
+        ))?;
+        Ok(json!({
+            "days": report.day_files_written + report.day_files_unchanged,
+            "media": report.media_written + report.media_unchanged,
+        })
+        .to_string())
+    }
+
+    /// Release the network endpoint, the blob store and its database, so the
+    /// app can delete the data dir (reset this device). The object is dead
+    /// afterwards; drop it.
+    pub fn close(&self) {
+        rt().block_on(self.node.shutdown_ref());
+    }
+
     /// Sync with the ticket's peer (or the last-used one). Returns a report JSON.
     pub fn sync_now(&self, ticket: Option<String>) -> Result<String> {
         let journal = self.node.journal();

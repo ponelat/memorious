@@ -781,6 +781,13 @@ impl Node {
     }
 
     pub async fn shutdown(self) {
+        self.shutdown_ref().await;
+    }
+
+    /// Same as `shutdown`, for callers that only hold an `Arc<Node>` (the
+    /// mobile face: the app closes the journal before deleting its data
+    /// dir). Releases the endpoint, the blob store and its database.
+    pub async fn shutdown_ref(&self) {
         let _ = self.router.shutdown().await;
         let _ = self.blobs.shutdown().await;
         self.endpoint.close().await;
