@@ -166,6 +166,30 @@ impl MobileJournal {
         self.capture_audio_kind(bytes, AudioKind::Music)
     }
 
+    /// A voice note this phone intends to transcribe itself (on-device
+    /// speech): `will_enrich` makes peers hold off for the grace period
+    /// (enrich.rs). If the phone never annotates, a peer does after that.
+    pub fn capture_voice_with_intent(&self, bytes: Vec<u8>, will_enrich: bool) -> Result<String> {
+        if !memorious_core::media::is_mp4_family(&bytes) {
+            return Err(JournalError::Failure {
+                msg: "audio must be an m4a recording".into(),
+            });
+        }
+        let e = rt().block_on(self.node.capture_audio_with_intent(
+            bytes,
+            AudioKind::Voice,
+            will_enrich,
+        ))?;
+        Ok(entry_json(&e).to_string())
+    }
+
+    /// The phone's own transcript for a capture — the same annotation a
+    /// peer would write. Latest annotation wins, as everywhere.
+    pub fn annotate(&self, target_event_id: String, text: String) -> Result<String> {
+        let e = self.node.journal().annotate(&target_event_id, &text)?;
+        Ok(entry_json(&e).to_string())
+    }
+
     /// This device's retention policy as JSON (see retention.rs for the shape).
     pub fn retention_policy_json(&self) -> Result<String> {
         let p = self.node.journal().retention_policy().map_err(JournalError::from)?;
