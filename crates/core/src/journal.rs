@@ -153,6 +153,18 @@ impl Journal {
         })
     }
 
+    /// Remove what [`Self::init_with_secret`] just created, after a pairing
+    /// that failed before the journal was worth keeping. Only the files init
+    /// writes (database + sidecars, keys.json, the empty blob store) — never
+    /// anything else that may live under `root`. Best effort, errors ignored:
+    /// the caller is already returning the real error.
+    pub fn discard_created(root: &Path) {
+        for name in ["db.sqlite", "db.sqlite-wal", "db.sqlite-shm", "db.sqlite-journal", KEYS_FILE] {
+            let _ = std::fs::remove_file(root.join(name));
+        }
+        let _ = std::fs::remove_dir_all(root.join("blobs"));
+    }
+
     /// Open an existing journal with its master password.
     pub fn open(root: &Path, password: &str) -> Result<Self> {
         if !root.join("db.sqlite").exists() {

@@ -355,7 +355,36 @@ async fn ticket_pairing_round_trip() {
         format!("{err:#}").contains("master password"),
         "unexpected error: {err:#}"
     );
+    // A failed join leaves nothing behind, so the same directory can be
+    // retried — the iPad bug of 2026-09-12: the first attempt created
+    // db.sqlite, every later tap of "join" said "journal already exists".
+    assert!(
+        !dir.path().join("c").join("db.sqlite").exists(),
+        "failed join must not leave a journal behind"
+    );
+    let (c, _) = Node::join_from_ticket(&dir.path().join("c"), &a.ticket().unwrap(), "pw")
+        .await
+        .expect("retry after a failed join must work");
+    assert_eq!(timeline_ids(a.journal()), timeline_ids(c.journal()));
 
     a.shutdown().await;
     b.shutdown().await;
+    c.shutdown().await;
+}
+
+#[tokio::test]
+async fn unreachable_peer_join_leaves_no_journal() {
+    let dir = tempdir().unwrap();
+    // A real ticket whose peer is gone: mint it, then shut the peer down.
+    let ja = Journal::init(&dir.path().join("a"), "pw").unwrap();
+    let a = Node::spawn(ja).await.unwrap();
+    let ticket = a.ticket().unwrap();
+    a.shutdown().await;
+
+    let root = dir.path().join("b");
+    let err = Node::pair_from_ticket(&root, &ticket, "pw").await.err();
+    assert!(err.is_some(), "joining a dead peer must fail");
+    assert!(!root.join("db.sqlite").exists(), "no db.sqlite after a failed join");
+    assert!(!root.join("keys.json").exists(), "no keys.json after a failed join");
+    assert!(!root.join("blobs").exists(), "no blob store after a failed join");
 }

@@ -401,8 +401,32 @@ impl Node {
         let ticket = JournalTicket::decode(ticket)?;
         let peer_addr = ticket.addr()?;
         let journal = Journal::init_with_secret(root, ticket.secret, password)?;
-        let node = Self::spawn(journal).await?;
-        let report = node.sync_events_with(&peer_addr).await?;
+        // From here on a failure must not leave the half-made journal behind:
+        // `init_with_secret` refuses to run over an existing db.sqlite, so a
+        // peer that was unreachable (or a mistyped password) would otherwise
+        // turn every retry into "journal already exists" and, on next launch,
+        // into an empty journal that asks to be unlocked.
+        let node = match Self::spawn(journal).await {
+            Ok(node) => node,
+            Err(e) => {
+                Journal::discard_created(root);
+                return Err(e);
+            }
+        };
+        match Self::pull_and_prove(&node, &peer_addr).await {
+            Ok(report) => Ok((node, report)),
+            Err(e) => {
+                node.shutdown().await;
+                Journal::discard_created(root);
+                Err(e)
+            }
+        }
+    }
+
+    /// The network half of pairing: pull the event log, then prove the master
+    /// password by unwrapping one media key from it.
+    async fn pull_and_prove(node: &Self, peer_addr: &EndpointAddr) -> Result<SyncReport> {
+        let report = node.sync_events_with(peer_addr).await?;
         for ev in node.journal.store.all_events()? {
             if let Some(crypto) = ev.payload.blob_crypto() {
                 node.journal
@@ -411,7 +435,7 @@ impl Node {
                 break;
             }
         }
-        Ok((node, report))
+        Ok(report)
     }
 
     /// [`Self::pair_from_ticket`] plus the full media fetch, for callers that
