@@ -1,6 +1,8 @@
 import { FormEvent, useState } from 'react'
-import { Wordmark } from '../components/Wordmark'
+import { BrandHero } from '../components/BrandHero'
 
+/** Browser passcode for the server peer: the same opening screen as the
+ * desktop and the phone, with the one field this host needs. */
 export function Login({ onSubmit }: { onSubmit: (passcode: string) => Promise<boolean> }) {
   const [passcode, setPasscode] = useState('')
   const [error, setError] = useState<string | null>(null)
@@ -21,20 +23,19 @@ export function Login({ onSubmit }: { onSubmit: (passcode: string) => Promise<bo
   }
 
   return (
-    <form className="login" onSubmit={submit}>
-      <h1>
-        <Wordmark />
-      </h1>
-      <input
-        type="password"
-        inputMode="numeric"
-        autoFocus
-        placeholder="passcode"
-        value={passcode}
-        onChange={(e) => setPasscode(e.target.value)}
-      />
-      <button disabled={busy || passcode.length === 0}>enter</button>
-      {error && <p className="error">{error}</p>}
-    </form>
+    <BrandHero headline={'One place\nto capture.'} subline="Enter the passcode for this journal.">
+      <form className="hero-form" onSubmit={submit}>
+        <input
+          type="password"
+          inputMode="numeric"
+          autoFocus
+          placeholder="passcode"
+          value={passcode}
+          onChange={(e) => setPasscode(e.target.value)}
+        />
+        <button disabled={busy || passcode.length === 0}>enter</button>
+        {error && <p className="error">{error}</p>}
+      </form>
+    </BrandHero>
   )
 }

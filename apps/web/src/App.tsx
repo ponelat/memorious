@@ -7,6 +7,7 @@ import { StreamView } from './views/StreamView'
 import { TrashView } from './views/TrashView'
 import { StatusView } from './views/StatusView'
 import { Wordmark } from './components/Wordmark'
+import { useAppearance } from './appearance'
 
 export type View = 'stream' | 'trash' | 'status'
 
@@ -33,6 +34,7 @@ export function App() {
   const [authed, setAuthed] = useState(() => !api.needsAuth || getToken() !== null)
   const frame = useRef<HTMLDivElement>(null)
   useScrollingClass(frame)
+  useAppearance()
   const [setupState, setSetupState] = useState<'unknown' | 'ready' | 'empty' | 'locked'>(
     api.setup ? 'unknown' : 'ready',
   )
@@ -44,8 +46,17 @@ export function App() {
 
   useEffect(() => {
     const onUnauthorized = () => setAuthed(false)
+    // "reset this device" on the sync page: the journal is gone, back to first run.
+    const onReset = () => {
+      setView('stream')
+      setSetupState('empty')
+    }
     window.addEventListener('journal:unauthorized', onUnauthorized)
-    return () => window.removeEventListener('journal:unauthorized', onUnauthorized)
+    window.addEventListener('journal:reset', onReset)
+    return () => {
+      window.removeEventListener('journal:unauthorized', onUnauthorized)
+      window.removeEventListener('journal:reset', onReset)
+    }
   }, [])
 
   const login = useCallback(async (passcode: string) => {

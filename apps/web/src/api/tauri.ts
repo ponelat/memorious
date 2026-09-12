@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core'
-import type { AudioKind, Entry, FeedPage, PeerPing, JournalApi, MediaRef, NetConfig, Status, SyncReport } from './types'
+import type { AudioKind, Entry, ExportReport, FeedPage, PeerPing, JournalApi, MediaRef, NetConfig, Status, SyncReport } from './types'
 
 /**
  * Media goes over as a raw request body, never as a JSON array of numbers: a
@@ -84,5 +84,13 @@ export const tauriApi: JournalApi = {
 
   syncNow(ticket?: string) {
     return invoke<SyncReport>('sync_now', { ticket })
+  },
+
+  exportJournal() {
+    return invoke<ExportReport>('export_journal')
+  },
+
+  async resetDevice() {
+    await invoke('reset_device')
   },
 }

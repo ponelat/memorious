@@ -18,8 +18,33 @@
   --topbar-h: 68px; /* fixed so the floating day label can sit right under it */
   --accent: var(--brand);
   --danger: #b3261e;
+  /* the opening screens: the landing's White Smoke ground, a white card on it */
+  --ground: #f4f5f2;
+  --card: #ffffff;
+  --hero-shadow: rgb(41 33 20 / 0.22);
   font-family: Georgia, 'Times New Roman', serif;
   accent-color: var(--brand);
+  color-scheme: light;
+}
+
+/* dark appearance (the phone's system / light / dark picker, see appearance.ts):
+   black ground, the same orange for every word */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    --paper: #000000;
+    --ground: #000000;
+    --card: #000000;
+    --hero-shadow: rgb(0 0 0 / 0.6);
+    color-scheme: dark;
+  }
+}
+
+:root[data-theme='dark'] {
+  --paper: #000000;
+  --ground: #000000;
+  --card: #000000;
+  --hero-shadow: rgb(0 0 0 / 0.6);
+  color-scheme: dark;
 }
 
 ::selection {
@@ -78,6 +103,22 @@ button.ghost:hover:not(:disabled) {
   color: var(--brand);
 }
 
+/* the one destructive control (reset this device) keeps the semantic red */
+button.danger {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
+button.danger:hover:not(:disabled) {
+  background: var(--danger);
+  color: #fff;
+}
+
+button.ghost.danger:hover:not(:disabled) {
+  background: none;
+  color: var(--danger);
+}
+
 input,
 textarea {
   font: inherit;
@@ -116,38 +157,145 @@ a:hover {
   text-decoration-color: currentColor;
 }
 
-/* login / setup / unlock */
-.login {
+/* the opening screens (setup, unlock, passcode): the landing hero at app size and
+   the phone's BrandHeroCard — a warm photo band, a card overlapping it with the
+   handwritten wordmark, a headline, a quiet subline, hairline fields, italic
+   outlined buttons */
+.hero {
   min-height: 100dvh;
+  background: var(--ground);
+  padding-bottom: 40px;
+}
+
+.hero-photo {
+  height: max(260px, 34vh);
+  background: var(--line) url(/hero.jpg) center / cover no-repeat;
+}
+
+.hero-card {
+  position: relative;
+  width: min(560px, calc(100% - 40px));
+  margin: -110px auto 0;
+  padding: 28px;
+  background: var(--card);
+  box-shadow: 0 18px 34px var(--hero-shadow);
+}
+
+.hero-mark {
+  width: 150px;
+}
+
+.hero-headline {
+  font-size: 42px;
+  font-weight: 400;
+  line-height: 1.05;
+  margin: 22px 0 0;
+  white-space: pre-line;
+  text-wrap: balance;
+}
+
+.hero-subline {
+  font-size: 18px;
+  line-height: 1.5;
+  margin: 14px 0 0;
+  white-space: pre-line;
+  text-wrap: pretty;
+}
+
+.hero-body,
+.hero-form {
+  margin-top: 28px;
   display: flex;
   flex-direction: column;
-  align-items: center;
-  justify-content: center;
+  align-items: flex-start;
   gap: 18px;
-  padding: 40px 20px;
 }
 
-.login h1 {
-  margin: 0 0 14px;
-  line-height: 0;
+.hero-form {
+  margin-top: 0;
+  width: 100%;
 }
 
-.login input {
-  width: min(22rem, 100%);
-  font-size: 17px;
-  padding: 12px 16px;
+.hero-stack {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 12px;
 }
 
-.login button {
-  font-size: 17px;
-  padding: 12px 26px;
+/* a single hairline under the text, like a ruled line on paper */
+.hero-body input,
+.hero-body textarea {
+  width: 100%;
+  border: none;
+  border-bottom: 1px solid var(--line-strong);
+  padding: 10px 0;
+  font-size: 18px;
 }
 
-.login .hint {
-  margin: 0;
-  text-align: center;
-  max-width: 34ch;
-  text-wrap: pretty;
+.hero-body input:focus,
+.hero-body textarea:focus {
+  border-bottom-color: var(--brand);
+}
+
+.hero-body textarea {
+  resize: none;
+  line-height: 1.4;
+}
+
+.hero-body button {
+  font-size: 18px;
+  padding: 13px 22px;
+  min-height: 48px;
+}
+
+.hero-body button:not(:disabled):active {
+  background: var(--brand);
+  color: #fff;
+}
+
+.hero-body .error,
+.hero-body p {
+  margin: -6px 0 0;
+}
+
+/* a square tick box in the brand outline, for one-line acknowledgements */
+.hero-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  font-size: 16px;
+  line-height: 1.4;
+  cursor: pointer;
+}
+
+.hero-check input {
+  appearance: none;
+  flex: none;
+  width: 22px;
+  height: 22px;
+  margin: 2px 0 0;
+  padding: 0;
+  border: 1px solid var(--brand);
+  border-radius: 0;
+}
+
+.hero-check input:checked {
+  background: var(--brand);
+  box-shadow: inset 0 0 0 4px var(--card);
+}
+
+.hero-body .back {
+  border: none;
+  padding: 0;
+  min-height: 0;
+  font-size: 15px;
+  color: var(--faint);
+}
+
+.hero-body .back:hover:not(:disabled) {
+  background: none;
+  color: var(--brand);
 }
 
 /* the handwritten wordmark, inline SVG filled with the text colour */
@@ -598,7 +746,7 @@ h3 .ping { margin-left: 12px; font-size: 14px; font-weight: 400; }
   width: 9rem;
   max-width: none;
   border: 1px solid var(--line);
-  background: #fff;
+  background: var(--paper);
   padding: 6px 6px 18px;
   box-shadow: 0 2px 8px rgb(31 25 24 / 0.1);
   display: inline-block;
@@ -930,7 +1078,6 @@ h2 {
   }
 }
 
-.setup textarea { width: min(24rem, 80vw); }
 .sync-now input { width: 100%; margin-bottom: 6px; }
 .downloads { list-style: none; padding: 0; margin: 0; line-height: 1.7; }
 .downloads a { color: inherit; }
@@ -1135,6 +1282,20 @@ h2 {
   align-items: center;
   gap: 14px;
   margin-top: 6px;
+}
+
+/* sync page: this device — appearance picker, export, reset */
+.appearance {
+  display: inline-flex;
+  gap: 16px;
+}
+
+.appearance .tab {
+  font-size: 15px;
+}
+
+.status dd > .hint {
+  margin: 4px 0 0;
 }
 
 /* A peer last seen holding less than we do (StatusView holdingsLabel). */

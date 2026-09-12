@@ -1,5 +1,29 @@
 # LOG
 
+## 2026-09-12 (desktop: opening screens, export, reset, appearance)
+- **The web UI's opening screens now match the phone's.** Setup, unlock and the browser
+  passcode share one `BrandHero` (apps/web): photo band, card with the handwritten
+  wordmark, "One place to capture." headline, quiet subline, hairline fields, italic
+  outlined buttons. First run is a choice — start a new journal or join from another
+  device — each its own screen; the new-journal screen asks for an acknowledgement
+  that the master password has been written down (there is no recovery).
+- **Desktop export = a folder, not a zip.** `export_journal` command mirrors the journal
+  with core's `export_md` into `MEMORIOUS_EXPORT_DIR` (default ~/Documents/
+  memorious-journal): markdown by day plus the media this device holds; re-exporting
+  updates it in place (the report distinguishes written from unchanged). On a desktop
+  a folder of files is worth more than an archive; the phone zips the same mirror for
+  its share sheet.
+- **Reset this device.** `reset_device` shuts the node down (endpoint, blob store,
+  database), deletes the data dir, forgets the keychain password; the UI returns to
+  first run. Other devices keep their copies — nothing is an event, nothing syncs.
+  The sync page asks once, in place, before doing it.
+- **Appearance: system / light / dark**, remembered per browser (`localStorage`,
+  `data-theme` on the root; "system" defers to prefers-color-scheme). Dark is a black
+  ground with the same orange for every word — the phone's palette. The peer map stays
+  a white diagram.
+- The desktop's timestamps-and-rules-only-while-scrolling behaviour was already in the
+  shared UI (2026-09-07); the shipped desktop app predated it — rebuilt.
+
 ## 2026-08-25 (third-party license compliance)
 - Binaries statically link SQLCipher (Zetetic BSD-style — notice must accompany binary
   redistributions) and vendored OpenSSL 3 (Apache-2.0) via rusqlite's

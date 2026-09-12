@@ -136,6 +136,13 @@ export interface SyncReport {
   blobs: number
 }
 
+/** A markdown mirror written by a desktop export: where, and how much. */
+export interface ExportReport {
+  path: string
+  days: number
+  media: number
+}
+
 /** First-run choices on hosts that own their journal (desktop, iOS). */
 export interface SetupApi {
   /** 'locked': a journal exists but needs the master password this launch. */
@@ -173,6 +180,10 @@ export interface JournalApi {
   /** Present only on hosts that dial peers themselves (desktop). */
   setup?: SetupApi
   syncNow?(ticket?: string): Promise<SyncReport>
+  /** Mirror the journal as markdown by day plus media into a folder (desktop only). */
+  exportJournal?(): Promise<ExportReport>
+  /** Delete this device's copy of the journal; other devices keep theirs (desktop only). */
+  resetDevice?(): Promise<void>
   /** App builds hosted by the server peer (browser only). */
   downloads?(): Promise<DownloadFile[]>
 }

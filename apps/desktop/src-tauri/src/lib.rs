@@ -412,6 +412,63 @@ async fn sync_now<R: tauri::Runtime>(
     }))
 }
 
+// ---- this device: export + reset ----
+
+/// Where the markdown mirror goes: `MEMORIOUS_EXPORT_DIR`, else
+/// ~/Documents/memorious-journal. A folder rather than a zip: on a desktop
+/// the mirror is worth more as files, and a re-export updates it in place.
+fn export_dir<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<PathBuf> {
+    if let Some(dir) = std::env::var_os("MEMORIOUS_EXPORT_DIR") {
+        return Ok(PathBuf::from(dir));
+    }
+    Ok(app
+        .path()
+        .document_dir()
+        .context("no documents dir")?
+        .join("memorious-journal"))
+}
+
+/// Mirror the journal as markdown by day (YYYY/MM/DD.md) plus the media this
+/// device holds (crates/core/src/export_md.rs). Returns where and how much.
+#[tauri::command]
+async fn export_journal<R: tauri::Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, NodeState>,
+) -> Result<Value, String> {
+    let n = node(&app, &state).await.map_err(estr)?;
+    let dir = export_dir(&app).map_err(estr)?;
+    let report = memorious_core::export_md::export_markdown(&n, &dir)
+        .await
+        .map_err(estr)?;
+    Ok(json!({
+        "path": dir.to_string_lossy(),
+        "days": report.day_files_written + report.day_files_unchanged,
+        "media": report.media_written + report.media_unchanged,
+    }))
+}
+
+/// Delete this device's copy of the journal and forget its password. Other
+/// devices keep theirs; the app returns to first-run setup. The node is shut
+/// down first so the database and blob store release their files.
+#[tauri::command]
+async fn reset_device<R: tauri::Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, NodeState>,
+) -> Result<(), String> {
+    let dir = data_dir(&app).map_err(estr)?;
+    if let Some(n) = state.0.lock().await.take() {
+        n.shutdown_ref().await;
+    }
+    if dir.exists() {
+        std::fs::remove_dir_all(&dir)
+            .map_err(|e| format!("could not delete {}: {e}", dir.display()))?;
+    }
+    if let Some(entry) = keyring_entry() {
+        let _ = entry.delete_credential();
+    }
+    Ok(())
+}
+
 pub fn handlers<R: tauri::Runtime>(
 ) -> impl Fn(tauri::ipc::Invoke<R>) -> bool + Send + Sync + 'static {
     tauri::generate_handler![
@@ -431,6 +488,8 @@ pub fn handlers<R: tauri::Runtime>(
         set_device_name,
         set_net_config,
         sync_now,
+        export_journal,
+        reset_device,
     ]
 }
 

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
-import { api, DownloadFile, NetConfig, PeerInfo, PeerPing, Status } from '../api'
+import { api, DownloadFile, ExportReport, NetConfig, PeerInfo, PeerPing, Status } from '../api'
 import { agoLabel, edgeKind, MapPeer, PeerMap } from '../components/PeerMap'
+import { Appearance, onAppearanceChange, readAppearance, setAppearance } from '../appearance'
 
 function prettySize(bytes: number): string {
   if (bytes > 1_000_000_000) return `${(bytes / 1_000_000_000).toFixed(2)} GB`
@@ -238,6 +239,112 @@ function NetworkForm({ net, onSaved }: { net: NetConfig; onSaved: () => void }) 
   )
 }
 
+/** system / light / dark — the phone's appearance picker, remembered per browser. */
+function AppearancePicker() {
+  const [current, setCurrent] = useState<Appearance>(readAppearance)
+  useEffect(() => onAppearanceChange(() => setCurrent(readAppearance())), [])
+  return (
+    <span className="appearance">
+      {(['system', 'light', 'dark'] as Appearance[]).map((a) => (
+        <button key={a} className={a === current ? 'tab active' : 'tab'} onClick={() => setAppearance(a)}>
+          {a}
+        </button>
+      ))}
+    </span>
+  )
+}
+
+/** Export the journal as a folder of markdown by day plus media (desktop). */
+function ExportRow() {
+  const [busy, setBusy] = useState(false)
+  const [report, setReport] = useState<ExportReport | null>(null)
+  const [err, setErr] = useState<string | null>(null)
+
+  async function run() {
+    setBusy(true)
+    setErr(null)
+    try {
+      setReport(await api.exportJournal!())
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  function reveal(path: string) {
+    void import('@tauri-apps/plugin-opener').then((m) => m.revealItemInDir(path))
+  }
+
+  return (
+    <>
+      <button className="ghost" disabled={busy} onClick={run}>
+        {busy ? 'exporting…' : 'export journal…'}
+      </button>
+      <p className="hint">
+        a folder of markdown by day plus the media this computer holds. exporting again updates it in place.
+      </p>
+      {report && (
+        <p className="hint">
+          {report.days} day{report.days === 1 ? '' : 's'} · {report.media} media file{report.media === 1 ? '' : 's'} →{' '}
+          <span className="mono">{report.path}</span>{' '}
+          <button className="ghost" onClick={() => reveal(report.path)}>
+            show folder
+          </button>
+        </p>
+      )}
+      {err && <p className="error">{err}</p>}
+    </>
+  )
+}
+
+/** Delete this computer's copy of the journal; asks once, in place. */
+function ResetRow() {
+  const [confirming, setConfirming] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
+
+  async function reset() {
+    setBusy(true)
+    setErr(null)
+    try {
+      await api.resetDevice!()
+      window.dispatchEvent(new Event('journal:reset'))
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e))
+      setBusy(false)
+    }
+  }
+
+  if (!confirming) {
+    return (
+      <>
+        <button className="ghost danger" onClick={() => setConfirming(true)}>
+          reset this device
+        </button>
+        <p className="hint">deletes this computer's copy. other devices keep theirs.</p>
+      </>
+    )
+  }
+  return (
+    <>
+      <p>
+        Delete this computer's copy of the journal? Other devices keep theirs. Anything captured here and not
+        yet synced is lost. There is no undo.
+      </p>
+      <div className="net-actions">
+        <button className="danger" disabled={busy} onClick={reset}>
+          {busy ? 'deleting…' : 'delete journal on this computer'}
+        </button>
+        <button className="ghost" disabled={busy} onClick={() => setConfirming(false)}>
+          cancel
+        </button>
+      </div>
+      {err && <p className="error">{err}</p>}
+    </>
+  )
+}
+
 export function StatusView() {
   const [status, setStatus] = useState<Status | null>(null)
   const [error, setError] = useState(false)
@@ -442,6 +549,26 @@ export function StatusView() {
                 {busy ? 'syncing…' : 'sync'}
               </button>
               {syncMsg && <p className="hint">{syncMsg}</p>}
+            </dd>
+          </>
+        )}
+        <dt>appearance</dt>
+        <dd>
+          <AppearancePicker />
+        </dd>
+        {api.exportJournal && (
+          <>
+            <dt>export</dt>
+            <dd>
+              <ExportRow />
+            </dd>
+          </>
+        )}
+        {api.resetDevice && (
+          <>
+            <dt>reset</dt>
+            <dd>
+              <ResetRow />
             </dd>
           </>
         )}

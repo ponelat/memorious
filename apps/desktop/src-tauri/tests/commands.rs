@@ -257,9 +257,54 @@ async fn desktop_command_layer_end_to_end() {
     .await
     .is_err());
 
+    // Export: the journal as a markdown mirror (YYYY/MM/DD.md + media/) in
+    // the export dir — a folder, re-exportable in place, never a zip.
+    let export_dir = dir.path().join("export");
+    std::env::set_var("MEMORIOUS_EXPORT_DIR", &export_dir);
+    let report = invoke(&webview, "export_journal", json!({})).await.unwrap();
+    assert_eq!(report["path"], export_dir.to_string_lossy().as_ref());
+    assert!(report["days"].as_u64().unwrap() >= 1);
+    assert!(report["media"].as_u64().unwrap() >= 1, "photo + video should be mirrored");
+    let files = files_under(&export_dir);
+    assert!(files.iter().any(|f| f.ends_with(".md")), "no day files in {files:?}");
+    assert!(files.iter().any(|f| f.ends_with(".jpg")), "no photo in {files:?}");
+    // A second export changes nothing and reports the same totals.
+    let again = invoke(&webview, "export_journal", json!({})).await.unwrap();
+    assert_eq!(again["days"], report["days"]);
+    assert_eq!(again["media"], report["media"]);
+
+    // Reset this device: its copy is deleted, the app is back at first run,
+    // and a fresh journal can be set up in its place. Other peers keep theirs.
+    invoke(&webview, "reset_device", json!({})).await.unwrap();
+    assert!(!desktop_dir.exists(), "data dir should be gone");
+    assert_eq!(invoke(&webview, "setup_state", json!({})).await.unwrap(), json!("empty"));
+    assert!(invoke(&webview, "feed", json!({})).await.is_err());
+    assert_eq!(peer.journal().list().unwrap().len(), 5);
+    invoke(&webview, "setup_init", json!({"password": "another"})).await.unwrap();
+    let feed = invoke(&webview, "feed", json!({})).await.unwrap();
+    assert_eq!(feed["entries"].as_array().unwrap().len(), 0);
+
     peer.shutdown().await;
     cli_peer.shutdown().await;
     stranger.shutdown().await;
+}
+
+/// Every file under `dir`, as paths relative to it (slash-separated).
+fn files_under(dir: &std::path::Path) -> Vec<String> {
+    fn walk(base: &std::path::Path, d: &std::path::Path, out: &mut Vec<String>) {
+        for entry in std::fs::read_dir(d).unwrap() {
+            let p = entry.unwrap().path();
+            if p.is_dir() {
+                walk(base, &p, out);
+            } else {
+                out.push(p.strip_prefix(base).unwrap().to_string_lossy().replace('\\', "/"));
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(dir, dir, &mut out);
+    out.sort();
+    out
 }
 
 fn image_png_bytes() -> Vec<u8> {

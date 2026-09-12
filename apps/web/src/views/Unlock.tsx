@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Wordmark } from '../components/Wordmark'
+import { BrandHero } from '../components/BrandHero'
 
 /** Master-password prompt for hosts whose journal is encrypted at rest
  *  (desktop). Shown when the keychain has no cached password this launch. */
@@ -21,11 +21,7 @@ export function Unlock({ onUnlock }: { onUnlock: (password: string) => Promise<v
   }
 
   return (
-    <div className="login setup">
-      <h1>
-        <Wordmark />
-      </h1>
-      <p className="hint">this journal is encrypted</p>
+    <BrandHero headline={'One place\nto capture.'} subline="This journal is encrypted. Enter its master password.">
       <input
         type="password"
         placeholder="master password"
@@ -38,6 +34,6 @@ export function Unlock({ onUnlock }: { onUnlock: (password: string) => Promise<v
         unlock
       </button>
       {error && <p className="error">{error}</p>}
-    </div>
+    </BrandHero>
   )
 }
