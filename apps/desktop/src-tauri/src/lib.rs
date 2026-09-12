@@ -415,17 +415,30 @@ async fn sync_now<R: tauri::Runtime>(
 // ---- this device: export + reset ----
 
 /// Where the markdown mirror goes: `MEMORIOUS_EXPORT_DIR`, else
-/// ~/Documents/memorious-journal. A folder rather than a zip: on a desktop
-/// the mirror is worth more as files, and a re-export updates it in place.
+/// ~/Documents/memorious-journal, else ~/memorious-journal (a Linux session
+/// without XDG user dirs has no Documents folder). A folder rather than a
+/// zip: on a desktop the mirror is worth more as files, and a re-export
+/// updates it in place.
 fn export_dir<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<PathBuf> {
-    if let Some(dir) = std::env::var_os("MEMORIOUS_EXPORT_DIR") {
-        return Ok(PathBuf::from(dir));
+    export_dir_from(
+        std::env::var_os("MEMORIOUS_EXPORT_DIR").map(PathBuf::from),
+        app.path().document_dir().ok(),
+        app.path().home_dir().ok(),
+    )
+}
+
+fn export_dir_from(
+    override_dir: Option<PathBuf>,
+    documents: Option<PathBuf>,
+    home: Option<PathBuf>,
+) -> Result<PathBuf> {
+    if let Some(dir) = override_dir {
+        return Ok(dir);
     }
-    Ok(app
-        .path()
-        .document_dir()
-        .context("no documents dir")?
-        .join("memorious-journal"))
+    let base = documents
+        .or(home)
+        .ok_or_else(|| anyhow!("no documents or home dir to export into"))?;
+    Ok(base.join("memorious-journal"))
 }
 
 /// Mirror the journal as markdown by day (YYYY/MM/DD.md) plus the media this
@@ -513,4 +526,31 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Linux boxes without XDG user dirs (a bare NixOS session) have no
+    /// Documents folder; the mirror then goes under home rather than failing.
+    #[test]
+    fn export_dir_falls_back_from_documents_to_home() {
+        let over = Some(PathBuf::from("/tmp/override"));
+        let docs = Some(PathBuf::from("/home/u/Documents"));
+        let home = Some(PathBuf::from("/home/u"));
+        assert_eq!(
+            export_dir_from(over.clone(), docs.clone(), home.clone()).unwrap(),
+            PathBuf::from("/tmp/override")
+        );
+        assert_eq!(
+            export_dir_from(None, docs, home.clone()).unwrap(),
+            PathBuf::from("/home/u/Documents/memorious-journal")
+        );
+        assert_eq!(
+            export_dir_from(None, None, home).unwrap(),
+            PathBuf::from("/home/u/memorious-journal")
+        );
+        assert!(export_dir_from(None, None, None).is_err());
+    }
 }
