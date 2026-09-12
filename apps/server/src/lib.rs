@@ -6,7 +6,13 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use axum::body::Body;
+use std::collections::HashMap;
+use std::sync::Mutex as StdMutex;
+use std::time::{Duration, Instant};
+
 use axum::extract::{DefaultBodyLimit, Multipart, Path as UrlPath, Query, State};
+use axum::http::HeaderValue;
+use tower_http::set_header::SetResponseHeaderLayer;
 use axum::http::{header, HeaderMap, Request, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
@@ -26,19 +32,138 @@ pub struct AppState {
     /// Directory of installable app builds served at /downloads (public — it
     /// holds software, never journal data).
     pub downloads_dir: Option<PathBuf>,
+    /// Failed-passcode accounting; the default limits unless a test says otherwise.
+    pub auth: AuthGuard,
 }
 
 impl AppState {
+    pub fn new(node: Node, downloads_dir: Option<PathBuf>) -> Self {
+        Self {
+            node,
+            downloads_dir,
+            auth: AuthGuard::new(AuthLimits::default()),
+        }
+    }
+
     fn journal(&self) -> &memorious_core::Journal {
         self.node.journal()
     }
 }
 
+/// How many wrong passcodes a client gets before it waits out the window, and
+/// the pause every miss costs. The pause is serialized across all clients, so
+/// rotating addresses buys nothing: at most one guess per `failure_delay`,
+/// from anywhere.
+#[derive(Clone, Copy, Debug)]
+pub struct AuthLimits {
+    pub max_failures: u32,
+    pub window: Duration,
+    pub failure_delay: Duration,
+}
+
+impl Default for AuthLimits {
+    fn default() -> Self {
+        Self {
+            max_failures: 10,
+            window: Duration::from_secs(15 * 60),
+            failure_delay: Duration::from_millis(250),
+        }
+    }
+}
+
+struct Failures {
+    count: u32,
+    since: Instant,
+}
+
+/// Per-client failed-attempt accounting for the browser passcode. The passcode
+/// is the only thing between the internet and the journal, and it may be
+/// short, so guessing has to be slow: a client that misses `max_failures`
+/// times inside `window` is refused (429, Retry-After) until the window
+/// passes; a correct passcode clears its count.
+pub struct AuthGuard {
+    limits: AuthLimits,
+    failures: StdMutex<HashMap<String, Failures>>,
+    delay: tokio::sync::Mutex<()>,
+}
+
+impl AuthGuard {
+    pub fn new(limits: AuthLimits) -> Self {
+        Self {
+            limits,
+            failures: StdMutex::new(HashMap::new()),
+            delay: tokio::sync::Mutex::new(()),
+        }
+    }
+
+    /// Seconds the client still has to wait, if it is locked out.
+    fn locked_for(&self, client: &str) -> Option<u64> {
+        let mut map = self.failures.lock().unwrap();
+        let expired = matches!(map.get(client), Some(f) if f.since.elapsed() >= self.limits.window);
+        if expired {
+            map.remove(client);
+            return None;
+        }
+        match map.get(client) {
+            Some(f) if f.count >= self.limits.max_failures => {
+                Some((self.limits.window - f.since.elapsed()).as_secs().max(1))
+            }
+            _ => None,
+        }
+    }
+
+    /// Count a miss, then hold the global gate for the delay.
+    async fn failed(&self, client: &str) {
+        {
+            let mut map = self.failures.lock().unwrap();
+            let now = Instant::now();
+            let window = self.limits.window;
+            let f = map
+                .entry(client.to_string())
+                .or_insert(Failures { count: 0, since: now });
+            if now.duration_since(f.since) >= window {
+                *f = Failures { count: 0, since: now };
+            }
+            f.count += 1;
+            if map.len() > 10_000 {
+                map.retain(|_, f| f.since.elapsed() < window);
+            }
+        }
+        if !self.limits.failure_delay.is_zero() {
+            let _gate = self.delay.lock().await;
+            tokio::time::sleep(self.limits.failure_delay).await;
+        }
+    }
+
+    fn succeeded(&self, client: &str) {
+        self.failures.lock().unwrap().remove(client);
+    }
+}
+
+/// The client behind Caddy. The listener is loopback-only, so X-Forwarded-For
+/// is always Caddy's own header and can be trusted; without it (tests, a
+/// direct local curl) everything is one client.
+fn client_key(headers: &HeaderMap) -> String {
+    headers
+        .get("x-forwarded-for")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.split(',').next())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "local".into())
+}
+
+/// Browser hardening on every response: only our own bundle runs, media and
+/// photos come as blobs we fetched ourselves, nothing frames us.
+const CSP: &str = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; \
+img-src 'self' blob: data:; media-src 'self' blob:; connect-src 'self'; font-src 'self'; \
+object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'";
+
 pub type SharedState = Arc<AppState>;
 
 /// Build the full router: /api under bearer auth, static web UI for everything else.
 pub fn app(state: SharedState, web_dist: Option<PathBuf>) -> Router {
-    let api = Router::new()
+    let authed = Router::new()
         .route("/capture/text", post(capture_text))
         .route("/capture/photo", post(capture_photo))
         .route("/capture/audio", post(capture_audio))
@@ -54,9 +179,12 @@ pub fn app(state: SharedState, web_dist: Option<PathBuf>) -> Router {
         .route("/net-config", post(set_net_config))
         .route("/downloads", get(downloads_list))
         .layer(middleware::from_fn_with_state(state.clone(), require_auth))
+        .layer(DefaultBodyLimit::max(64 * 1024 * 1024));
+    // The one unauthenticated route takes a passcode, not an upload.
+    let open = Router::new()
         .route("/auth/check", post(auth_check))
-        .layer(DefaultBodyLimit::max(64 * 1024 * 1024))
-        .with_state(state.clone());
+        .layer(DefaultBodyLimit::max(4 * 1024));
+    let api = authed.merge(open).with_state(state.clone());
 
     let mut app = Router::new().nest("/api", api);
     if let Some(dir) = &state.downloads_dir {
@@ -69,7 +197,22 @@ pub fn app(state: SharedState, web_dist: Option<PathBuf>) -> Router {
                 .fallback(tower_http::services::ServeFile::new(index)),
         );
     }
-    app
+    app.layer(SetResponseHeaderLayer::if_not_present(
+        header::CONTENT_SECURITY_POLICY,
+        HeaderValue::from_static(CSP),
+    ))
+    .layer(SetResponseHeaderLayer::if_not_present(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    ))
+    .layer(SetResponseHeaderLayer::if_not_present(
+        header::X_FRAME_OPTIONS,
+        HeaderValue::from_static("DENY"),
+    ))
+    .layer(SetResponseHeaderLayer::if_not_present(
+        header::REFERRER_POLICY,
+        HeaderValue::from_static("no-referrer"),
+    ))
 }
 
 /// Available app builds: name, size, and the public URL to fetch each one.
@@ -115,13 +258,30 @@ async fn require_auth(
     req: Request<Body>,
     next: Next,
 ) -> Response {
-    let ok = bearer(req.headers())
-        .map(|token| state.journal().check_passcode(&token).unwrap_or(false))
-        .unwrap_or(false);
-    if !ok {
-        return err(StatusCode::UNAUTHORIZED, "invalid or missing passcode");
+    let client = client_key(req.headers());
+    if let Some(secs) = state.auth.locked_for(&client) {
+        return too_many(secs);
+    }
+    match bearer(req.headers()) {
+        None => return err(StatusCode::UNAUTHORIZED, "invalid or missing passcode"),
+        Some(token) if state.journal().check_passcode(&token).unwrap_or(false) => {
+            state.auth.succeeded(&client);
+        }
+        Some(_) => {
+            state.auth.failed(&client).await;
+            return err(StatusCode::UNAUTHORIZED, "invalid or missing passcode");
+        }
     }
     next.run(req).await
+}
+
+fn too_many(retry_after_secs: u64) -> Response {
+    (
+        StatusCode::TOO_MANY_REQUESTS,
+        [(header::RETRY_AFTER, retry_after_secs.to_string())],
+        Json(json!({"error": "too many wrong passcodes — try again later"})),
+    )
+        .into_response()
 }
 
 #[derive(Deserialize)]
@@ -131,11 +291,22 @@ struct AuthCheck {
 
 async fn auth_check(
     State(state): State<SharedState>,
+    headers: HeaderMap,
     Json(body): Json<AuthCheck>,
 ) -> Response {
+    let client = client_key(&headers);
+    if let Some(secs) = state.auth.locked_for(&client) {
+        return too_many(secs);
+    }
     match state.journal().check_passcode(&body.passcode) {
-        Ok(true) => StatusCode::NO_CONTENT.into_response(),
-        Ok(false) => err(StatusCode::UNAUTHORIZED, "wrong passcode (or none set yet)"),
+        Ok(true) => {
+            state.auth.succeeded(&client);
+            StatusCode::NO_CONTENT.into_response()
+        }
+        Ok(false) => {
+            state.auth.failed(&client).await;
+            err(StatusCode::UNAUTHORIZED, "wrong passcode (or none set yet)")
+        }
         Err(e) => internal(e),
     }
 }

@@ -45,10 +45,7 @@ async fn media_from_a_peer_becomes_searchable_with_no_user_action() {
     let server_journal =
         Journal::init_with_secret(&dir.path().join("server"), *phone.journal().secret(), "pw").unwrap();
     server_journal.set_passcode("sesame").unwrap();
-    let state = Arc::new(AppState {
-        node: Node::spawn(server_journal).await.unwrap(),
-        downloads_dir: None,
-    });
+    let state = Arc::new(AppState::new(Node::spawn(server_journal).await.unwrap(), None));
     state.node.sync_with(&phone.addr()).await.unwrap();
 
     // Sweeper runs (grace irrelevant: flag not set).
@@ -119,10 +116,7 @@ async fn flagged_captures_wait_out_the_grace_period() {
     let sweeper_journal =
         Journal::init_with_secret(&dir.path().join("sweeper"), *capturer.journal().secret(), "pw")
             .unwrap();
-    let state = Arc::new(AppState {
-        node: Node::spawn(sweeper_journal).await.unwrap(),
-        downloads_dir: None,
-    });
+    let state = Arc::new(AppState::new(Node::spawn(sweeper_journal).await.unwrap(), None));
     state.node.sync_with(&capturer.addr()).await.unwrap();
 
     // Within the grace window: hands off.

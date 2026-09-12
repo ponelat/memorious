@@ -35,6 +35,7 @@ CREATE TABLE IF NOT EXISTS events (
   UNIQUE(device_id, seq)
 );
 CREATE INDEX IF NOT EXISTS idx_events_recorded ON events(recorded_at, event_id);
+CREATE INDEX IF NOT EXISTS idx_events_kind ON events(kind, recorded_at, device_id, seq);
 CREATE VIRTUAL TABLE IF NOT EXISTS events_fts USING fts5(text, event_id UNINDEXED);
 ";
 
@@ -240,6 +241,23 @@ impl Store {
         Ok(out)
     }
 
+    /// The latest token-set event by log order (recorded_at, then device_id,
+    /// then seq) — the browser passcode in force. One indexed lookup; the
+    /// server asks on every request, so this must never scan the log.
+    pub fn latest_token_set(&self) -> Result<Option<Event>> {
+        let conn = self.conn.lock().unwrap();
+        let ev = conn
+            .query_row(
+                "SELECT event_id, device_id, seq, recorded_at, kind, payload, will_enrich
+                 FROM events WHERE kind = 'token_set'
+                 ORDER BY recorded_at DESC, device_id DESC, seq DESC LIMIT 1",
+                [],
+                row_to_event,
+            )
+            .optional()?;
+        Ok(ev)
+    }
+
     pub fn get_event(&self, event_id: &str) -> Result<Option<Event>> {
         let conn = self.conn.lock().unwrap();
         let ev = conn
@@ -405,6 +423,36 @@ mod tests {
 
     fn text(t: &str) -> Payload {
         Payload::Text { text: t.into() }
+    }
+
+    /// The browser passcode is the latest token-set by log order: recorded_at,
+    /// then device_id, then seq — one indexed query, not a scan of the log.
+    #[test]
+    fn latest_token_set_orders_by_time_then_device_then_seq() {
+        let dir = tempdir().unwrap();
+        let store = Store::open(&dir.path().join("db.sqlite"), TEST_KEY).unwrap();
+        let set = |dev: &str, hash: &str, at: i64| {
+            store
+                .append_local_at(dev, EventKind::TokenSet, Payload::TokenSet { hash: hash.into() }, false, at)
+                .unwrap()
+        };
+        assert!(store.latest_token_set().unwrap().is_none());
+        set("dev-a", "h1", 1000);
+        set("dev-b", "h2", 2000);
+        set("dev-a", "h3", 1500); // older than h2 despite being appended later
+        let latest = store.latest_token_set().unwrap().unwrap();
+        assert!(matches!(&latest.payload, Payload::TokenSet { hash } if hash == "h2"));
+        // Same millisecond: device id breaks the tie, then seq on one device.
+        set("dev-a", "h4", 3000);
+        set("dev-b", "h5", 3000);
+        assert!(matches!(&store.latest_token_set().unwrap().unwrap().payload, Payload::TokenSet { hash } if hash == "h5"));
+        set("dev-b", "h6", 3000);
+        assert!(matches!(&store.latest_token_set().unwrap().unwrap().payload, Payload::TokenSet { hash } if hash == "h6"));
+        // A capture after it changes nothing.
+        store
+            .append_local("dev-b", EventKind::Capture, Payload::Text { text: "x".into() }, false)
+            .unwrap();
+        assert!(matches!(&store.latest_token_set().unwrap().unwrap().payload, Payload::TokenSet { hash } if hash == "h6"));
     }
 
     #[test]

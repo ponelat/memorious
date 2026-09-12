@@ -632,27 +632,26 @@ impl Journal {
         )
     }
 
-    /// Check a passcode against the latest token-set event.
-    /// Ordering: recorded_at, then device_id as the tiebreak (log ordering).
+    /// Check a passcode against the latest token-set event. The comparison
+    /// is constant-time (`blake3::Hash`'s equality), so a wrong guess costs
+    /// the same however many leading characters it gets right.
     pub fn check_passcode(&self, passcode: &str) -> Result<bool> {
         let Some(active) = self.active_passcode_hash()? else {
             return Ok(false); // no passcode set: browser access denied
         };
-        Ok(blake3::hash(passcode.as_bytes()).to_hex().to_string() == active)
+        let Ok(active) = blake3::Hash::from_hex(&active) else {
+            return Ok(false);
+        };
+        Ok(blake3::hash(passcode.as_bytes()) == active)
     }
 
+    /// Latest wins: recorded_at, then device_id, then seq (same-device
+    /// same-ms sets) — one indexed query in the store, never a log scan.
     pub fn active_passcode_hash(&self) -> Result<Option<String>> {
-        // Latest wins: recorded_at, then device_id, then seq (same-device same-ms sets).
-        let mut latest: Option<((i64, String, u64), String)> = None;
-        for e in self.store.all_events()? {
-            if let Payload::TokenSet { hash } = &e.payload {
-                let key = (e.recorded_at, e.device_id.clone(), e.seq);
-                if latest.as_ref().map(|(k, _)| key > *k).unwrap_or(true) {
-                    latest = Some((key, hash.clone()));
-                }
-            }
-        }
-        Ok(latest.map(|(_, h)| h))
+        Ok(self.store.latest_token_set()?.and_then(|e| match e.payload {
+            Payload::TokenSet { hash } => Some(hash),
+            _ => None,
+        }))
     }
 }
 

@@ -7,7 +7,7 @@ use axum::body::Body;
 use axum::http::{header, Request, StatusCode};
 use http_body_util::BodyExt;
 use memorious_core::{Journal, Node};
-use memorious_server::{app, AppState};
+use memorious_server::{app, AppState, AuthGuard, AuthLimits};
 use tower::ServiceExt;
 
 async fn test_state() -> (tempfile::TempDir, Arc<AppState>) {
@@ -15,7 +15,7 @@ async fn test_state() -> (tempfile::TempDir, Arc<AppState>) {
     let journal = Journal::init(&dir.path().join("j"), "pw").unwrap();
     journal.set_passcode("sesame").unwrap();
     let node = Node::spawn(journal).await.unwrap();
-    (dir, Arc::new(AppState { node, downloads_dir: None }))
+    (dir, Arc::new(AppState::new(node, None )))
 }
 
 fn authed(req: axum::http::request::Builder) -> axum::http::request::Builder {
@@ -425,10 +425,7 @@ async fn downloads_are_listed_and_publicly_fetchable() {
 
     let journal = Journal::init(&dir.path().join("j"), "pw").unwrap();
     journal.set_passcode("sesame").unwrap();
-    let state = Arc::new(AppState {
-        node: Node::spawn(journal).await.unwrap(),
-        downloads_dir: Some(dl),
-    });
+    let state = Arc::new(AppState::new(Node::spawn(journal).await.unwrap(), Some(dl)));
     let router = app(state, None);
 
     // Authed listing.
@@ -588,7 +585,7 @@ async fn ping_endpoint_reports_reachable_peers() {
     let sj = Journal::init_with_secret(&dir.path().join("server"), *peer.journal().secret(), "pw")
         .unwrap();
     sj.set_passcode("sesame").unwrap();
-    let state = Arc::new(AppState { node: Node::spawn(sj).await.unwrap(), downloads_dir: None });
+    let state = Arc::new(AppState::new(Node::spawn(sj).await.unwrap(), None ));
     state.node.sync_with(&peer.addr()).await.unwrap();
     let router = app(state, None);
 
@@ -604,4 +601,145 @@ async fn ping_endpoint_reports_reachable_peers() {
     assert_eq!(pings[0]["ok"], true);
     assert!(pings[0]["rtt_ms"].as_u64().is_some());
     assert_eq!(pings[0]["endpoint_id"].as_str().unwrap(), peer.addr().id.to_string());
+}
+
+fn check(passcode: &str, client: &str) -> Request<Body> {
+    Request::post("/api/auth/check")
+        .header(header::CONTENT_TYPE, "application/json")
+        .header("x-forwarded-for", client)
+        .body(Body::from(format!(r#"{{"passcode":"{passcode}"}}"#)))
+        .unwrap()
+}
+
+/// Wrong passcodes lock a client out for the window; the lock is per client
+/// (Caddy's X-Forwarded-For), counts failures on any route, and a correct
+/// passcode clears the client's count.
+#[tokio::test]
+async fn auth_failures_lock_a_client_out() {
+    let dir = tempfile::tempdir().unwrap();
+    let journal = Journal::init(&dir.path().join("j"), "pw").unwrap();
+    journal.set_passcode("sesame").unwrap();
+    let mut state = AppState::new(Node::spawn(journal).await.unwrap(), None);
+    state.auth = AuthGuard::new(AuthLimits {
+        max_failures: 3,
+        window: std::time::Duration::from_millis(300),
+        failure_delay: std::time::Duration::ZERO,
+    });
+    let router = app(Arc::new(state), None);
+
+    for _ in 0..3 {
+        let resp = router.clone().oneshot(check("nope", "203.0.113.9")).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+    let resp = router.clone().oneshot(check("nope", "203.0.113.9")).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert!(resp.headers().contains_key(header::RETRY_AFTER));
+    // Locked means locked — even the right passcode waits.
+    let resp = router.clone().oneshot(check("sesame", "203.0.113.9")).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+    // Another client is unaffected.
+    let resp = router.clone().oneshot(check("nope", "198.51.100.4")).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+
+    // Bad bearer tokens on API routes count too.
+    for _ in 0..2 {
+        let resp = router
+            .clone()
+            .oneshot(
+                Request::get("/api/feed")
+                    .header(header::AUTHORIZATION, "Bearer wrong")
+                    .header("x-forwarded-for", "198.51.100.4")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+    let resp = router
+        .clone()
+        .oneshot(
+            Request::get("/api/feed")
+                .header(header::AUTHORIZATION, "Bearer wrong")
+                .header("x-forwarded-for", "198.51.100.4")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+
+    // The window passes: both clients may try again.
+    tokio::time::sleep(std::time::Duration::from_millis(350)).await;
+    let resp = router.clone().oneshot(check("sesame", "203.0.113.9")).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+
+    // A success clears the count: two misses, a hit, two more misses — no lock.
+    for _ in 0..2 {
+        router.clone().oneshot(check("nope", "192.0.2.7")).await.unwrap();
+    }
+    let resp = router.clone().oneshot(check("sesame", "192.0.2.7")).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+    for _ in 0..2 {
+        let resp = router.clone().oneshot(check("nope", "192.0.2.7")).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+}
+
+/// The unauthenticated route takes a passcode, not an upload: bodies are capped small.
+#[tokio::test]
+async fn auth_check_body_is_capped() {
+    let (_d, state) = test_state().await;
+    let router = app(state, None);
+    let big = format!(r#"{{"passcode":"{}"}}"#, "x".repeat(16 * 1024));
+    let resp = router
+        .clone()
+        .oneshot(
+            Request::post("/api/auth/check")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(big))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    // Authed capture still takes real uploads (well under the 64MB cap).
+    let text = "y".repeat(200 * 1024);
+    let resp = router
+        .clone()
+        .oneshot(
+            authed(Request::post("/api/capture/text"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(format!(r#"{{"text":"{text}"}}"#)))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+}
+
+/// Every response carries the browser hardening headers: a CSP that only
+/// allows our own bundle and blob media, no sniffing, no framing.
+#[tokio::test]
+async fn security_headers_on_every_response() {
+    let (_d, state) = test_state().await;
+    let web = tempfile::tempdir().unwrap();
+    std::fs::write(web.path().join("index.html"), "<!doctype html><title>t</title>").unwrap();
+    let router = app(state, Some(web.path().to_path_buf()));
+    for req in [
+        Request::get("/").body(Body::empty()).unwrap(),
+        Request::get("/anything/spa").body(Body::empty()).unwrap(),
+        authed(Request::get("/api/status")).body(Body::empty()).unwrap(),
+        Request::get("/api/feed").body(Body::empty()).unwrap(), // a 401 too
+    ] {
+        let resp = router.clone().oneshot(req).await.unwrap();
+        let h = resp.headers();
+        let csp = h.get("content-security-policy").expect("csp").to_str().unwrap();
+        assert!(csp.contains("default-src 'self'"), "{csp}");
+        assert!(csp.contains("frame-ancestors 'none'"), "{csp}");
+        assert!(csp.contains("media-src 'self' blob:"), "{csp}");
+        assert_eq!(h.get("x-content-type-options").unwrap(), "nosniff");
+        assert_eq!(h.get("x-frame-options").unwrap(), "DENY");
+        assert_eq!(h.get("referrer-policy").unwrap(), "no-referrer");
+    }
 }

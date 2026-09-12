@@ -1,5 +1,28 @@
 # LOG
 
+## 2026-09-12 (server: passcode guessing, body caps, browser headers)
+- **The browser passcode is the only thing between the internet and the journal, and
+  nothing slowed guessing it down.** Now the server keeps failed-attempt accounting per
+  client (`AuthGuard`): ten misses inside fifteen minutes and that client gets 429 +
+  Retry-After until the window passes; a correct passcode clears its count; misses on
+  any route count, a missing token does not (no guess was made). Every miss also holds
+  a global gate for 250ms, so rotating addresses buys at most four guesses a second from
+  anywhere. The client is Caddy's X-Forwarded-For — trusted because the listener is
+  loopback-only. A short numeric passcode is still weak by construction; the guard buys
+  time, it does not add entropy.
+- **Passcode lookup is one indexed query, not a log scan.** `Store::latest_token_set`
+  (new `idx_events_kind`) replaces walking every event on every request; the
+  latest-wins order (recorded_at, device_id, seq) is now the SQL ORDER BY and has its
+  own test. The hash comparison is constant-time (`blake3::Hash` equality).
+- **Body limits follow trust.** The 64MB upload cap applies to authenticated routes only;
+  `/api/auth/check` takes 4KB.
+- **Hardening headers on every response:** CSP (own bundle only, blob media, no framing),
+  `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy:
+  no-referrer`. Set in the server rather than the proxy so any deployment gets them.
+- Left as is, noted: the passcode itself is the bearer token (in localStorage) and the
+  stored hash is unsalted — both fine while the passcode is a device-local secret, both
+  worth revisiting if the browser client ever fronts more than one person.
+
 ## 2026-09-12 (desktop: opening screens, export, reset, appearance)
 - **The web UI's opening screens now match the phone's.** Setup, unlock and the browser
   passcode share one `BrandHero` (apps/web): photo band, card with the handwritten
