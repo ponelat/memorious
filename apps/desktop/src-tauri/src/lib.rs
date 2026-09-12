@@ -482,6 +482,66 @@ async fn reset_device<R: tauri::Runtime>(
     Ok(())
 }
 
+// ---- window chrome ----
+
+/// Linux: the title bar is GTK's client-side decoration, drawn by the theme in
+/// grey. Paint it the brand instead — flame orange, white title and window
+/// buttons — through a CSS provider at application priority (wins over the
+/// theme). Does nothing where the window manager draws the decorations itself
+/// (server-side, e.g. some X11 setups). macOS keeps its native title bar.
+#[cfg(target_os = "linux")]
+const TITLE_BAR_CSS: &str = "
+headerbar.default-decoration,
+.titlebar.default-decoration {
+  background: #ff5200;
+  background-image: none;
+  border-color: #ff5200;
+  box-shadow: none;
+  color: #ffffff;
+  text-shadow: none;
+}
+headerbar.default-decoration .title,
+.titlebar.default-decoration .title,
+headerbar.default-decoration button.titlebutton,
+.titlebar.default-decoration button.titlebutton {
+  color: #ffffff;
+  text-shadow: none;
+  -gtk-icon-shadow: none;
+}
+headerbar.default-decoration:backdrop,
+.titlebar.default-decoration:backdrop {
+  background: #ff5200;
+  color: rgba(255, 255, 255, 0.7);
+}
+headerbar.default-decoration:backdrop .title,
+.titlebar.default-decoration:backdrop .title,
+headerbar.default-decoration:backdrop button.titlebutton,
+.titlebar.default-decoration:backdrop button.titlebutton {
+  color: rgba(255, 255, 255, 0.7);
+}
+";
+
+#[cfg(target_os = "linux")]
+fn brand_title_bar<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) {
+    use gtk::prelude::*;
+    let Ok(gtk_window) = window.gtk_window() else {
+        return;
+    };
+    let Some(screen) = WidgetExt::screen(&gtk_window) else {
+        return;
+    };
+    let css = gtk::CssProvider::new();
+    if let Err(e) = css.load_from_data(TITLE_BAR_CSS.as_bytes()) {
+        log::warn!("title bar css not applied: {e}");
+        return;
+    }
+    gtk::StyleContext::add_provider_for_screen(
+        &screen,
+        &css,
+        gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+    );
+}
+
 pub fn handlers<R: tauri::Runtime>(
 ) -> impl Fn(tauri::ipc::Invoke<R>) -> bool + Send + Sync + 'static {
     tauri::generate_handler![
@@ -515,6 +575,10 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(handlers())
         .setup(|app| {
+            #[cfg(target_os = "linux")]
+            if let Some(window) = app.get_webview_window("main") {
+                brand_title_bar(&window);
+            }
             if cfg!(debug_assertions) {
                 app.handle().plugin(
                     tauri_plugin_log::Builder::default()

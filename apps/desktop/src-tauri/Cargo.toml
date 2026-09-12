@@ -24,6 +24,11 @@ log = "0.4"
 keyring = { version = "3", features = ["apple-native", "windows-native", "linux-native"] }
 tokio = { version = "1", features = ["full"] }
 
+# Linux: GTK draws the window's title bar (client-side decoration); the shell
+# styles it in the brand at startup. Same version + feature as tauri's own gtk.
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk = { version = "0.18", features = ["v3_24"] }
+
 [dev-dependencies]
 tauri = { version = "2.11.3", features = ["test"] }
 tempfile = "3"
