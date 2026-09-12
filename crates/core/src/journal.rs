@@ -35,6 +35,8 @@ struct KeysFile {
 /// device names, everything else is enrichment on an event.
 const DEVICE_ID_PREFIX: &str = "dev-";
 const DEVICE_NAME_MAX: usize = 64;
+/// Annotation target carrying the master-password proof (see `write_password_proof`).
+pub const PASSWORD_PROOF_TARGET: &str = "journal:password-proof";
 
 /// Span of the visible timeline (non-redacted captures).
 #[derive(Debug, Clone, serde::Serialize)]
@@ -115,7 +117,11 @@ impl Journal {
     pub fn init(root: &Path, password: &str) -> Result<Self> {
         let mut secret = [0u8; SECRET_LEN];
         rand::rngs::OsRng.try_fill_bytes(&mut secret)?;
-        Self::init_with_secret(root, secret, password)
+        let journal = Self::init_with_secret(root, secret, password)?;
+        // The creator knows the password by definition: publish the proof
+        // every later device must pass (see `prove_password`).
+        journal.write_password_proof()?;
+        Ok(journal)
     }
 
     /// Create a journal joined to an existing one (secret from a pairing ticket).
@@ -205,13 +211,15 @@ impl Journal {
             .as_slice()
             .try_into()
             .map_err(|_| anyhow::anyhow!("malformed journal secret"))?;
-        Ok(Self {
+        let journal = Self {
             store,
             root: root.to_path_buf(),
             device_id,
             secret,
             keys,
-        })
+        };
+        journal.ensure_password_proof()?;
+        Ok(journal)
     }
 
     // ---- media keys ----
@@ -243,6 +251,107 @@ impl Journal {
 
     pub fn secret(&self) -> &[u8; SECRET_LEN] {
         &self.secret
+    }
+
+    // ---- master password proof ----
+    //
+    // The pairing ticket authorizes replication of the event log; the master
+    // password authorizes reading media (per-blob keys are wrapped under a
+    // password-derived key). Until 2026-09-12 the only cross-device password
+    // check was unwrapping a media key, so a journal with no media yet
+    // accepted ANY password on join — and the joiner's own captures were then
+    // wrapped under keys no other device could open. The proof is a throwaway
+    // content key wrapped exactly like a media key, published as an annotation
+    // on a reserved target (replicates like device names, older peers ignore
+    // it). Anyone holding the right password unwraps it; nobody else can.
+
+    /// Publish the password proof (creator, or a device that has proven the
+    /// password some other way). Latest annotation wins, so re-publishing is
+    /// harmless.
+    pub fn write_password_proof(&self) -> Result<Event> {
+        let mut ck = [0u8; crypto::KEY_LEN];
+        rand::rngs::OsRng.try_fill_bytes(&mut ck)?;
+        let mut nonce_base = [0u8; crypto::NONCE_BASE_LEN];
+        rand::rngs::OsRng.try_fill_bytes(&mut nonce_base)?;
+        let proof = self.keys.wrap(&ck, &nonce_base)?;
+        self.annotate(PASSWORD_PROOF_TARGET, &serde_json::to_string(&proof)?)
+    }
+
+    /// Every proof annotation in the log, latest first.
+    fn password_proofs(&self) -> Result<Vec<Event>> {
+        let mut proofs: Vec<Event> = self
+            .store
+            .all_events()?
+            .into_iter()
+            .filter(|e| matches!(&e.payload, Payload::Annotation { target, .. } if target == PASSWORD_PROOF_TARGET))
+            .collect();
+        proofs.sort_by(|a, b| (b.recorded_at, &b.event_id).cmp(&(a.recorded_at, &a.event_id)));
+        Ok(proofs)
+    }
+
+    fn parse_proof(e: &Event) -> Result<BlobCrypto> {
+        match &e.payload {
+            Payload::Annotation { text, .. } => serde_json::from_str(text).context("password proof"),
+            _ => bail!("not a proof event"),
+        }
+    }
+
+    /// The journal's published proof (any device's, latest), if one exists.
+    pub fn password_proof(&self) -> Result<Option<BlobCrypto>> {
+        self.password_proofs()?.first().map(Self::parse_proof).transpose()
+    }
+
+    /// Prove this device's master password against what OTHER devices wrote:
+    /// their latest proof, else a media key one of them wrapped. Our own
+    /// proof or captures prove nothing (a device that joined with the wrong
+    /// password would happily vouch for itself). `Ok(true)` = proven,
+    /// `Ok(false)` = nothing to check against (a legacy journal with no
+    /// media, seen only from a joiner), `Err` = mismatch.
+    pub fn prove_password(&self) -> Result<bool> {
+        if let Some(proof) = self
+            .password_proofs()?
+            .iter()
+            .find(|e| e.device_id != self.device_id)
+        {
+            self.keys
+                .unwrap(&Self::parse_proof(proof)?)
+                .context("master password doesn't match this journal")?;
+            return Ok(true);
+        }
+        for ev in self.store.all_events()? {
+            if ev.device_id == self.device_id {
+                continue;
+            }
+            if let Some(crypto) = ev.payload.blob_crypto() {
+                self.keys
+                    .unwrap(crypto)
+                    .context("master password doesn't match this journal")?;
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// On open: fail if the password is provably wrong; publish the proof if
+    /// none exists and this device can vouch for it (it created the journal,
+    /// or it unwrapped another device's media key). A joiner of a legacy
+    /// media-less journal can do neither and leaves it to the creator.
+    fn ensure_password_proof(&self) -> Result<()> {
+        let proven = self.prove_password()?;
+        if self.password_proof()?.is_some() {
+            return Ok(());
+        }
+        let creator = self
+            .store
+            .all_events()?
+            .into_iter()
+            .min_by(|a, b| (a.recorded_at, &a.event_id).cmp(&(b.recorded_at, &b.event_id)))
+            .map(|first| first.device_id == self.device_id)
+            .unwrap_or(true);
+        if proven || creator {
+            self.write_password_proof()?;
+        }
+        Ok(())
     }
 
     // ---- sync health ----

@@ -388,3 +388,51 @@ async fn unreachable_peer_join_leaves_no_journal() {
     assert!(!root.join("keys.json").exists(), "no keys.json after a failed join");
     assert!(!root.join("blobs").exists(), "no blob store after a failed join");
 }
+
+#[tokio::test]
+async fn text_only_journal_rejects_wrong_password_on_join() {
+    // 2026-09-12: a rubbish master password "got through" on an iPad because
+    // the journal it joined had no media yet — unwrapping a media key was the
+    // only password check. The creator now publishes a proof at init.
+    let dir = tempdir().unwrap();
+    let ja = Journal::init(&dir.path().join("a"), "pw").unwrap();
+    let a = Node::spawn(ja).await.unwrap();
+    a.journal().capture_text("text only, no media").unwrap();
+    let ticket = a.ticket().unwrap();
+
+    let err = Node::pair_from_ticket(&dir.path().join("b"), &ticket, "rubbish")
+        .await
+        .err()
+        .expect("wrong password must be rejected even with no media");
+    assert!(format!("{err:#}").contains("master password"), "unexpected: {err:#}");
+    assert!(!dir.path().join("b").join("db.sqlite").exists());
+
+    let (b, _) = Node::pair_from_ticket(&dir.path().join("b"), &ticket, "pw")
+        .await
+        .expect("right password joins");
+    assert_eq!(timeline_ids(a.journal()), timeline_ids(b.journal()));
+    a.shutdown().await;
+    b.shutdown().await;
+}
+
+#[tokio::test]
+async fn legacy_journal_without_proof_gets_one_from_its_creator() {
+    use memorious_core::journal::PASSWORD_PROOF_TARGET;
+    let dir = tempdir().unwrap();
+    // A journal made before proofs existed: init_with_secret writes none.
+    let secret = [7u8; 32];
+    let root = dir.path().join("legacy");
+    {
+        let j = Journal::init_with_secret(&root, secret, "pw").unwrap();
+        j.capture_text("old text").unwrap();
+        assert!(j.password_proof().unwrap().is_none());
+    }
+    // The creator's next open publishes it; a wrong password then fails to open.
+    let j = Journal::open(&root, "pw").unwrap();
+    assert!(j.password_proof().unwrap().is_some());
+    assert!(j.annotations().unwrap().contains_key(PASSWORD_PROOF_TARGET));
+    drop(j);
+    // The DB itself is keyed from the password, so a wrong one never opens;
+    // the proof matters for joiners and for devices that joined wrongly.
+    assert!(Journal::open(&root, "nope").is_err());
+}

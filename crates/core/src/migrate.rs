@@ -179,8 +179,16 @@ mod tests {
             vec![7u8; 32]
         );
 
-        // Same events, same ids/seqs; media payload rewritten.
-        let events = j.store.all_events().unwrap();
+        // Same events, same ids/seqs; media payload rewritten. (Opening as the
+        // creator also publishes the master-password proof — one extra
+        // annotation, not part of the migrated history.)
+        let events: Vec<_> = j
+            .store
+            .all_events()
+            .unwrap()
+            .into_iter()
+            .filter(|e| !matches!(&e.payload, Payload::Annotation { target, .. } if target == crate::journal::PASSWORD_PROOF_TARGET))
+            .collect();
         assert_eq!(events.len(), 3);
         let photo = j.store.get_event(&photo_id).unwrap().unwrap();
         let (new_hash, crypto) = match &photo.payload {

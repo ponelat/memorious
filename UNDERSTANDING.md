@@ -247,6 +247,24 @@ XChaCha20-Poly1305; nonce = 19-byte random base ‖ 4-byte big-endian chunk coun
 final flag (the STREAM construction — reordering, truncation, and cross-blob splicing all
 fail authentication). `size` in the payload stays the plaintext length.
 
+### Master-password proof (added 2026-09-12)
+
+The ticket authorizes *replication*; the password authorizes *reading media*. Until
+2026-09-12 the only cross-device password check was unwrapping a media key from the log,
+so a journal with no media yet accepted **any** password on join (an iPad "got through"
+with a rubbish one) — and that device's own captures were then wrapped under keys no other
+device could open. Now the creator publishes a **proof**: a throwaway CK wrapped exactly
+like a media key, carried as an annotation on the reserved target
+`journal:password-proof` (replicates like device names; older peers ignore it, latest
+wins). `Journal::init` writes it; `Node::pair_from_ticket` requires `prove_password()`
+(proof, else another device's media key) to succeed and **fails closed** on a legacy
+journal that has neither ("open it once on the device that created it"); `Journal::open`
+verifies the proof on every open (a device that joined with the wrong password is refused
+once the proof arrives — the iPhone/iPad unlock screen offers "reset this device") and,
+for legacy journals, publishes it when this device can vouch (it created the journal, or
+it unwrapped another device's media). Offline brute force against the proof is no easier
+than against any wrapped media key (Argon2id in front of both).
+
 ### Faces
 
 - **CLI**: `--password`, `MEMORIOUS_PASSWORD`, or interactive prompt.

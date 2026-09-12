@@ -427,13 +427,11 @@ impl Node {
     /// password by unwrapping one media key from it.
     async fn pull_and_prove(node: &Self, peer_addr: &EndpointAddr) -> Result<SyncReport> {
         let report = node.sync_events_with(peer_addr).await?;
-        for ev in node.journal.store.all_events()? {
-            if let Some(crypto) = ev.payload.blob_crypto() {
-                node.journal
-                    .unwrap_blob_keys(crypto)
-                    .context("master password doesn't match this journal")?;
-                break;
-            }
+        if !node.journal.prove_password()? {
+            bail!(
+                "this journal carries no password proof yet — open it once on the device \
+                 that created it (with a current build), then join again"
+            );
         }
         Ok(report)
     }
