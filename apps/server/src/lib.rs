@@ -24,6 +24,7 @@ use memorious_core::media::{is_mp4_family, normalize_photo, sniff_audio, AudioCo
 use memorious_core::Node;
 use serde::{Deserialize, Serialize};
 
+pub mod peer_ping;
 pub mod sweeper;
 use serde_json::json;
 

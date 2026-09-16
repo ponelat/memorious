@@ -43,6 +43,44 @@ fn cache_password(password: &str) {
 #[derive(Default)]
 pub struct NodeState(Arc<Mutex<Option<Arc<Node>>>>);
 
+/// Handle to the running peer-ping loop, so a reset (new journal, new node)
+/// can stop the old loop instead of leaking it.
+#[derive(Default)]
+pub struct PingTask(std::sync::Mutex<Option<tauri::async_runtime::JoinHandle<()>>>);
+
+/// One round: ping every known peer, log the reachable count.
+async fn ping_once(n: &Node) {
+    match n.ping_peers(std::time::Duration::from_secs(4)).await {
+        Ok(pings) => {
+            let ok = pings.iter().filter(|p| p.ok).count();
+            log::info!("peer ping: {ok}/{} reachable", pings.len());
+        }
+        Err(err) => log::warn!("peer ping failed: {err:#}"),
+    }
+}
+
+/// Ping now, then again every `PEER_PING_INTERVAL_MS` (default 15 min) for as
+/// long as this node lives — the desktop app is its own scheduler while it's
+/// open, no external cron needed. Replaces any loop from a previous node
+/// (e.g. after `reset_device` + re-pair).
+fn spawn_ping_loop<R: tauri::Runtime>(app: &AppHandle<R>, n: Arc<Node>) {
+    let interval_ms: u64 = std::env::var("PEER_PING_INTERVAL_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(900_000);
+    let handle = tauri::async_runtime::spawn(async move {
+        loop {
+            ping_once(&n).await;
+            tokio::time::sleep(std::time::Duration::from_millis(interval_ms)).await;
+        }
+    });
+    let ping_state = app.state::<PingTask>();
+    let old = ping_state.0.lock().unwrap().replace(handle);
+    if let Some(old) = old {
+        old.abort();
+    }
+}
+
 fn data_dir<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<PathBuf> {
     if let Some(dir) = std::env::var_os("MEMORIOUS_DATA_DIR") {
         return Ok(PathBuf::from(dir));
@@ -75,6 +113,7 @@ async fn open_with<R: tauri::Runtime>(
     journal.ensure_device_name(&default_device_name())?;
     let n = Arc::new(Node::spawn(journal).await?);
     *state.0.lock().await = Some(n.clone());
+    spawn_ping_loop(app, n.clone());
     Ok(n)
 }
 
@@ -144,7 +183,8 @@ async fn setup_init<R: tauri::Runtime>(
     let journal = Journal::init(&dir, &password).map_err(estr)?;
     journal.ensure_device_name(&default_device_name()).map_err(estr)?;
     let n = Arc::new(Node::spawn(journal).await.map_err(estr)?);
-    *state.0.lock().await = Some(n);
+    *state.0.lock().await = Some(n.clone());
+    spawn_ping_loop(&app, n);
     cache_password(&password);
     Ok(())
 }
@@ -168,7 +208,9 @@ async fn setup_join<R: tauri::Runtime>(
         .store
         .meta_set(LAST_PEER_TICKET, ticket.trim().as_bytes())
         .map_err(estr)?;
-    *state.0.lock().await = Some(Arc::new(n));
+    let n = Arc::new(n);
+    *state.0.lock().await = Some(n.clone());
+    spawn_ping_loop(&app, n);
     Ok(json!({"received": report.received, "blobs": report.blobs_fetched}))
 }
 
@@ -469,6 +511,9 @@ async fn reset_device<R: tauri::Runtime>(
     state: State<'_, NodeState>,
 ) -> Result<(), String> {
     let dir = data_dir(&app).map_err(estr)?;
+    if let Some(h) = app.state::<PingTask>().0.lock().unwrap().take() {
+        h.abort();
+    }
     if let Some(n) = state.0.lock().await.take() {
         n.shutdown_ref().await;
     }
@@ -568,8 +613,9 @@ pub fn handlers<R: tauri::Runtime>(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .manage(NodeState::default())
+        .manage(PingTask::default())
         // Links in entries open in the system browser; without this the webview
         // silently drops target=_blank navigations.
         .plugin(tauri_plugin_opener::init())
@@ -588,8 +634,26 @@ pub fn run() {
             }
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application");
+
+    // Safe shutdown: hold the exit open long enough for one last ping — the
+    // app is a peer too, and this is its only chance to push before it goes
+    // quiet until next launch.
+    app.run(move |app_handle, event| {
+        if let tauri::RunEvent::ExitRequested { api, .. } = event {
+            api.prevent_exit();
+            let app_handle = app_handle.clone();
+            tauri::async_runtime::spawn(async move {
+                let n = app_handle.state::<NodeState>().0.lock().await.clone();
+                if let Some(n) = n {
+                    log::info!("shutting down — final peer ping");
+                    ping_once(&n).await;
+                }
+                app_handle.exit(0);
+            });
+        }
+    });
 }
 
 #[cfg(test)]

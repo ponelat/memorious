@@ -57,11 +57,44 @@ async fn main() -> Result<()> {
         memorious_server::sweeper::spawn(state.clone(), Arc::new(engines));
         tracing::info!("enrichment sweeper running");
     }
+    // Converges with every known peer immediately, then on a timer, for as
+    // long as this process is up — no external cron required.
+    memorious_server::peer_ping::spawn(state.clone());
     let router = app(state.clone(), web_dist);
 
     // devhost proxies 127.0.0.1; bind IPv4 explicitly (Caddy won't reach [::1]).
     let listener = tokio::net::TcpListener::bind((host.as_str(), port)).await?;
     tracing::info!("http on http://{host}:{port}");
-    axum::serve(listener, router).await?;
+    let shutdown_state = state.clone();
+    axum::serve(listener, router)
+        .with_graceful_shutdown(async move {
+            shutdown_signal().await;
+            tracing::info!("shutting down — final peer ping");
+            memorious_server::peer_ping::ping_once(&shutdown_state).await;
+        })
+        .await?;
     Ok(())
+}
+
+/// Ctrl-C (SIGINT) or Docker's default stop signal (SIGTERM) — either starts
+/// a graceful shutdown so the final ping actually has time to run.
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        let _ = tokio::signal::ctrl_c().await;
+    };
+    #[cfg(unix)]
+    let terminate = async {
+        let Ok(mut sig) = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        else {
+            return;
+        };
+        sig.recv().await;
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {}
+        _ = terminate => {}
+    }
 }
