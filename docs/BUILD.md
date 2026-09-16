@@ -110,3 +110,19 @@ nix build .#memorious-desktop      # Linux build NOT yet verified on a real box
 Builds: macOS CLI, static musl Linux CLIs (x86_64 + aarch64 via cargo-zigbuild — run
 anywhere including NixOS), and the zipped desktop app. Server lists the directory live; no
 restart needed after rebuilding artifacts.
+
+## Cross-compiling (musl, EC2 deploys, etc.)
+
+```bash
+./scripts/cross-build.sh <target-triple> <bin>[:<package>] [<bin>[:<package>] ...]
+# e.g.
+./scripts/cross-build.sh x86_64-unknown-linux-musl memorious:memorious-core memorious-server
+```
+
+Always go through this script for a cross target rather than calling `cargo zigbuild`
+directly. It builds one target triple at a time, copies the resulting binaries to
+`dist/<target>/` (gitignored, survives the cleanup), then deletes `target/<target>`
+immediately — a `target/x86_64-unknown-linux-musl` or `target/aarch64-apple-ios*` left
+sitting around after a deploy is exactly what has filled this machine's disk before.
+`make-downloads.sh`'s Linux CLI builds already go through it; do the same for one-off
+deploys (e.g. the EC2 peers in the owner's private ops runbook).

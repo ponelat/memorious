@@ -16,14 +16,14 @@ cp THIRD-PARTY-NOTICES.md "$OUT/"
 cargo build --release -p memorious-core --bin memorious
 cp target/release/memorious "$OUT/memorious-cli-macos-arm64"
 
-# Static Linux CLIs (musl, run anywhere incl. NixOS) via cargo-zigbuild.
+# Static Linux CLIs (musl, run anywhere incl. NixOS) via cargo-zigbuild. One
+# target at a time, cleaned up immediately after (scripts/cross-build.sh) —
+# leaving both target/<triple> dirs around is what fills this machine's disk.
 if command -v cargo-zigbuild >/dev/null; then
-  for t in x86_64-unknown-linux-musl aarch64-unknown-linux-musl; do
-    rustup target list --installed | grep -q "$t" || rustup target add "$t"
-    cargo zigbuild --release --target "$t" -p memorious-core --bin memorious
-  done
-  cp target/x86_64-unknown-linux-musl/release/memorious "$OUT/memorious-cli-linux-x86_64"
-  cp target/aarch64-unknown-linux-musl/release/memorious "$OUT/memorious-cli-linux-aarch64"
+  ./scripts/cross-build.sh x86_64-unknown-linux-musl memorious:memorious-core
+  cp dist/x86_64-unknown-linux-musl/memorious "$OUT/memorious-cli-linux-x86_64"
+  ./scripts/cross-build.sh aarch64-unknown-linux-musl memorious:memorious-core
+  cp dist/aarch64-unknown-linux-musl/memorious "$OUT/memorious-cli-linux-aarch64"
 else
   echo "cargo-zigbuild not installed — skipping Linux CLI builds"
 fi
