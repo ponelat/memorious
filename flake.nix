@@ -1,5 +1,5 @@
 {
-  description = "Infinite Journal v2 — local-first append-only capture, peers over iroh";
+  description = "Memorious — local-first append-only capture, peers over iroh";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
