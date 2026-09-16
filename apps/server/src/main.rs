@@ -21,6 +21,12 @@ async fn main() -> Result<()> {
         .unwrap_or_else(|_| "4600".into())
         .parse()
         .context("bad PORT")?;
+    // Default loopback-only (devhost/Caddy share this host's network namespace
+    // on the Mac, so 127.0.0.1 is the deliberate trust boundary for the
+    // passcode guard's X-Forwarded-For check). A container deployment where
+    // the reverse proxy is a separate container needs HOST=0.0.0.0 — still not
+    // internet-facing as long as the compose service publishes no `ports:`.
+    let host = std::env::var("HOST").unwrap_or_else(|_| "127.0.0.1".into());
     let web_dist = std::env::var_os("WEB_DIST").map(PathBuf::from);
     let downloads_dir = std::env::var_os("DOWNLOADS_DIR").map(PathBuf::from);
     // Headless peer: no keychain, no prompt — the password comes from the
@@ -54,8 +60,8 @@ async fn main() -> Result<()> {
     let router = app(state.clone(), web_dist);
 
     // devhost proxies 127.0.0.1; bind IPv4 explicitly (Caddy won't reach [::1]).
-    let listener = tokio::net::TcpListener::bind(("127.0.0.1", port)).await?;
-    tracing::info!("http on http://127.0.0.1:{port}");
+    let listener = tokio::net::TcpListener::bind((host.as_str(), port)).await?;
+    tracing::info!("http on http://{host}:{port}");
     axum::serve(listener, router).await?;
     Ok(())
 }
