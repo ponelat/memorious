@@ -111,6 +111,9 @@ Builds: macOS CLI, static musl Linux CLIs (x86_64 + aarch64 via cargo-zigbuild â
 anywhere including NixOS), and the zipped desktop app. Server lists the directory live; no
 restart needed after rebuilding artifacts.
 
+The Linux musl CLI here is also what an eventual AUR `memorious-bin` package would install
+directly â€” see `docs/AUR.md` for the packaging plan.
+
 ## Cross-compiling (musl, EC2 deploys, etc.)
 
 ```bash
