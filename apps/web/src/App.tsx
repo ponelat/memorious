@@ -103,7 +103,7 @@ export function App() {
           className={view === 'status' ? 'tab active' : 'tab'}
           onClick={() => setView(view === 'status' ? 'stream' : 'status')}
         >
-          sync
+          peers
         </button>
       </header>
       {view === 'stream' && <StreamView />}

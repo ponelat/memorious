@@ -84,6 +84,8 @@ const DEFAULT_DEVICE_NAME: &str = "iPhone";
 pub fn open_journal(dir: String, password: String) -> Result<Arc<MobileJournal>> {
     let journal = Journal::open(&PathBuf::from(dir), &password)?;
     journal.ensure_device_name(DEFAULT_DEVICE_NAME)?;
+    journal.ensure_peer_join()?;
+    journal.ensure_version_seen()?;
     ensure_phone_retention(&journal)?;
     let node = spawn_node(journal)?;
     Ok(Arc::new(MobileJournal { node }))
@@ -93,6 +95,8 @@ pub fn open_journal(dir: String, password: String) -> Result<Arc<MobileJournal>>
 pub fn init_fresh(dir: String, password: String) -> Result<Arc<MobileJournal>> {
     let journal = Journal::init(&PathBuf::from(dir), &password)?;
     journal.ensure_device_name(DEFAULT_DEVICE_NAME)?;
+    journal.ensure_peer_join()?;
+    journal.ensure_version_seen()?;
     ensure_phone_retention(&journal)?;
     let node = spawn_node(journal)?;
     Ok(Arc::new(MobileJournal { node }))
@@ -106,6 +110,8 @@ pub fn join_ticket(dir: String, ticket: String, password: String) -> Result<Arc<
     let (node, _report) =
         rt().block_on(Node::pair_from_ticket(&PathBuf::from(dir), &ticket, &password))?;
     node.journal().ensure_device_name(DEFAULT_DEVICE_NAME)?;
+    node.journal().ensure_peer_join()?;
+    node.journal().ensure_version_seen()?;
     ensure_phone_retention(node.journal())?;
     node.journal()
         .store
@@ -299,6 +305,23 @@ impl MobileJournal {
         Ok(())
     }
 
+    /// Originate a master-password change on this device: re-wraps existing
+    /// media, re-keys the local database, and starts using it immediately.
+    /// Every other device must separately call `adopt_master_password` once
+    /// told the new password (out-of-band — it never travels in a ticket).
+    pub fn rotate_master_password(&self, password: String) -> Result<()> {
+        self.node.journal().rotate_master_password(&password)?;
+        Ok(())
+    }
+
+    /// Catch up to a rotation another device already published. Rejects a
+    /// wrong guess (verified against that device's password proof) without
+    /// changing anything.
+    pub fn adopt_master_password(&self, password: String) -> Result<()> {
+        self.node.journal().adopt_master_password(&password)?;
+        Ok(())
+    }
+
     /// Traffic-light replication state: {"color","pending","stalest_ms","peers"}.
     pub fn sync_health(&self) -> Result<String> {
         let now = std::time::SystemTime::now()
@@ -399,12 +422,13 @@ mod tests {
         let feed2: serde_json::Value = serde_json::from_str(&j2.feed(None, 50).unwrap()).unwrap();
         assert_eq!(feed2["entries"], feed["entries"]);
         // and sync_now uses the remembered ticket
-        // (2 sent: the "reply" capture plus this device's default-name
-        // annotation — names are events and sync like everything else)
+        // (4 sent: the "reply" capture, this device's default-name
+        // annotation, its peer-join infra event, and its version-seen
+        // infra event — all events, all sync like everything else)
         j2.capture_text("reply".into()).unwrap();
         let report: serde_json::Value =
             serde_json::from_str(&j2.sync_now(None).unwrap()).unwrap();
-        assert_eq!(report["sent"], 2);
+        assert_eq!(report["sent"], 4);
 
         // Status carries the sync-page surface; the default name is set and
         // editable over the FFI.

@@ -96,7 +96,9 @@ async fn media_from_a_peer_becomes_searchable_with_no_user_action() {
     let phone_annotations = phone.journal().annotations().unwrap();
     let server_annotations = state.node.journal().annotations().unwrap();
     assert_eq!(phone_annotations, server_annotations);
-    assert_eq!(phone_annotations.len(), 1);
+    // 2, not 1: the transcription plus the journal's password-proof
+    // annotation (a reserved target, `Journal::write_password_proof`).
+    assert_eq!(phone_annotations.len(), 2);
 
     phone.shutdown().await;
 }

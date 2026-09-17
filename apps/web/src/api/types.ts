@@ -116,8 +116,18 @@ export interface Status {
   health?: SyncHealth
   /** Friendly name per device id (editable, latest wins). */
   names?: Record<string, string>
+  /** device_id → when it first joined (unix ms), from the peer_join event log. */
+  joins?: Record<string, number>
   peers?: PeerInfo[]
   net?: NetConfig
+  /** This device's own running version (Cargo package version). */
+  version?: string
+  /** device_id → latest version that device announced, from the
+   * version_seen event log. */
+  versions?: Record<string, string>
+  /** Set when some known peer announced a version newer than this
+   * device's own — the Peers page's "update available" banner. */
+  newer_version?: string | null
 }
 
 /** One peer's answer to "can I reach you right now?" — the ordinary sync
@@ -177,6 +187,14 @@ export interface JournalApi {
   setNetConfig(net: NetConfig): Promise<void>
   /** Probe every known peer; resolves when all answered or timed out (~4s). */
   pingPeers(): Promise<PeerPing[]>
+  /** Originate a master-password change on this device: re-wraps existing
+   * media, re-keys the local database, and starts using it immediately.
+   * Every other device must separately call `adoptMasterPassword` once
+   * told the new password (out-of-band — it never travels in a ticket). */
+  changeMasterPassword(newPassword: string): Promise<void>
+  /** Catch up to a rotation another device already published. Rejects a
+   * wrong guess without changing anything. */
+  adoptMasterPassword(newPassword: string): Promise<void>
   /** Present only on hosts that dial peers themselves (desktop). */
   setup?: SetupApi
   syncNow?(ticket?: string): Promise<SyncReport>

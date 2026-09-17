@@ -224,8 +224,42 @@ per blob: fresh random 32-byte content key (CK), wrapped by KWK into the capture
   here: capture events already sync to every peer and now sit inside an encrypted database,
   so the wrapped CK + nonce base ride in the media payload (`Payload::Photo/Audio`). One
   sync mechanism, no second source of truth.
-- Rotating the password = re-wrap CKs + re-key the database (future work; blobs never need
-  re-encryption).
+- **Rotating the password (decided 2026-09-16).** The salt is a function of the journal
+  secret, not the password, so `keys.json` never changes. On the device where the owner
+  types the new password, `Journal::rotate_master_password` derives a new MK/KWK, appends one
+  `key_rewrap` infra event (`EventKind::Infra`, see "Infra events" below) per existing capture
+  — its CK unwrapped under the old KWK, rewrapped under the new one — then re-keys the local
+  SQLCipher database live (`PRAGMA rekey`, no dump/reload) and republishes the password proof
+  under the new key. Blobs still never need re-encryption; only the wrap moves, and only via a
+  new event (an Event is immutable — the original capture's envelope is never touched).
+  Every *other* device keeps working on the old password until told the new one out-of-band
+  (same trust boundary as the password itself: never in a ticket) and calls
+  `Journal::adopt_master_password`, which verifies the candidate against the rotating device's
+  proof, then re-keys and swaps locally. Reading a blob tries every envelope a capture has ever
+  had — original, then each rewrap, newest first — for the one that unwraps under whatever key
+  *this* device currently holds, so a peer that hasn't adopted yet keeps reading old media
+  exactly as before; nothing breaks by lagging.
+
+## Infra events (decided 2026-09-16)
+
+`EventKind::Infra` is a deliberate, one-time exception to "the four event kinds, no more
+without a fight" (`AGENTS.md`): an open-world envelope, `{infra_kind, target, data}`, for
+peer/security/ops plumbing — a device join, a master-password key rewrap, a future upgrade
+notice. Adding a new fact is a new `infra_kind` string, never a new wire/schema change.
+
+This only works because unrecognized `kind`/payload `type` strings decode losslessly instead
+of failing: `EventKind`/`Payload` have custom (de)serialization with an `Unknown` fallback that
+keeps the entire original JSON verbatim, so a peer that predates a given `infra_kind` — or, if
+it ever comes to that, a whole new `EventKind` — still stores, syncs, and forwards it byte for
+byte; it just doesn't act on it (`crates/core/src/event.rs`). That guarantee needed one
+coordinated rollout to land (every peer on a build that understands `Unknown` before the first
+event of an unrecognized shape crosses the wire) — the last such rollout this event log should
+ever need.
+
+The "future upgrade notice" case is real as of 2026-09-17: every face announces its running
+version as a `version_seen` infra event on launch (`Journal::ensure_version_seen`), and
+`Journal::newer_version_available` compares them so an older peer's Peers page can say so. No
+wire change needed to add it — the payoff `EventKind::Infra` was built for.
 
 ### SQLite: SQLCipher (community edition)
 

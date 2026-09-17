@@ -1,5 +1,75 @@
 # LOG
 
+## 2026-09-17 (version_seen infra event, "update available")
+
+- **The first real payoff of `EventKind::Infra`'s open-world design.** Every face
+  (server, desktop, mobile) now announces the build it's running as a `version_seen`
+  infra event on launch — `Journal::ensure_version_seen`, same idempotent-on-every-launch
+  shape as `ensure_peer_join`, except it republishes whenever the version actually
+  *changes* rather than only once ever, since "what's everyone running" needs to stay
+  current. No wire/schema change needed for this — exactly the case the Infra envelope
+  and the `Unknown`-decodes-losslessly fallback were built to absorb for free (see
+  2026-09-16 entry below).
+- **`Journal::newer_version_available`** compares every known peer's latest announced
+  version against this build's own `memorious_core::VERSION` (the Cargo package
+  version — deliberately not a git hash, so a Nix build with no `.git` in `self` still
+  gets one) and returns the newest one that's actually ahead. Surfaced in `status_json`
+  as `version`/`versions`/`newer_version`; the Peers page shows a banner ("a peer is
+  running vX — this device is on vY") when it's set.
+- **This makes version bumps meaningful for the first time** — `crates/core/Cargo.toml`
+  had sat at `0.1.0` since the start, and `flake.nix`'s package version was a copy of
+  that. Bumped both to `0.2.0` with this round (rotation + Peers/Infra + this). Going
+  forward, bump `crates/core/Cargo.toml`'s version (and `flake.nix`'s to match) on every
+  deploy round that should actually notify older peers — it's a manual step, there's no
+  release-tagging flow yet (see `docs/AUR.md`'s same open point).
+
+## 2026-09-16 (master-password rotation)
+- **Rotating the password stopped being future work.** `Journal::rotate_master_password`
+  re-wraps every existing capture's content key under a new KWK (one `key_rewrap` infra
+  event per capture, next to the original — never touching it, since an Event is
+  immutable), re-keys the local SQLCipher database live (`PRAGMA rekey`), and moves the
+  password proof forward. `Journal::adopt_master_password` is the same operation for every
+  *other* device, once told the new password out-of-band: verifies the candidate against
+  the rotating device's proof, rejects a wrong guess with nothing changed, else re-keys
+  and swaps locally.
+- **A peer that hasn't adopted yet keeps reading old media exactly as before.** Reading a
+  blob now tries every envelope a capture has ever had — original, then each rewrap,
+  newest first — for the one that unwraps under whatever key *this* device currently
+  holds, instead of assuming "latest wrap" is always right. Getting this wrong would have
+  made rotating on one device silently break every other device's older media until it
+  caught up; there's a convergence test for exactly that (rotate on A, sync to B, B keeps
+  reading fine before adopting, wrong-password adopt rejected, correct one works).
+- **Operational catch, not solved here:** the headless server reads `MEMORIOUS_PASSWORD`
+  from the environment at startup, not interactively — rotating/adopting re-keys its local
+  database immediately but a restart with the old env var will fail to open it afterward.
+  The deployed secret has to move in lockstep; the UI says so, nothing more.
+- Web/desktop/mobile all get `changeMasterPassword`/`adoptMasterPassword`; no iOS UI yet
+  (that's the private mobile repo's work).
+
+## 2026-09-16 (Peers page, peer-join events, EventKind::Infra)
+- **"Sync" is now "Peers"** — same page (`StatusView`), renamed label and heading only; no
+  reorg. Each device row now shows when it joined.
+- **A join is an event, not local knowledge.** Until now "known peers" lived only in each
+  device's own `meta_scan("peer_*")` rows — nobody else ever saw them. `ensure_peer_join`
+  (same idempotent-on-every-launch shape as `ensure_device_name`) appends a `peer_join`
+  infra event authored by the joining device, so every peer learns of it on the next sync,
+  founder included.
+- **New `EventKind::Infra`** — a deliberate, one-time exception to the four-kinds rule: an
+  open-world envelope (`infra_kind` + free-form JSON) for peer/security/ops plumbing, so a
+  future fact (an upgrade notice, say) never needs another wire change. `peer_join` and
+  `key_rewrap` (see the rotation entry below) are its first two `infra_kind`s.
+  Only safe because of the next decision:
+- **Unrecognized kinds/payloads now round-trip losslessly instead of failing.**
+  `EventKind`/`Payload` deserialization had no fallback — an unrecognized `type` failed to
+  parse the whole `Msg::Event`, which aborted that entire sync round, and because heads are
+  per-device *contiguous* seqs, permanently stalled receiving anything later from that
+  device until upgraded. Both now decode to an `Unknown` variant that keeps the full
+  original JSON and re-emits it verbatim, so an old peer stores and relays what it can't
+  interpret instead of choking on it — the wildcard match arms most reader code already had
+  (`fts_text`, `blob_hash`, ...) meant nothing downstream needed to change. This needed one
+  coordinated rollout (every peer on a build that understands `Unknown` before the first
+  `Infra` event crosses the wire) — meant to be the last one this event log ever needs.
+
 ## 2026-09-12 (server: passcode guessing, body caps, browser headers)
 - **The browser passcode is the only thing between the internet and the journal, and
   nothing slowed guessing it down.** Now the server keeps failed-attempt accounting per

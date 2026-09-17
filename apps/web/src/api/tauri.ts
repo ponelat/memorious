@@ -74,6 +74,14 @@ export const tauriApi: JournalApi = {
     await invoke('set_net_config', { net })
   },
 
+  async changeMasterPassword(newPassword: string) {
+    await invoke('rotate_master_password', { password: newPassword })
+  },
+
+  async adoptMasterPassword(newPassword: string) {
+    await invoke('adopt_master_password', { password: newPassword })
+  },
+
   setup: {
     state: () => invoke<'ready' | 'empty' | 'locked'>('setup_state'),
     initFresh: (password: string) => invoke('setup_init', { password }),

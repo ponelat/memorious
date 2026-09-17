@@ -1,5 +1,6 @@
 //! M1 acceptance: two peers, offline captures, sync → identical timelines, media included.
 
+use memorious_core::event::MediaKind;
 use memorious_core::node::Node;
 use memorious_core::Journal;
 use tempfile::tempdir;
@@ -291,6 +292,141 @@ async fn peers_learn_device_ids_names_and_origin() {
     assert_eq!(v["peers"][0]["device_id"], b.journal().device_id());
     assert_eq!(v["health"]["color"], "green");
     assert_eq!(v["net"]["relay_mode"], "default");
+
+    a.shutdown().await;
+    b.shutdown().await;
+}
+
+#[tokio::test]
+async fn peer_joins_propagate_to_every_peer() {
+    let dir = tempdir().unwrap();
+    let ja = Journal::init(&dir.path().join("a"), "pw").unwrap();
+    let jb = Journal::init_with_secret(&dir.path().join("b"), *ja.secret(), "pw").unwrap();
+    ja.ensure_peer_join().unwrap();
+    jb.ensure_peer_join().unwrap();
+    let a_id = ja.device_id().to_string();
+    let b_id = jb.device_id().to_string();
+    let a = Node::spawn(ja).await.unwrap();
+    let b = Node::spawn(jb).await.unwrap();
+
+    b.sync_with(&a.addr()).await.unwrap();
+
+    // Each device's join is a real event: it propagates to the other peer,
+    // just like a capture or a device name — no local-only "known peers"
+    // list involved.
+    let a_joined: Vec<String> =
+        a.journal().peer_joins().unwrap().into_iter().map(|(id, _)| id).collect();
+    let b_joined: Vec<String> =
+        b.journal().peer_joins().unwrap().into_iter().map(|(id, _)| id).collect();
+    assert!(a_joined.contains(&a_id) && a_joined.contains(&b_id), "a should know both joins: {a_joined:?}");
+    assert!(b_joined.contains(&a_id) && b_joined.contains(&b_id), "b should know both joins: {b_joined:?}");
+
+    // Every app launch calls this again; it must never double-write.
+    a.journal().ensure_peer_join().unwrap();
+    let a_own_joins = a.journal().peer_joins().unwrap().into_iter().filter(|(id, _)| id == &a_id).count();
+    assert_eq!(a_own_joins, 1, "ensure_peer_join must be idempotent");
+
+    a.shutdown().await;
+    b.shutdown().await;
+}
+
+#[tokio::test]
+async fn version_announce_republishes_only_when_the_version_changes() {
+    let dir = tempdir().unwrap();
+    let j = Journal::init(&dir.path().join("a"), "pw").unwrap();
+
+    // Every launch calls this; a build that hasn't changed must not spam
+    // the log (same shape as ensure_peer_join's idempotency).
+    j.ensure_version_seen().unwrap();
+    j.ensure_version_seen().unwrap();
+    let mine: Vec<_> = j
+        .peer_versions()
+        .unwrap()
+        .into_iter()
+        .filter(|(id, _)| id == j.device_id())
+        .collect();
+    assert_eq!(mine.len(), 1);
+    assert_eq!(mine[0].1, memorious_core::VERSION);
+
+    // Simulate an older build's leftover announcement, then a relaunch on
+    // this (current) build — unlike peer_join, this must write again,
+    // since the fact ("what am I running") has changed.
+    j.append_infra("version_seen", Some(j.device_id()), serde_json::json!({ "version": "0.0.1" }))
+        .unwrap();
+    j.ensure_version_seen().unwrap();
+    let latest = j.peer_versions().unwrap();
+    assert_eq!(latest.get(j.device_id()).map(String::as_str), Some(memorious_core::VERSION));
+}
+
+#[tokio::test]
+async fn newer_version_available_reports_the_max_peer_version() {
+    let dir = tempdir().unwrap();
+    let ja = Journal::init(&dir.path().join("a"), "pw").unwrap();
+    let jb = Journal::init_with_secret(&dir.path().join("b"), *ja.secret(), "pw").unwrap();
+    ja.ensure_version_seen().unwrap();
+    // b announces a build newer than anything this test binary could ever
+    // actually be — standing in for "b has already updated, a hasn't yet".
+    jb.append_infra("version_seen", Some(jb.device_id()), serde_json::json!({ "version": "99.0.0" }))
+        .unwrap();
+    let a = Node::spawn(ja).await.unwrap();
+    let b = Node::spawn(jb).await.unwrap();
+
+    b.sync_with(&a.addr()).await.unwrap();
+
+    assert_eq!(a.journal().newer_version_available().unwrap().as_deref(), Some("99.0.0"));
+    assert_eq!(
+        a.journal().peer_versions().unwrap().get(b.journal().device_id()).map(String::as_str),
+        Some("99.0.0")
+    );
+
+    a.shutdown().await;
+    b.shutdown().await;
+}
+
+#[tokio::test]
+async fn master_password_rotation_keeps_old_media_readable_for_every_peer() {
+    let dir = tempdir().unwrap();
+    let ja = Journal::init(&dir.path().join("a"), "old-pw").unwrap();
+    let jb = Journal::init_with_secret(&dir.path().join("b"), *ja.secret(), "old-pw").unwrap();
+    let a = Node::spawn(ja).await.unwrap();
+    let b = Node::spawn(jb).await.unwrap();
+
+    let photo = a.capture_blob(MediaKind::Photo, b"a photo from before the rotation".to_vec()).await.unwrap();
+    let hash = photo.blob_hash().unwrap().to_string();
+
+    // B converges fully (events + the actual blob) before the rotation.
+    b.sync_with(&a.addr()).await.unwrap();
+    assert_eq!(b.blob_bytes(&hash).await.unwrap(), b"a photo from before the rotation");
+
+    // A rotates. It must still read its own pre-rotation photo immediately.
+    a.journal().rotate_master_password("new-pw").unwrap();
+    assert_eq!(a.blob_bytes(&hash).await.unwrap(), b"a photo from before the rotation");
+
+    // The rewrap (and the moved password proof) sync to B like any other
+    // event — but B hasn't adopted the new password yet. It must still read
+    // the same old photo exactly as before: rotating on A must never break
+    // a peer that hasn't caught up.
+    b.sync_with(&a.addr()).await.unwrap();
+    assert_eq!(
+        b.blob_bytes(&hash).await.unwrap(),
+        b"a photo from before the rotation",
+        "a peer that hasn't adopted the rotation must keep reading old media with its old key"
+    );
+
+    // Adopting with the WRONG password is rejected, and changes nothing.
+    assert!(b.journal().adopt_master_password("not-it").is_err());
+    assert_eq!(b.blob_bytes(&hash).await.unwrap(), b"a photo from before the rotation");
+
+    // Once B adopts the real new password, it reads the very same photo —
+    // now via the rewrap instead of the original envelope — and a fresh
+    // capture made after adopting round-trips too.
+    b.journal().adopt_master_password("new-pw").unwrap();
+    assert_eq!(b.blob_bytes(&hash).await.unwrap(), b"a photo from before the rotation");
+    let new_photo = b.capture_blob(MediaKind::Photo, b"captured after adopting".to_vec()).await.unwrap();
+    assert_eq!(
+        b.blob_bytes(new_photo.blob_hash().unwrap()).await.unwrap(),
+        b"captured after adopting"
+    );
 
     a.shutdown().await;
     b.shutdown().await;

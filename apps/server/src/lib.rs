@@ -178,6 +178,8 @@ pub fn app(state: SharedState, web_dist: Option<PathBuf>) -> Router {
         .route("/peers/ping", post(ping_peers))
         .route("/device-name", post(set_device_name))
         .route("/net-config", post(set_net_config))
+        .route("/master-password/rotate", post(rotate_master_password))
+        .route("/master-password/adopt", post(adopt_master_password))
         .route("/downloads", get(downloads_list))
         .layer(middleware::from_fn_with_state(state.clone(), require_auth))
         .layer(DefaultBodyLimit::max(64 * 1024 * 1024));
@@ -695,6 +697,47 @@ async fn set_net_config(
 ) -> Response {
     match state.journal().set_net_config(&cfg) {
         Ok(()) => Json(json!({"ok": true, "applies": "on restart"})).into_response(),
+        Err(e) => err(StatusCode::BAD_REQUEST, &format!("{e:#}")),
+    }
+}
+
+#[derive(Deserialize)]
+struct MasterPasswordBody {
+    password: String,
+}
+
+/// Originate a master-password change on this server. Re-keys its local
+/// database immediately and moves the password proof forward for every
+/// other peer to verify against — but the *next restart* still reads
+/// `MEMORIOUS_PASSWORD` from the environment, so the deployed secret must
+/// be updated too, or startup will fail to open the now-rekeyed database.
+async fn rotate_master_password(
+    State(state): State<SharedState>,
+    Json(body): Json<MasterPasswordBody>,
+) -> Response {
+    match state.journal().rotate_master_password(&body.password) {
+        Ok(()) => Json(json!({
+            "ok": true,
+            "note": "restart requires updating MEMORIOUS_PASSWORD to the new password",
+        }))
+        .into_response(),
+        Err(e) => err(StatusCode::BAD_REQUEST, &format!("{e:#}")),
+    }
+}
+
+/// Catch up to a rotation another device already published — verified
+/// against that device's password proof, so a wrong guess is rejected. Same
+/// restart caveat as `rotate_master_password`.
+async fn adopt_master_password(
+    State(state): State<SharedState>,
+    Json(body): Json<MasterPasswordBody>,
+) -> Response {
+    match state.journal().adopt_master_password(&body.password) {
+        Ok(()) => Json(json!({
+            "ok": true,
+            "note": "restart requires updating MEMORIOUS_PASSWORD to the new password",
+        }))
+        .into_response(),
         Err(e) => err(StatusCode::BAD_REQUEST, &format!("{e:#}")),
     }
 }

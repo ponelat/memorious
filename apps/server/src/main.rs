@@ -44,6 +44,8 @@ async fn main() -> Result<()> {
     };
     // Default friendly name: the server peer is what the browser fronts.
     journal.ensure_device_name("web")?;
+    journal.ensure_peer_join()?;
+    journal.ensure_version_seen()?;
     let node = Node::spawn(journal).await?;
     if let Ok(addr) = node.dialable_addr().await {
         tracing::info!("iroh peer up: {} ({} addrs)", node.endpoint().id(), addr.addrs.len());

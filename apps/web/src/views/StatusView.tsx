@@ -100,6 +100,12 @@ function holdingsLabel(peer: PeerInfo, status: Status): { text: string; behind: 
   return { text, behind }
 }
 
+/** When a device joined, from the peer_join event log — the founding device
+ * "founded", everyone else "joined". */
+function joinLabel(isSelf: boolean, joinedAt: number): string {
+  return `${isSelf ? 'founded' : 'joined'} ${prettyDate(joinedAt)}`
+}
+
 /** The two facts per peer: how it was discovered, and the data transport in
  * use right now (with any proxy in the chain called out). */
 function discoveryLabel(peer: PeerInfo): string {
@@ -251,6 +257,91 @@ function AppearancePicker() {
         </button>
       ))}
     </span>
+  )
+}
+
+/** Change this journal's master password, or catch up to a change another
+ * device already made. The password never travels in a pairing ticket
+ * (only the journal secret does) — every device needs telling out-of-band. */
+function MasterPasswordRow() {
+  const [mode, setMode] = useState<'rotate' | 'adopt'>('rotate')
+  const [password, setPassword] = useState('')
+  const [confirm, setConfirm] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [msg, setMsg] = useState<string | null>(null)
+  const [err, setErr] = useState<string | null>(null)
+
+  async function submit() {
+    setErr(null)
+    setMsg(null)
+    if (!password) {
+      setErr('enter a password')
+      return
+    }
+    if (mode === 'rotate' && password !== confirm) {
+      setErr("passwords don't match")
+      return
+    }
+    setBusy(true)
+    try {
+      if (mode === 'rotate') {
+        await api.changeMasterPassword(password)
+        setMsg('changed on this device — tell every other device the new password so they can catch up')
+      } else {
+        await api.adoptMasterPassword(password)
+        setMsg('caught up — this device now uses the new password')
+      }
+      setPassword('')
+      setConfirm('')
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="net-form">
+      <label className="net-row">
+        <input
+          type="radio"
+          name="master-password-mode"
+          checked={mode === 'rotate'}
+          onChange={() => setMode('rotate')}
+        />
+        change the password — this device sets a new one
+      </label>
+      <label className="net-row">
+        <input
+          type="radio"
+          name="master-password-mode"
+          checked={mode === 'adopt'}
+          onChange={() => setMode('adopt')}
+        />
+        catch up — another device already changed it
+      </label>
+      <input
+        type="password"
+        placeholder={mode === 'rotate' ? 'new password' : 'the new password'}
+        value={password}
+        onChange={(e) => setPassword(e.target.value)}
+      />
+      {mode === 'rotate' && (
+        <input
+          type="password"
+          placeholder="confirm new password"
+          value={confirm}
+          onChange={(e) => setConfirm(e.target.value)}
+        />
+      )}
+      <div className="net-actions">
+        <button className="ghost" disabled={busy} onClick={submit}>
+          {busy ? 'working…' : mode === 'rotate' ? 'change password' : 'catch up'}
+        </button>
+      </div>
+      {msg && <p className="hint">{msg}</p>}
+      {err && <p className="error">{err}</p>}
+    </div>
   )
 }
 
@@ -410,7 +501,7 @@ export function StatusView() {
   return (
     <main className="stream status">
       <h2>
-        sync
+        peers
         {health && (
           <span className={`health-dot ${health.color}`} title={
             health.color === 'green' ? 'every peer holds everything' :
@@ -423,6 +514,12 @@ export function StatusView() {
           } />
         )}
       </h2>
+
+      {status.newer_version && (
+        <p className="update-banner">
+          a peer is running v{status.newer_version} — this device is on v{status.version ?? '?'}
+        </p>
+      )}
 
       {mapPeers.length > 0 && (
         <>
@@ -458,6 +555,9 @@ export function StatusView() {
               )}
             </span>
             <span className="device-meta hint">
+              {row.deviceId && status.joins?.[row.deviceId] !== undefined && (
+                <span>{joinLabel(row.isSelf, status.joins[row.deviceId])}</span>
+              )}
               {row.isSelf && (
                 <span>
                   this device{row.headSeq !== undefined && ` · ${row.headSeq} events`}
@@ -520,6 +620,10 @@ export function StatusView() {
             </dd>
           </>
         )}
+        <dt>master password</dt>
+        <dd>
+          <MasterPasswordRow />
+        </dd>
         {status.ticket && (
           <>
             <dt>pair a device</dt>

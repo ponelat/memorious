@@ -18,6 +18,18 @@ pub const SECRET_LEN: usize = 32;
 
 const KEYS_FILE: &str = "keys.json";
 
+/// Parse a Cargo-style `major.minor.patch` version string for ordering.
+/// `None` for anything that doesn't fit — a `version_seen` event's `version`
+/// field is open-world (a future build could put anything there), and an
+/// unparseable one should never win a comparison.
+fn parse_semver(v: &str) -> Option<(u64, u64, u64)> {
+    let mut parts = v.split('.');
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next()?.parse().ok()?;
+    let patch = parts.next()?.parse().ok()?;
+    Some((major, minor, patch))
+}
+
 /// Plaintext sidecar holding what unlock needs *before* the database opens:
 /// the Argon2id salt (derived from the journal secret, not sensitive) and the
 /// KDF parameters. Never key material.
@@ -109,7 +121,16 @@ pub struct Journal {
     root: PathBuf,
     device_id: String,
     secret: [u8; SECRET_LEN],
-    keys: KeySet,
+    /// Argon2id salt and params — fixed for the journal's life (derived from
+    /// `secret`, not the password; see `crypto::salt_from_secret`), kept
+    /// here so a master-password rotation can re-derive keys without
+    /// re-reading `keys.json`.
+    salt: [u8; crypto::SALT_LEN],
+    params: KdfParams,
+    /// Behind a lock, not a plain field: a master-password rotation swaps
+    /// this in place (`rotate_master_password`/`adopt_master_password`)
+    /// while `Journal` is shared behind `Arc<Node>`.
+    keys: std::sync::RwLock<KeySet>,
 }
 
 impl Journal {
@@ -155,7 +176,9 @@ impl Journal {
             root: root.to_path_buf(),
             device_id,
             secret,
-            keys,
+            salt,
+            params,
+            keys: std::sync::RwLock::new(keys),
         })
     }
 
@@ -216,7 +239,9 @@ impl Journal {
             root: root.to_path_buf(),
             device_id,
             secret,
-            keys,
+            salt,
+            params: keys_file.params,
+            keys: std::sync::RwLock::new(keys),
         };
         journal.ensure_password_proof()?;
         Ok(journal)
@@ -224,17 +249,20 @@ impl Journal {
 
     // ---- media keys ----
 
-    /// Wrap a sealed blob's key material into a capture event's envelope.
+    /// Wrap a sealed blob's key material into a capture event's envelope,
+    /// under whichever master password is currently active on this device.
     pub fn wrap_blob_keys(&self, sealed: &crypto::Sealed) -> Result<BlobCrypto> {
-        self.keys.wrap(&sealed.ck, &sealed.nonce_base)
+        self.keys.read().unwrap().wrap(&sealed.ck, &sealed.nonce_base)
     }
 
-    /// Recover a blob's (content key, nonce base) from its capture payload.
+    /// Recover a blob's (content key, nonce base) from an envelope — the
+    /// capture's own, or a newer `key_rewrap` superseding it (see
+    /// `current_blob_crypto`).
     pub fn unwrap_blob_keys(
         &self,
         crypto: &BlobCrypto,
     ) -> Result<([u8; crypto::KEY_LEN], [u8; crypto::NONCE_BASE_LEN])> {
-        self.keys.unwrap(crypto)
+        self.keys.read().unwrap().unwrap(crypto)
     }
 
     pub fn root(&self) -> &Path {
@@ -266,14 +294,15 @@ impl Journal {
     // it). Anyone holding the right password unwraps it; nobody else can.
 
     /// Publish the password proof (creator, or a device that has proven the
-    /// password some other way). Latest annotation wins, so re-publishing is
-    /// harmless.
+    /// password some other way), under whichever keys are currently active —
+    /// so re-publishing after a master-password rotation moves the proof
+    /// forward too. Latest annotation wins, so re-publishing is harmless.
     pub fn write_password_proof(&self) -> Result<Event> {
         let mut ck = [0u8; crypto::KEY_LEN];
         rand::rngs::OsRng.try_fill_bytes(&mut ck)?;
         let mut nonce_base = [0u8; crypto::NONCE_BASE_LEN];
         rand::rngs::OsRng.try_fill_bytes(&mut nonce_base)?;
-        let proof = self.keys.wrap(&ck, &nonce_base)?;
+        let proof = self.keys.read().unwrap().wrap(&ck, &nonce_base)?;
         self.annotate(PASSWORD_PROOF_TARGET, &serde_json::to_string(&proof)?)
     }
 
@@ -308,12 +337,19 @@ impl Journal {
     /// `Ok(false)` = nothing to check against (a legacy journal with no
     /// media, seen only from a joiner), `Err` = mismatch.
     pub fn prove_password(&self) -> Result<bool> {
+        self.prove_keys(&self.keys.read().unwrap())
+    }
+
+    /// [`Self::prove_password`], parameterized over a candidate key set — the
+    /// same check, but usable *before* `candidate` becomes `self.keys` (see
+    /// `adopt_master_password`).
+    fn prove_keys(&self, candidate: &KeySet) -> Result<bool> {
         if let Some(proof) = self
             .password_proofs()?
             .iter()
             .find(|e| e.device_id != self.device_id)
         {
-            self.keys
+            candidate
                 .unwrap(&Self::parse_proof(proof)?)
                 .context("master password doesn't match this journal")?;
             return Ok(true);
@@ -323,7 +359,7 @@ impl Journal {
                 continue;
             }
             if let Some(crypto) = ev.payload.blob_crypto() {
-                self.keys
+                candidate
                     .unwrap(crypto)
                     .context("master password doesn't match this journal")?;
                 return Ok(true);
@@ -352,6 +388,107 @@ impl Journal {
             self.write_password_proof()?;
         }
         Ok(())
+    }
+
+    // ---- master password rotation ----
+    //
+    // The Argon2id salt is a pure function of the journal secret, not the
+    // password (`salt`/`params` above), so rotating never touches keys.json.
+    // Per-blob content keys (CKs) never need re-encrypting either — only
+    // their *wrap* does, and only for existing captures, since an Event is
+    // immutable: `rotate_master_password` appends one `key_rewrap` infra
+    // event per capture instead of touching the original. `current_blob_crypto`
+    // is where a reader picks the newest wrap over the capture's own.
+
+    /// Change the master password on *this* device: re-wrap every existing
+    /// capture's content key under the new key, re-key the local database,
+    /// and start using the new key. Every other device must separately run
+    /// [`Self::adopt_master_password`] once told the new password
+    /// out-of-band — the password itself never travels through the event
+    /// log (see the module note on pairing tickets).
+    pub fn rotate_master_password(&self, new_password: &str) -> Result<()> {
+        let new_keys = KeySet::derive(new_password, &self.salt, &self.params)?;
+        for ev in self.store.all_events()? {
+            if ev.kind != EventKind::Capture {
+                continue;
+            }
+            let Some(original) = ev.payload.blob_crypto() else { continue };
+            let current = self.latest_capture_envelope(&ev.event_id, original)?;
+            let (ck, nonce_base) = self.keys.read().unwrap().unwrap(&current)?;
+            let rewrapped = new_keys.wrap(&ck, &nonce_base)?;
+            self.append_infra("key_rewrap", Some(&ev.event_id), serde_json::to_value(&rewrapped)?)?;
+        }
+        self.store.rekey(&new_keys.db_key_hex())?;
+        *self.keys.write().unwrap() = new_keys;
+        // Moves the proof forward under the new key, so any device that
+        // hasn't adopted yet can still verify a *correct* new password once
+        // it's told it (see `prove_keys`), and a brand-new joiner works too.
+        self.write_password_proof()?;
+        Ok(())
+    }
+
+    /// Catch up to a master-password rotation another device already
+    /// published: verify `candidate` against the latest password proof not
+    /// authored by this device, and if it's right, re-key locally and start
+    /// using it. Errors (rather than silently no-op) if there's no proof
+    /// from anyone else to verify against yet — sync first.
+    pub fn adopt_master_password(&self, candidate: &str) -> Result<()> {
+        let candidate_keys = KeySet::derive(candidate, &self.salt, &self.params)?;
+        if !self.prove_keys(&candidate_keys)? {
+            bail!("no other device has published a password proof yet — sync first");
+        }
+        self.store.rekey(&candidate_keys.db_key_hex())?;
+        *self.keys.write().unwrap() = candidate_keys;
+        Ok(())
+    }
+
+    /// This device's own newest envelope for a capture: the latest
+    /// `key_rewrap` it (monotonically) knows of, else the original. Used
+    /// only from [`Self::rotate_master_password`], where "latest" is
+    /// unambiguous — this device's own history is always consistent with
+    /// its own `self.keys`. NOT what a general reader should use (see
+    /// [`Self::unwrap_capture_blob_keys`]): a peer that hasn't adopted a
+    /// rotation yet has an *older* active key than the latest rewrap.
+    fn latest_capture_envelope(&self, capture_event_id: &str, original: &BlobCrypto) -> Result<BlobCrypto> {
+        match self.latest_infra_for_target("key_rewrap", capture_event_id)? {
+            Some(Event { payload: Payload::Infra { data, .. }, .. }) => {
+                serde_json::from_value(data).context("malformed key_rewrap envelope")
+            }
+            _ => Ok(original.clone()),
+        }
+    }
+
+    /// Recover a capture's (content key, nonce base) under whichever key
+    /// this device actually has active right now — trying every envelope
+    /// the capture has ever had (its original, and any `key_rewrap`s,
+    /// newest first) for the one that unwraps. This is what makes rotation
+    /// safe for peers on different schedules: a device that hasn't adopted
+    /// a rotation yet still reads old media fine (its original envelope
+    /// unwraps under its still-old key); one that has adopted reads via
+    /// whichever rewrap matches its new key.
+    pub fn unwrap_capture_blob_keys(
+        &self,
+        capture_event_id: &str,
+        original: &BlobCrypto,
+    ) -> Result<([u8; crypto::KEY_LEN], [u8; crypto::NONCE_BASE_LEN])> {
+        let mut rewraps = self.infra_events("key_rewrap")?; // oldest first
+        rewraps.retain(|e| {
+            matches!(&e.payload, Payload::Infra { target: Some(t), .. } if t == capture_event_id)
+        });
+        let keys = self.keys.read().unwrap();
+        for candidate in rewraps.iter().rev() {
+            let Payload::Infra { data, .. } = &candidate.payload else {
+                unreachable!("filtered to Payload::Infra above")
+            };
+            let Ok(envelope) = serde_json::from_value::<BlobCrypto>(data.clone()) else { continue };
+            if let Ok(unwrapped) = keys.unwrap(&envelope) {
+                return Ok(unwrapped);
+            }
+        }
+        keys.unwrap(original).context(
+            "content key won't unwrap — wrong master password, or this device hasn't \
+             adopted a master-password rotation yet",
+        )
     }
 
     // ---- sync health ----
@@ -579,6 +716,92 @@ impl Journal {
             self.set_device_name(&device_id, default)?;
         }
         Ok(())
+    }
+
+    // A join is a `peer_join` infra event targeting this device's own id,
+    // authored by this device — so it syncs and every peer learns of it,
+    // the same way a capture or a device name does. Idempotent: called on
+    // every launch (the same call sites as `ensure_device_name`), it only
+    // ever writes once per device, including the very first device that
+    // founds the journal (no special-casing the originator).
+
+    /// Publish this device's join, once. Safe to call on every launch.
+    pub fn ensure_peer_join(&self) -> Result<()> {
+        let already = self
+            .infra_events("peer_join")?
+            .iter()
+            .any(|e| e.device_id == self.device_id());
+        if !already {
+            self.append_infra("peer_join", Some(self.device_id()), serde_json::json!({}))?;
+        }
+        Ok(())
+    }
+
+    /// device_id → when it (first) joined, oldest first — the Peers page
+    /// history.
+    pub fn peer_joins(&self) -> Result<Vec<(String, i64)>> {
+        Ok(self
+            .infra_events("peer_join")?
+            .into_iter()
+            .map(|e| (e.device_id, e.recorded_at))
+            .collect())
+    }
+
+    // ---- version announce ----
+    //
+    // Every launch, a device republishes the build it's running as a
+    // `version_seen` infra event targeting its own device id (same shape as
+    // `peer_join`) — but unlike a join, it writes again whenever the
+    // version actually *changes*, so "what's everyone running" stays
+    // current instead of freezing at first launch. Comparing every known
+    // device's latest announcement against this build's own `VERSION` is
+    // how an older peer learns a newer one exists — the "a future upgrade
+    // notice" case `EventKind::Infra` was built for (LOG.md 2026-09-16).
+
+    /// Publish this device's running version, unless it's already the
+    /// latest thing this device announced. Safe to call on every launch.
+    pub fn ensure_version_seen(&self) -> Result<()> {
+        let current_matches = matches!(
+            self.latest_infra_for_target("version_seen", self.device_id())?,
+            Some(Event { payload: Payload::Infra { data, .. }, .. })
+                if data.get("version").and_then(|v| v.as_str()) == Some(crate::VERSION)
+        );
+        if !current_matches {
+            self.append_infra(
+                "version_seen",
+                Some(self.device_id()),
+                serde_json::json!({ "version": crate::VERSION }),
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Each known device's latest announced version, device_id → semver
+    /// string, from the `version_seen` event log.
+    pub fn peer_versions(&self) -> Result<std::collections::HashMap<String, String>> {
+        let mut out = std::collections::HashMap::new();
+        for e in self.infra_events("version_seen")? {
+            if let Payload::Infra { data, .. } = &e.payload {
+                if let Some(v) = data.get("version").and_then(|v| v.as_str()) {
+                    out.insert(e.device_id, v.to_string());
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// The newest version any known peer has announced, if it's newer than
+    /// this build's own `VERSION` — what the Peers page shows as "update
+    /// available". `None` once this device is caught up (or ahead, or
+    /// alone). Malformed/foreign version strings are ignored rather than
+    /// erroring, since `version_seen` is an open `Infra` fact.
+    pub fn newer_version_available(&self) -> Result<Option<String>> {
+        let base = parse_semver(crate::VERSION);
+        Ok(self
+            .peer_versions()?
+            .into_values()
+            .filter(|v| matches!((parse_semver(v), base), (Some(c), Some(b)) if c > b))
+            .max_by_key(|v| parse_semver(v)))
     }
 
     // ---- journal stats ----

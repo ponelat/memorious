@@ -111,6 +111,8 @@ async fn open_with<R: tauri::Runtime>(
     let dir = data_dir(app)?;
     let journal = Journal::open(&dir, password)?;
     journal.ensure_device_name(&default_device_name())?;
+    journal.ensure_peer_join()?;
+    journal.ensure_version_seen()?;
     let n = Arc::new(Node::spawn(journal).await?);
     *state.0.lock().await = Some(n.clone());
     spawn_ping_loop(app, n.clone());
@@ -182,6 +184,8 @@ async fn setup_init<R: tauri::Runtime>(
     let dir = data_dir(&app).map_err(estr)?;
     let journal = Journal::init(&dir, &password).map_err(estr)?;
     journal.ensure_device_name(&default_device_name()).map_err(estr)?;
+    journal.ensure_peer_join().map_err(estr)?;
+    journal.ensure_version_seen().map_err(estr)?;
     let n = Arc::new(Node::spawn(journal).await.map_err(estr)?);
     *state.0.lock().await = Some(n.clone());
     spawn_ping_loop(&app, n);
@@ -203,6 +207,8 @@ async fn setup_join<R: tauri::Runtime>(
     n.journal()
         .ensure_device_name(&default_device_name())
         .map_err(estr)?;
+    n.journal().ensure_peer_join().map_err(estr)?;
+    n.journal().ensure_version_seen().map_err(estr)?;
     cache_password(&password);
     n.journal()
         .store
@@ -419,6 +425,38 @@ async fn set_net_config<R: tauri::Runtime>(
     Ok(())
 }
 
+// ---- master password ----
+
+/// Originate a master-password change: re-wraps existing media, re-keys the
+/// local database, and starts using it immediately. Every other device must
+/// separately call `adopt_master_password` once told the new password.
+#[tauri::command]
+async fn rotate_master_password<R: tauri::Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, NodeState>,
+    password: String,
+) -> Result<(), String> {
+    let n = node(&app, &state).await.map_err(estr)?;
+    n.journal().rotate_master_password(&password).map_err(estr)?;
+    cache_password(&password);
+    Ok(())
+}
+
+/// Catch up to a rotation another device already published. Rejects a wrong
+/// guess (verified against that device's password proof) without changing
+/// anything.
+#[tauri::command]
+async fn adopt_master_password<R: tauri::Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, NodeState>,
+    password: String,
+) -> Result<(), String> {
+    let n = node(&app, &state).await.map_err(estr)?;
+    n.journal().adopt_master_password(&password).map_err(estr)?;
+    cache_password(&password);
+    Ok(())
+}
+
 // ---- sync ----
 
 #[tauri::command]
@@ -605,6 +643,8 @@ pub fn handlers<R: tauri::Runtime>(
         status,
         set_device_name,
         set_net_config,
+        rotate_master_password,
+        adopt_master_password,
         sync_now,
         export_journal,
         reset_device,

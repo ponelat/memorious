@@ -18,7 +18,7 @@
           lib = pkgs.lib;
 
           common = {
-            version = "0.1.0";
+            version = "0.2.0";
             src = self;
             cargoLock.lockFile = ./Cargo.lock;
             doCheck = false; # tests spin up live iroh endpoints — no sandbox network

@@ -74,6 +74,16 @@ impl Store {
         })
     }
 
+    /// Re-encrypt the already-open database under a new raw key (master
+    /// password rotation). SQLCipher does this live, in place — no
+    /// dump/reload. `db_key_hex` is the same raw-key form `open` uses.
+    pub fn rekey(&self, db_key_hex: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.pragma_update(None, "rekey", format!("x'{db_key_hex}'"))
+            .context("rekey database")?;
+        Ok(())
+    }
+
     // ---- meta ----
 
     pub fn meta_get(&self, key: &str) -> Result<Option<Vec<u8>>> {
@@ -310,18 +320,26 @@ impl Store {
     /// The capture payload referencing a blob hash — where its wrapped
     /// content key lives.
     pub fn capture_payload_for_hash(&self, hash: &str) -> Result<Option<Payload>> {
+        Ok(self.capture_for_hash(hash)?.map(|(_, payload)| payload))
+    }
+
+    /// Same as [`Self::capture_payload_for_hash`], plus the capture's own
+    /// event id — needed to look up a `key_rewrap` infra event that may
+    /// supersede its inline crypto envelope after a master-password rotation.
+    pub fn capture_for_hash(&self, hash: &str) -> Result<Option<(String, Payload)>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt =
-            conn.prepare("SELECT payload FROM events WHERE kind = 'capture'")?;
-        let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+            conn.prepare("SELECT event_id, payload FROM events WHERE kind = 'capture'")?;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
         for row in rows {
-            let payload: Payload = serde_json::from_str(&row?)?;
+            let (event_id, payload_str) = row?;
+            let payload: Payload = serde_json::from_str(&payload_str)?;
             if let Payload::Photo { hash: h, .. }
             | Payload::Audio { hash: h, .. }
             | Payload::Video { hash: h, .. } = &payload
             {
                 if h == hash {
-                    return Ok(Some(payload));
+                    return Ok(Some((event_id, payload)));
                 }
             }
         }

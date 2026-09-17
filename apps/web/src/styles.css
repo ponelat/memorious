@@ -1106,6 +1106,12 @@ h2 {
 .health-dot.yellow { background: var(--t-relay); }
 .health-dot.red { background: var(--danger); }
 
+.update-banner {
+  color: var(--t-relay);
+  font-size: 15px;
+  margin: -4px 0 12px;
+}
+
 .peer-map-wrap {
   overflow-x: auto;
   margin-bottom: 8px;

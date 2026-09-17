@@ -125,6 +125,22 @@ export const httpApi: JournalApi = {
     })
   },
 
+  async changeMasterPassword(newPassword: string) {
+    await request('/api/master-password/rotate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password: newPassword }),
+    })
+  },
+
+  async adoptMasterPassword(newPassword: string) {
+    await request('/api/master-password/adopt', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password: newPassword }),
+    })
+  },
+
   async downloads() {
     return (await json<{ files: import('./types').DownloadFile[] }>('/api/downloads')).files
   },

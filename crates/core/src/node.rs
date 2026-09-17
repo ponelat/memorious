@@ -588,15 +588,19 @@ impl Node {
     /// content key from the referencing capture event, decrypt.
     pub async fn blob_bytes(&self, hash_hex: &str) -> Result<Vec<u8>> {
         let hash: Hash = hash_hex.parse().context("bad blob hash")?;
-        let payload = self
+        let (capture_event_id, payload) = self
             .journal
             .store
-            .capture_payload_for_hash(hash_hex)?
+            .capture_for_hash(hash_hex)?
             .context("no capture references this blob")?;
-        let envelope = payload
+        let original = payload
             .blob_crypto()
             .context("media predates encryption — run `memorious migrate-encrypt`")?;
-        let (ck, nonce_base) = self.journal.unwrap_blob_keys(envelope)?;
+        // A master-password rotation since this was captured leaves the
+        // original envelope wrapped under the old key forever (events are
+        // immutable) — try every envelope this capture has had for the one
+        // that matches whatever key *this* device currently has active.
+        let (ck, nonce_base) = self.journal.unwrap_capture_blob_keys(&capture_event_id, original)?;
         let ciphertext = self.blobs.get_bytes(hash).await?;
         tokio::task::spawn_blocking(move || crate::crypto::open(&ciphertext, &ck, &nonce_base))
             .await?
@@ -782,6 +786,12 @@ impl Node {
     pub async fn status_json(&self) -> Result<serde_json::Value> {
         let journal = self.journal();
         let timeline = journal.timeline()?;
+        // Oldest join per device — a device that (implausibly) authored more
+        // than one keeps its earliest, matching "when it first joined".
+        let mut joins = std::collections::HashMap::new();
+        for (device_id, recorded_at) in journal.peer_joins()? {
+            joins.entry(device_id).or_insert(recorded_at);
+        }
         let mut v = serde_json::json!({
             "device_id": journal.device_id(),
             "entries": timeline.entries,
@@ -793,8 +803,12 @@ impl Node {
             "storage": journal.storage_usage()?,
             "health": journal.sync_health(unix_now_ms())?,
             "names": journal.device_names()?,
+            "joins": joins,
             "peers": self.peers().await?,
             "net": journal.net_config(),
+            "version": crate::VERSION,
+            "versions": journal.peer_versions()?,
+            "newer_version": journal.newer_version_available()?,
         });
         if let Ok(t) = self.ticket() {
             v["ticket"] = t.into();

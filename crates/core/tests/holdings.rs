@@ -35,7 +35,7 @@ async fn peers_report_events_and_media_held() {
     assert_eq!(a_heads, b.journal().store.heads().unwrap());
     let a_sees_b = &a.peers().await.unwrap()[0];
     assert_eq!(a_sees_b.heads.as_ref(), Some(&a_heads));
-    assert_eq!(a_sees_b.events_held, Some(2));
+    assert_eq!(a_sees_b.events_held, Some(3));
     assert_eq!(a_sees_b.events_missing, Some(0));
     let b_sees_a = &b.peers().await.unwrap()[0];
     assert_eq!(b_sees_a.heads.as_ref(), Some(&a_heads));
@@ -52,9 +52,9 @@ async fn peers_report_events_and_media_held() {
 
     // Status carries the totals the UI pairs the per-peer numbers with.
     let status = a.status_json().await.unwrap();
-    assert_eq!(status["events_total"], 2);
+    assert_eq!(status["events_total"], 3);
     assert_eq!(status["media"]["held"], 1);
-    assert_eq!(status["peers"][0]["events_held"], 2);
+    assert_eq!(status["peers"][0]["events_held"], 3);
     assert_eq!(status["health"]["color"], "green");
     assert_eq!(status["health"]["peers_behind"], 0);
 

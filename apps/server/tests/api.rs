@@ -743,3 +743,61 @@ async fn security_headers_on_every_response() {
         assert_eq!(h.get("referrer-policy").unwrap(), "no-referrer");
     }
 }
+
+#[tokio::test]
+async fn master_password_rotate_and_adopt_over_http() {
+    let (_dir, state) = test_state().await;
+    let router = app(state.clone(), None);
+
+    // Rotating requires auth, same as everything else.
+    let resp = router
+        .clone()
+        .oneshot(
+            Request::post("/api/master-password/rotate")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(r#"{"password":"new-pw"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+
+    let resp = router
+        .clone()
+        .oneshot(
+            authed(Request::post("/api/master-password/rotate"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(r#"{"password":"new-pw"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(body_json(resp).await["ok"], true);
+
+    // The server keeps working immediately — capture round-trips against
+    // the just-rekeyed local database, not just a success response.
+    let resp = router
+        .clone()
+        .oneshot(
+            authed(Request::post("/api/capture/text"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(r#"{"text":"after rotation"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // A second peer that hasn't adopted yet: wrong guess is rejected...
+    let dir2 = tempfile::tempdir().unwrap();
+    let secret = *state.node.journal().secret();
+    let jb = Journal::init_with_secret(&dir2.path().join("b"), secret, "pw").unwrap();
+    let b = Node::spawn(jb).await.unwrap();
+    b.sync_with(&state.node.addr()).await.unwrap();
+    assert!(b.journal().adopt_master_password("not-it").is_err());
+
+    // ...the real new password is accepted.
+    b.journal().adopt_master_password("new-pw").unwrap();
+    b.shutdown().await;
+}
