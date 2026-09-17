@@ -10,3 +10,4 @@ data*.pre-encryption/
 data-v1-import/
 downloads/
 /dist/
+result
