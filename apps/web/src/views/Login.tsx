@@ -27,7 +27,6 @@ export function Login({ onSubmit }: { onSubmit: (passcode: string) => Promise<bo
       <form className="hero-form" onSubmit={submit}>
         <input
           type="password"
-          inputMode="numeric"
           autoFocus
           placeholder="passcode"
           value={passcode}
