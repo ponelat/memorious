@@ -1,0 +1,39 @@
+# Maintainer: Joshua Ponelat <jponelat@gmail.com>
+#
+# BLOCKED (2026-09-18): needs a memorious-desktop-linux-x86_64.tar.gz release asset
+# built on a real Linux box via the repo's flake.nix (memorious-desktop package).
+# The three TODOs below (pkgver, sha256sums_x86_64, url) can't be filled until that
+# tarball exists and is attached to a GitHub release. See ../README.md for the build
+# recipe and how to slot the result in here.
+pkgname=memorious-desktop-bin
+pkgver=0.2.0 # TODO: bump to match the release that carries the desktop tarball
+pkgrel=1
+pkgdesc="Local-first, append-only capture for text, audio, and photos (desktop GUI)"
+arch=('x86_64')
+url="https://memorious.app"
+license=('MIT' 'Apache-2.0')
+depends=('webkitgtk-4.1' 'gtk3' 'libsoup3' 'glib-networking')
+provides=('memorious-desktop')
+conflicts=('memorious-desktop')
+source_x86_64=(
+  "memorious-desktop-linux-x86_64.tar.gz::https://github.com/ponelat/memorious/releases/download/v${pkgver}/memorious-desktop-linux-x86_64.tar.gz"
+  "LICENSE-MIT::https://raw.githubusercontent.com/ponelat/memorious/v${pkgver}/LICENSE-MIT"
+  "LICENSE-APACHE::https://raw.githubusercontent.com/ponelat/memorious/v${pkgver}/LICENSE-APACHE"
+)
+sha256sums_x86_64=(
+  'SKIP' # TODO: sha256sum of the built tarball — do not push with SKIP
+  '589dbf953e1b49f82d9e1baa524999a7ddbd8b0b1e38b41bf95d1a9405322285'
+  'cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30'
+)
+
+package() {
+  cd "$srcdir/memorious-desktop-linux-x86_64"
+  install -Dm755 memorious-desktop "$pkgdir/usr/bin/memorious-desktop"
+  install -Dm644 memorious-desktop.desktop "$pkgdir/usr/share/applications/memorious-desktop.desktop"
+  for size in 32x32 128x128 256x256 512x512; do
+    install -Dm644 "icons/hicolor/$size/apps/memorious.png" \
+      "$pkgdir/usr/share/icons/hicolor/$size/apps/memorious.png"
+  done
+  install -Dm644 "$srcdir/LICENSE-MIT" "$pkgdir/usr/share/licenses/$pkgname/LICENSE-MIT"
+  install -Dm644 "$srcdir/LICENSE-APACHE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE-APACHE"
+}
