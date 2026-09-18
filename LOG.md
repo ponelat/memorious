@@ -1,5 +1,41 @@
 # LOG
 
+## 2026-09-18 (browser passcode keyboard, log out, reset this server)
+
+- **Browser passcode field was locked to a numeric keyboard.** `inputMode="numeric"` on
+  the `Login` input was a leftover from when the passcode was always digits; on mobile it
+  removes any way to type letters or symbols, which broke entering the journal-wide
+  passcode (`hoshHosh8*`, changed 2026-09-16) on a phone. Removed — it's a plain
+  `type="password"` field now, same as desktop's.
+- **The browser had no "log out."** `JournalApi.logout` (browser only — a host with its
+  own core has no passcode to forget) just clears the cached passcode
+  (`localStorage`) and returns to the passcode screen; the journal is untouched. Shown as
+  a plain button on the Peers page, next to (but distinct from) reset.
+- **`resetDevice` reaches the browser for the first time — with different stakes than
+  desktop.** Desktop's reset deletes its local data dir and returns to setup, in the same
+  process, immediately. The server (`apps/server`) is long-running and headless, so its
+  new `POST /api/reset` does the same delete but then *exits the process* rather than
+  hot-swapping a live `Node` in place — reusing `main.rs`'s already-correct "no
+  `db.sqlite` → `Journal::init`" startup path instead of teaching every handler,
+  `sweeper`, and `peer_ping` (each holds its own reference to the running `Node`) to
+  tolerate a swapped-out one mid-request. Consequence: the server does not restart
+  itself. The EC2 peers come back via Docker's `restart: unless-stopped`, and their
+  compose command re-joins the *same* shared journal from `MEMORIOUS_TICKET` on an empty
+  data dir — a clean, safe reset. The Mac dev app does not auto-restart (devhost's
+  `availability.restart` is off for dev projects, by design) and has no ticket-rejoin
+  wired into its startup command — an operator runs `devhost up memorious` and it comes
+  back as a *fresh, unpaired* journal. Either way, an empty journal has no passcode yet
+  (`check_passcode` fails closed with none set), so **browser access is cut off
+  everywhere until an operator re-pairs this peer or runs `memorious set-passcode` over
+  SSH** — the confirmation copy says so, and it branches per-face (`api.needsAuth`)
+  since desktop's consequence is much milder. Core delete-and-shutdown logic
+  (`reset_journal`) is `pub` and unit-tested directly; the process exit after it isn't
+  (would kill the test binary) — manually smoke-tested against a disposable throwaway
+  journal instead (init → set-passcode → reset over HTTP → confirm exit + empty dir →
+  confirm a fresh restart auto-creates an empty journal with the old passcode rejected).
+- Bumped `crates/core` 0.2.0→0.2.1 (`flake.nix` to match) so `version_seen` actually
+  announces this round.
+
 ## 2026-09-17 (version_seen infra event, "update available")
 
 - **The first real payoff of `EventKind::Infra`'s open-world design.** Every face

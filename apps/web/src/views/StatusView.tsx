@@ -389,43 +389,82 @@ function ExportRow() {
   )
 }
 
-/** Delete this computer's copy of the journal; asks once, in place. */
+/** Forget the passcode cached in this browser. Doesn't touch the server or
+ * the journal — just returns to the passcode screen. */
+function LogoutRow() {
+  return (
+    <>
+      <button className="ghost" onClick={() => api.logout!()}>
+        log out
+      </button>
+      <p className="hint">forgets the passcode saved in this browser. the journal is untouched.</p>
+    </>
+  )
+}
+
+/** Delete this peer's copy of the journal; asks once, in place. On the
+ * browser this also takes the server offline (see `resetDevice`'s doc in
+ * types.ts) — a materially bigger consequence than desktop's in-place
+ * return to setup, so the copy and the confirmation branch on `needsAuth`. */
 function ResetRow() {
   const [confirming, setConfirming] = useState(false)
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
+  const [done, setDone] = useState(false)
+  const web = api.needsAuth
 
   async function reset() {
     setBusy(true)
     setErr(null)
     try {
       await api.resetDevice!()
-      window.dispatchEvent(new Event('journal:reset'))
+      if (web) {
+        setDone(true)
+      } else {
+        window.dispatchEvent(new Event('journal:reset'))
+      }
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e))
       setBusy(false)
     }
   }
 
+  if (done) {
+    return (
+      <p>
+        Journal deleted. This server is exiting — an operator needs to bring it back up and
+        re-pair it (or set a new passcode) before anyone can log in here again.
+      </p>
+    )
+  }
+
   if (!confirming) {
     return (
       <>
         <button className="ghost danger" onClick={() => setConfirming(true)}>
-          reset this device
+          reset this {web ? 'server' : 'device'}
         </button>
-        <p className="hint">deletes this computer's copy. other devices keep theirs.</p>
+        <p className="hint">
+          {web
+            ? "deletes this server's copy and takes it offline. other devices keep theirs."
+            : "deletes this computer's copy. other devices keep theirs."}
+        </p>
       </>
     )
   }
   return (
     <>
       <p>
-        Delete this computer's copy of the journal? Other devices keep theirs. Anything captured here and not
-        yet synced is lost. There is no undo.
+        {web
+          ? "Delete this server's copy of the journal and take it offline? Other devices keep theirs. " +
+            'Anything captured here and not yet synced is lost. Nobody can log in here again until an ' +
+            'operator brings the server back up and re-pairs it (or sets a new passcode). There is no undo.'
+          : 'Delete this computer’s copy of the journal? Other devices keep theirs. Anything captured ' +
+            'here and not yet synced is lost. There is no undo.'}
       </p>
       <div className="net-actions">
         <button className="danger" disabled={busy} onClick={reset}>
-          {busy ? 'deleting…' : 'delete journal on this computer'}
+          {busy ? 'deleting…' : web ? 'delete journal on this server' : 'delete journal on this computer'}
         </button>
         <button className="ghost" disabled={busy} onClick={() => setConfirming(false)}>
           cancel
@@ -665,6 +704,14 @@ export function StatusView() {
             <dt>export</dt>
             <dd>
               <ExportRow />
+            </dd>
+          </>
+        )}
+        {api.logout && (
+          <>
+            <dt>session</dt>
+            <dd>
+              <LogoutRow />
             </dd>
           </>
         )}

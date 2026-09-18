@@ -200,8 +200,15 @@ export interface JournalApi {
   syncNow?(ticket?: string): Promise<SyncReport>
   /** Mirror the journal as markdown by day plus media into a folder (desktop only). */
   exportJournal?(): Promise<ExportReport>
-  /** Delete this device's copy of the journal; other devices keep theirs (desktop only). */
+  /** Delete this device's (or, over the browser, this server's) copy of the
+   * journal and its identity; other devices keep theirs. On the browser
+   * this also ends the server process — it takes longer to come back than
+   * on desktop, where the app just returns to first-run setup in place. */
   resetDevice?(): Promise<void>
+  /** Forget the cached passcode and return to the passcode screen — doesn't
+   * touch the server or the journal at all (browser only; a host with its
+   * own core has no passcode to forget). */
+  logout?(): void
   /** App builds hosted by the server peer (browser only). */
   downloads?(): Promise<DownloadFile[]>
 }

@@ -141,6 +141,22 @@ export const httpApi: JournalApi = {
     })
   },
 
+  async resetDevice() {
+    // The server replies, then exits a moment later — a network error here
+    // (the connection dropping mid-response) doesn't mean the reset didn't
+    // happen, so it's not worth distinguishing from a clean 200.
+    try {
+      await request('/api/reset', { method: 'POST' })
+    } catch {
+      // deliberately swallowed — see above
+    }
+  },
+
+  logout() {
+    setToken(null)
+    window.dispatchEvent(new Event('journal:unauthorized'))
+  },
+
   async downloads() {
     return (await json<{ files: import('./types').DownloadFile[] }>('/api/downloads')).files
   },

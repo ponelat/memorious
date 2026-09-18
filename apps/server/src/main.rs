@@ -54,7 +54,7 @@ async fn main() -> Result<()> {
         tracing::info!("pairing ticket: {ticket}");
     }
 
-    let state = Arc::new(AppState::new(node, downloads_dir));
+    let state = Arc::new(AppState::new(node, downloads_dir, data));
     if let Some(engines) = memorious_server::sweeper::SystemEngines::detect() {
         memorious_server::sweeper::spawn(state.clone(), Arc::new(engines));
         tracing::info!("enrichment sweeper running");

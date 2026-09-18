@@ -15,7 +15,8 @@ async fn test_state() -> (tempfile::TempDir, Arc<AppState>) {
     let journal = Journal::init(&dir.path().join("j"), "pw").unwrap();
     journal.set_passcode("sesame").unwrap();
     let node = Node::spawn(journal).await.unwrap();
-    (dir, Arc::new(AppState::new(node, None )))
+    let data_dir = dir.path().join("j");
+    (dir, Arc::new(AppState::new(node, None, data_dir)))
 }
 
 fn authed(req: axum::http::request::Builder) -> axum::http::request::Builder {
@@ -425,7 +426,8 @@ async fn downloads_are_listed_and_publicly_fetchable() {
 
     let journal = Journal::init(&dir.path().join("j"), "pw").unwrap();
     journal.set_passcode("sesame").unwrap();
-    let state = Arc::new(AppState::new(Node::spawn(journal).await.unwrap(), Some(dl)));
+    let data_dir = dir.path().join("j");
+    let state = Arc::new(AppState::new(Node::spawn(journal).await.unwrap(), Some(dl), data_dir));
     let router = app(state, None);
 
     // Authed listing.
@@ -585,7 +587,8 @@ async fn ping_endpoint_reports_reachable_peers() {
     let sj = Journal::init_with_secret(&dir.path().join("server"), *peer.journal().secret(), "pw")
         .unwrap();
     sj.set_passcode("sesame").unwrap();
-    let state = Arc::new(AppState::new(Node::spawn(sj).await.unwrap(), None ));
+    let data_dir = dir.path().join("server");
+    let state = Arc::new(AppState::new(Node::spawn(sj).await.unwrap(), None, data_dir));
     state.node.sync_with(&peer.addr()).await.unwrap();
     let router = app(state, None);
 
@@ -619,7 +622,8 @@ async fn auth_failures_lock_a_client_out() {
     let dir = tempfile::tempdir().unwrap();
     let journal = Journal::init(&dir.path().join("j"), "pw").unwrap();
     journal.set_passcode("sesame").unwrap();
-    let mut state = AppState::new(Node::spawn(journal).await.unwrap(), None);
+    let data_dir = dir.path().join("j");
+    let mut state = AppState::new(Node::spawn(journal).await.unwrap(), None, data_dir);
     state.auth = AuthGuard::new(AuthLimits {
         max_failures: 3,
         window: std::time::Duration::from_millis(300),
@@ -800,4 +804,33 @@ async fn master_password_rotate_and_adopt_over_http() {
     // ...the real new password is accepted.
     b.journal().adopt_master_password("new-pw").unwrap();
     b.shutdown().await;
+}
+
+#[tokio::test]
+async fn reset_requires_auth() {
+    // The route is wired under the same bearer-auth middleware as every
+    // other /api route — not a smoke test of the reset itself (that deletes
+    // the data dir and, in the real handler, exits the process; see
+    // `resetting_the_journal_deletes_its_data_dir` for the part that's safe
+    // to exercise in-process).
+    let (_dir, state) = test_state().await;
+    let router = app(state, None);
+    let resp = router.oneshot(Request::post("/api/reset").body(Body::empty()).unwrap()).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn resetting_the_journal_deletes_its_data_dir() {
+    // Exercises `reset_journal` directly rather than the `/api/reset` route:
+    // the real handler exits the process a moment after replying, which
+    // would take this whole test binary down with it.
+    let dir = tempfile::tempdir().unwrap();
+    let data_dir = dir.path().join("j");
+    let journal = Journal::init(&data_dir, "pw").unwrap();
+    journal.set_passcode("sesame").unwrap();
+    let state = AppState::new(Node::spawn(journal).await.unwrap(), None, data_dir.clone());
+
+    assert!(data_dir.join("db.sqlite").exists());
+    memorious_server::reset_journal(&state).await.unwrap();
+    assert!(!data_dir.exists(), "reset should delete the whole data dir");
 }

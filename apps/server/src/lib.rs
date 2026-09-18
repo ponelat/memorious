@@ -35,14 +35,18 @@ pub struct AppState {
     pub downloads_dir: Option<PathBuf>,
     /// Failed-passcode accounting; the default limits unless a test says otherwise.
     pub auth: AuthGuard,
+    /// This peer's data directory (`MEMORIOUS_DATA`) — needed only by
+    /// `reset_device`, to delete it after shutting the node down.
+    pub data_dir: PathBuf,
 }
 
 impl AppState {
-    pub fn new(node: Node, downloads_dir: Option<PathBuf>) -> Self {
+    pub fn new(node: Node, downloads_dir: Option<PathBuf>, data_dir: PathBuf) -> Self {
         Self {
             node,
             downloads_dir,
             auth: AuthGuard::new(AuthLimits::default()),
+            data_dir,
         }
     }
 
@@ -180,6 +184,7 @@ pub fn app(state: SharedState, web_dist: Option<PathBuf>) -> Router {
         .route("/net-config", post(set_net_config))
         .route("/master-password/rotate", post(rotate_master_password))
         .route("/master-password/adopt", post(adopt_master_password))
+        .route("/reset", post(reset_device))
         .route("/downloads", get(downloads_list))
         .layer(middleware::from_fn_with_state(state.clone(), require_auth))
         .layer(DefaultBodyLimit::max(64 * 1024 * 1024));
@@ -740,6 +745,47 @@ async fn adopt_master_password(
         .into_response(),
         Err(e) => err(StatusCode::BAD_REQUEST, &format!("{e:#}")),
     }
+}
+
+/// Shut the node down and delete this peer's data directory — the part of a
+/// reset that's safe to unit test in-process, unlike the exit that follows
+/// it in the real handler (which would kill whatever process called it).
+/// `pub` for exactly that reason (see `tests/api.rs`).
+pub async fn reset_journal(state: &AppState) -> std::io::Result<()> {
+    state.node.shutdown_ref().await;
+    std::fs::remove_dir_all(&state.data_dir)
+}
+
+/// Delete this peer's own copy of the journal and its identity, then exit —
+/// every other peer keeps its copy. Same "reset this device" semantics as
+/// the desktop app, but the consequences are bigger here: the next start
+/// (`apps/server/src/main.rs`: no `db.sqlite` → `Journal::init`) comes back
+/// with an empty, unpaired journal, and this process does not restart
+/// itself — an operator brings it back (`devhost up` on the Mac; Docker's
+/// `restart: unless-stopped` handles the EC2 peers automatically, and their
+/// compose command re-joins from `MEMORIOUS_TICKET` on an empty data dir,
+/// so those two land back on the *same* shared journal rather than a fresh
+/// empty one). An empty journal also has no passcode yet — `check_passcode`
+/// fails closed with none set — so browser access stays cut off everywhere
+/// until the operator re-pairs this peer or runs `memorious set-passcode`.
+async fn reset_device(State(state): State<SharedState>) -> Response {
+    if let Err(e) = reset_journal(&state).await {
+        tracing::error!("reset: could not delete {}: {e:#}", state.data_dir.display());
+    }
+    tracing::warn!("reset: journal deleted, exiting — an operator or the platform's restart policy must bring this peer back");
+    // Delay the exit so this response actually reaches the client first; the
+    // node (and this request's response) don't depend on anything past this
+    // point, so nothing else this process does after replying matters.
+    tokio::spawn(async {
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        std::process::exit(0);
+    });
+    Json(json!({
+        "ok": true,
+        "note": "journal deleted — this server is exiting; bring it back up and \
+                 re-pair it (or set a new passcode) before browser access works again",
+    }))
+    .into_response()
 }
 
 // ---- helpers ----
