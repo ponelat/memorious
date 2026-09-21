@@ -37,8 +37,13 @@ fn git_sha() -> String {
     let Some(mut sha) = run(&["rev-parse", "--short=10", "HEAD"]) else {
         return "unknown".into();
     };
+    // --untracked-files=no on purpose: an untracked scratch dir (this repo
+    // has one sitting around most of the time — gitignored working state
+    // per memorious-super/AGENTS.md) must not make every build claim to be
+    // "dirty". This matches how `git describe --dirty` decides too — only
+    // changes to tracked files count.
     let dirty = Command::new("git")
-        .args(["status", "--porcelain"])
+        .args(["status", "--porcelain", "--untracked-files=no"])
         .output()
         .map(|o| !o.stdout.is_empty())
         .unwrap_or(false);
