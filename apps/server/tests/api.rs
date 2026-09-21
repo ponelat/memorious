@@ -10,6 +10,26 @@ use memorious_core::{Journal, Node};
 use memorious_server::{app, AppState, AuthGuard, AuthLimits};
 use tower::ServiceExt;
 
+/// `app()` takes the swappable `RouterState`, not a bare `Arc<AppState>` —
+/// tests build the latter (so they can still poke `state.node` directly)
+/// and wrap it right before handing it to the router.
+fn wrap(state: Arc<AppState>) -> memorious_server::RouterState {
+    memorious_server::RouterState(Arc::new(std::sync::RwLock::new(state)))
+}
+
+/// `reset_journal`/`setup_join` read `MEMORIOUS_PASSWORD` from the process
+/// environment — correct for the real deployment (headless, no keychain,
+/// docs/DEPLOY.md), but `cargo test` runs test functions on separate
+/// threads of the *same* process, and env vars are process-global. Every
+/// test that sets it holds this for its whole body, so two such tests never
+/// interleave their set/read/unset — without it this was genuinely flaky
+/// (confirmed: ~1 in 5 runs) rather than just theoretically risky.
+static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn lock_env() -> std::sync::MutexGuard<'static, ()> {
+    ENV_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 async fn test_state() -> (tempfile::TempDir, Arc<AppState>) {
     let dir = tempfile::tempdir().unwrap();
     let journal = Journal::init(&dir.path().join("j"), "pw").unwrap();
@@ -43,7 +63,7 @@ fn multipart_body(field_bytes: &[u8]) -> (String, Vec<u8>) {
 #[tokio::test]
 async fn auth_gates_everything() {
     let (_d, state) = test_state().await;
-    let router = app(state, None);
+    let router = app(wrap(state), None);
 
     // No token → 401.
     let resp = router
@@ -83,7 +103,7 @@ async fn status_carries_stats_names_and_net_config() {
     let (_d, state) = test_state().await;
     state.node.journal().ensure_device_name("web").unwrap();
     state.node.journal().capture_text("hello").unwrap();
-    let router = app(state.clone(), None);
+    let router = app(wrap(state.clone()), None);
 
     let resp = router
         .clone()
@@ -176,7 +196,7 @@ async fn status_carries_stats_names_and_net_config() {
 #[tokio::test]
 async fn capture_all_three_types_and_read_back() {
     let (_d, state) = test_state().await;
-    let router = app(state.clone(), None);
+    let router = app(wrap(state.clone()), None);
 
     // Text.
     let resp = router
@@ -264,7 +284,7 @@ async fn capture_all_three_types_and_read_back() {
 #[tokio::test]
 async fn capture_video_mp4_roundtrip() {
     let (_d, state) = test_state().await;
-    let router = app(state, None);
+    let router = app(wrap(state), None);
 
     // An mp4-shaped container passes straight through.
     let mut mp4 = vec![0, 0, 0, 24];
@@ -340,7 +360,7 @@ async fn audio_transcodes_webm_when_ffmpeg_available() {
     let webm = std::fs::read(&webm_path).unwrap();
 
     let (_d, state) = test_state().await;
-    let router = app(state, None);
+    let router = app(wrap(state), None);
     let (ct, body) = multipart_body(&webm);
     let resp = router
         .clone()
@@ -369,7 +389,7 @@ async fn audio_transcodes_webm_when_ffmpeg_available() {
 #[tokio::test]
 async fn redact_hides_from_feed_shows_in_trash() {
     let (_d, state) = test_state().await;
-    let router = app(state, None);
+    let router = app(wrap(state), None);
 
     let resp = router
         .clone()
@@ -428,7 +448,7 @@ async fn downloads_are_listed_and_publicly_fetchable() {
     journal.set_passcode("sesame").unwrap();
     let data_dir = dir.path().join("j");
     let state = Arc::new(AppState::new(Node::spawn(journal).await.unwrap(), Some(dl), data_dir));
-    let router = app(state, None);
+    let router = app(wrap(state), None);
 
     // Authed listing.
     let resp = router
@@ -471,7 +491,7 @@ async fn server_peer_converges_with_core_peer() {
     let (_d, state) = test_state().await;
 
     // Capture on the server over "HTTP" (direct handler call).
-    let router = app(state.clone(), None);
+    let router = app(wrap(state.clone()), None);
     router
         .clone()
         .oneshot(
@@ -520,7 +540,7 @@ async fn music_uploads_carry_their_kind_and_are_never_transcribed() {
     // a note". The kind rides the entry JSON so the UI can render it; the
     // sweeper must leave it alone (crates/core/src/retention.rs).
     let (_dir, state) = test_state().await;
-    let router = app(state.clone(), None);
+    let router = app(wrap(state.clone()), None);
     let mut m4a = vec![0, 0, 0, 24];
     m4a.extend_from_slice(b"ftypM4A ");
     m4a.extend_from_slice(&[7; 64]);
@@ -590,7 +610,7 @@ async fn ping_endpoint_reports_reachable_peers() {
     let data_dir = dir.path().join("server");
     let state = Arc::new(AppState::new(Node::spawn(sj).await.unwrap(), None, data_dir));
     state.node.sync_with(&peer.addr()).await.unwrap();
-    let router = app(state, None);
+    let router = app(wrap(state), None);
 
     let resp = router
         .clone()
@@ -629,7 +649,7 @@ async fn auth_failures_lock_a_client_out() {
         window: std::time::Duration::from_millis(300),
         failure_delay: std::time::Duration::ZERO,
     });
-    let router = app(Arc::new(state), None);
+    let router = app(wrap(Arc::new(state)), None);
 
     for _ in 0..3 {
         let resp = router.clone().oneshot(check("nope", "203.0.113.9")).await.unwrap();
@@ -694,7 +714,7 @@ async fn auth_failures_lock_a_client_out() {
 #[tokio::test]
 async fn auth_check_body_is_capped() {
     let (_d, state) = test_state().await;
-    let router = app(state, None);
+    let router = app(wrap(state), None);
     let big = format!(r#"{{"passcode":"{}"}}"#, "x".repeat(16 * 1024));
     let resp = router
         .clone()
@@ -729,7 +749,7 @@ async fn security_headers_on_every_response() {
     let (_d, state) = test_state().await;
     let web = tempfile::tempdir().unwrap();
     std::fs::write(web.path().join("index.html"), "<!doctype html><title>t</title>").unwrap();
-    let router = app(state, Some(web.path().to_path_buf()));
+    let router = app(wrap(state), Some(web.path().to_path_buf()));
     for req in [
         Request::get("/").body(Body::empty()).unwrap(),
         Request::get("/anything/spa").body(Body::empty()).unwrap(),
@@ -751,7 +771,7 @@ async fn security_headers_on_every_response() {
 #[tokio::test]
 async fn master_password_rotate_and_adopt_over_http() {
     let (_dir, state) = test_state().await;
-    let router = app(state.clone(), None);
+    let router = app(wrap(state.clone()), None);
 
     // Rotating requires auth, same as everything else.
     let resp = router
@@ -809,28 +829,176 @@ async fn master_password_rotate_and_adopt_over_http() {
 #[tokio::test]
 async fn reset_requires_auth() {
     // The route is wired under the same bearer-auth middleware as every
-    // other /api route — not a smoke test of the reset itself (that deletes
-    // the data dir and, in the real handler, exits the process; see
-    // `resetting_the_journal_deletes_its_data_dir` for the part that's safe
-    // to exercise in-process).
+    // other /api route — not a smoke test of the reset itself (that swaps a
+    // whole new AppState into the running router; see
+    // `resetting_the_journal_replaces_it_with_an_empty_one` for the part
+    // that's safe to exercise directly, and `reset_over_http_lands_on_a_
+    // fresh_unprovisioned_journal` for the route end to end).
     let (_dir, state) = test_state().await;
-    let router = app(state, None);
+    let router = app(wrap(state), None);
     let resp = router.oneshot(Request::post("/api/reset").body(Body::empty()).unwrap()).await.unwrap();
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 }
 
 #[tokio::test]
-async fn resetting_the_journal_deletes_its_data_dir() {
-    // Exercises `reset_journal` directly rather than the `/api/reset` route:
-    // the real handler exits the process a moment after replying, which
-    // would take this whole test binary down with it.
+async fn resetting_the_journal_replaces_it_with_an_empty_one() {
+    // Exercises `reset_journal` directly rather than the `/api/reset` route
+    // — same reasoning as `wrap`, just for a function instead of a state.
     let dir = tempfile::tempdir().unwrap();
     let data_dir = dir.path().join("j");
     let journal = Journal::init(&data_dir, "pw").unwrap();
     journal.set_passcode("sesame").unwrap();
+    journal.capture_text("gone after reset").unwrap();
     let state = AppState::new(Node::spawn(journal).await.unwrap(), None, data_dir.clone());
 
-    assert!(data_dir.join("db.sqlite").exists());
-    memorious_server::reset_journal(&state).await.unwrap();
-    assert!(!data_dir.exists(), "reset should delete the whole data dir");
+    let _env_guard = lock_env();
+    std::env::set_var("MEMORIOUS_PASSWORD", "pw");
+    let node = memorious_server::reset_journal(&state).await.unwrap();
+    std::env::remove_var("MEMORIOUS_PASSWORD");
+
+    assert!(data_dir.join("db.sqlite").exists(), "a fresh journal should be left in place");
+    assert_eq!(node.journal().list().unwrap().len(), 0, "the new journal should be empty");
+    assert!(
+        node.journal().active_passcode_hash().unwrap().is_none(),
+        "a fresh journal has no passcode yet"
+    );
+    node.shutdown().await;
+}
+
+#[tokio::test]
+async fn reset_over_http_lands_on_a_fresh_unprovisioned_journal() {
+    // The route end to end: swaps in place, no process exit, and the
+    // browser can immediately see it needs setup (this is the bug fix —
+    // see LOG.md 2026-09-18's incident note).
+    let _env_guard = lock_env();
+    std::env::set_var("MEMORIOUS_PASSWORD", "pw");
+    let (_dir, state) = test_state().await;
+    let router = app(wrap(state), None);
+
+    let resp = router
+        .clone()
+        .oneshot(authed(Request::post("/api/reset")).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(body_json(resp).await["ok"], true);
+
+    // The old passcode is gone with the old journal...
+    let resp = router
+        .clone()
+        .oneshot(authed(Request::get("/api/status")).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+
+    // ...but the server is still up, and says so without needing auth.
+    let resp = router
+        .oneshot(Request::get("/api/setup/state").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(body_json(resp).await["state"], "empty");
+    std::env::remove_var("MEMORIOUS_PASSWORD");
+}
+
+#[tokio::test]
+async fn setup_passcode_only_works_before_one_is_set() {
+    // (setup/passcode never touches MEMORIOUS_PASSWORD — only reset/join do,
+    // since only they have to re-open or re-join a journal from scratch.)
+    let dir = tempfile::tempdir().unwrap();
+    let data_dir = dir.path().join("j");
+    let journal = Journal::init(&data_dir, "pw").unwrap();
+    let state = Arc::new(AppState::new(Node::spawn(journal).await.unwrap(), None, data_dir));
+    let router = app(wrap(state), None);
+
+    let resp = router
+        .clone()
+        .oneshot(Request::get("/api/setup/state").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(body_json(resp).await["state"], "empty");
+
+    let resp = router
+        .clone()
+        .oneshot(
+            Request::post("/api/setup/passcode")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(r#"{"passcode":"sesame"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // Now logged-in access works...
+    let resp = router.clone().oneshot(authed(Request::get("/api/status")).body(Body::empty()).unwrap()).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // ...and setup refuses a second time.
+    let resp = router
+        .clone()
+        .oneshot(
+            Request::post("/api/setup/passcode")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(r#"{"passcode":"other"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    let resp = router
+        .oneshot(Request::get("/api/setup/state").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(body_json(resp).await["state"], "ready");
+}
+
+#[tokio::test]
+async fn setup_join_pairs_with_an_existing_journal_and_sets_a_passcode() {
+    let _env_guard = lock_env();
+    std::env::set_var("MEMORIOUS_PASSWORD", "pw");
+    let dir = tempfile::tempdir().unwrap();
+
+    // A live peer holding the "real" journal.
+    let peer = Node::spawn(Journal::init(&dir.path().join("peer"), "pw").unwrap()).await.unwrap();
+    peer.journal().capture_text("from the real journal").unwrap();
+    let ticket = peer.ticket().unwrap();
+
+    // An empty, unprovisioned server peer — like one fresh off a reset.
+    let data_dir = dir.path().join("server");
+    let journal = Journal::init(&data_dir, "pw").unwrap();
+    let state = Arc::new(AppState::new(Node::spawn(journal).await.unwrap(), None, data_dir));
+    let router = app(wrap(state), None);
+
+    let resp = router
+        .clone()
+        .oneshot(
+            Request::post("/api/setup/join")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(format!(r#"{{"ticket":"{ticket}","passcode":"sesame"}}"#)))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK, "{:?}", body_json(resp).await);
+
+    // Immediately usable, no restart: the new passcode works, and the
+    // joined journal's entry is there.
+    let resp = router
+        .clone()
+        .oneshot(authed(Request::get("/api/feed")).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let feed = body_json(resp).await;
+    assert_eq!(feed["entries"][0]["text"], "from the real journal");
+
+    // Setup routes are closed again now that a passcode exists.
+    let resp = router
+        .oneshot(Request::get("/api/setup/state").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(body_json(resp).await["state"], "ready");
+    peer.shutdown().await;
+    std::env::remove_var("MEMORIOUS_PASSWORD");
 }

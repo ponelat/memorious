@@ -51,7 +51,7 @@ pub async fn sweep_once(node: &Node, engines: &dyn Engines, grace_ms: i64) -> Re
 }
 
 /// Run forever. `interval` between sweeps; grace from UNDERSTANDING.md unless overridden.
-pub fn spawn(node: Arc<crate::AppState>, engines: Arc<dyn Engines>) {
+pub fn spawn(state: crate::RouterState, engines: Arc<dyn Engines>) {
     let interval = std::env::var("ENRICH_INTERVAL_MS")
         .ok()
         .and_then(|v| v.parse().ok())
@@ -62,6 +62,10 @@ pub fn spawn(node: Arc<crate::AppState>, engines: Arc<dyn Engines>) {
         .unwrap_or(DEFAULT_GRACE_MS);
     tokio::spawn(async move {
         loop {
+            // Re-resolved every tick, not captured once — a reset or a
+            // browser-driven join (`RouterState`) swaps in a new node
+            // between ticks, and this loop must follow it.
+            let node = state.0.read().unwrap().clone();
             if let Err(err) = sweep_once(&node.node, engines.as_ref(), grace).await {
                 tracing::warn!("sweep failed: {err:#}");
             }

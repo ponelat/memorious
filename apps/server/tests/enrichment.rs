@@ -11,6 +11,11 @@ use memorious_server::sweeper::{sweep_once, Engines};
 use memorious_server::{app, AppState};
 use tower::ServiceExt;
 
+/// See the matching helper in tests/api.rs.
+fn wrap(state: Arc<AppState>) -> memorious_server::RouterState {
+    memorious_server::RouterState(Arc::new(std::sync::RwLock::new(state)))
+}
+
 struct MockEngines;
 
 impl Engines for MockEngines {
@@ -56,7 +61,7 @@ async fn media_from_a_peer_becomes_searchable_with_no_user_action() {
     assert_eq!(written, 1);
 
     // The transcript is searchable and attached to the entry in the feed.
-    let router = app(state.clone(), None);
+    let router = app(wrap(state.clone()), None);
     let resp = router
         .clone()
         .oneshot(

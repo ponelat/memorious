@@ -22,12 +22,40 @@ use memorious_core::api_json::entry_json;
 use memorious_core::event::{AudioKind, EventKind, MediaKind, Payload};
 use memorious_core::media::{is_mp4_family, normalize_photo, sniff_audio, AudioContainer};
 use memorious_core::node::BlobOpenError;
-use memorious_core::Node;
+use memorious_core::{Journal, Node};
 use serde::{Deserialize, Serialize};
 
 pub mod peer_ping;
 pub mod sweeper;
 use serde_json::json;
+
+/// The router's actual axum state: a swappable pointer to the current
+/// `AppState`, so a reset or a browser-driven re-pair can atomically replace
+/// the running server's `Node` — new data dir, new identity, everything —
+/// without restarting the process (the old exit-and-wait-for-an-operator
+/// design was the reason a reset server couldn't recover itself; see
+/// `docs/DEPLOY.md`). Only the handlers that swap it (`reset_device`,
+/// `setup_join`) ask for `State<RouterState>` directly; every other handler
+/// keeps asking for `State<SharedState>` — an `Arc<AppState>` resolved fresh
+/// per request via the `FromRef` impl below — completely unchanged from
+/// before this existed.
+/// A newtype, not a plain type alias, so `impl FromRef` below is legal
+/// (axum's trait + `Arc<...>` are both foreign to this crate — the orphan
+/// rules need at least one local type in the `impl`).
+#[derive(Clone)]
+pub struct RouterState(pub Arc<std::sync::RwLock<Arc<AppState>>>);
+
+/// What an ordinary handler extracts: today's `AppState`, snapshotted at the
+/// start of the request. A swap mid-request finishes that request against
+/// the old snapshot and the next request sees the new one — never a torn
+/// read across the two.
+pub type SharedState = Arc<AppState>;
+
+impl axum::extract::FromRef<RouterState> for SharedState {
+    fn from_ref(input: &RouterState) -> Self {
+        input.0.read().unwrap().clone()
+    }
+}
 
 pub struct AppState {
     pub node: Node,
@@ -165,10 +193,8 @@ const CSP: &str = "default-src 'self'; script-src 'self'; style-src 'self' 'unsa
 img-src 'self' blob: data:; media-src 'self' blob:; connect-src 'self'; font-src 'self'; \
 object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'";
 
-pub type SharedState = Arc<AppState>;
-
 /// Build the full router: /api under bearer auth, static web UI for everything else.
-pub fn app(state: SharedState, web_dist: Option<PathBuf>) -> Router {
+pub fn app(state: RouterState, web_dist: Option<PathBuf>) -> Router {
     let authed = Router::new()
         .route("/capture/text", post(capture_text))
         .route("/capture/photo", post(capture_photo))
@@ -183,20 +209,26 @@ pub fn app(state: SharedState, web_dist: Option<PathBuf>) -> Router {
         .route("/peers/ping", post(ping_peers))
         .route("/device-name", post(set_device_name))
         .route("/net-config", post(set_net_config))
+        .route("/passcode", post(change_passcode))
         .route("/master-password/rotate", post(rotate_master_password))
         .route("/master-password/adopt", post(adopt_master_password))
         .route("/reset", post(reset_device))
         .route("/downloads", get(downloads_list))
         .layer(middleware::from_fn_with_state(state.clone(), require_auth))
         .layer(DefaultBodyLimit::max(64 * 1024 * 1024));
-    // The one unauthenticated route takes a passcode, not an upload.
+    // Unauthenticated: checking a passcode obviously can't require one, and
+    // setup/state|passcode|join have their own guard (`ensure_unprovisioned`)
+    // that refuses once a passcode exists — see their doc comments.
     let open = Router::new()
         .route("/auth/check", post(auth_check))
+        .route("/setup/state", get(setup_state))
+        .route("/setup/passcode", post(setup_passcode))
+        .route("/setup/join", post(setup_join))
         .layer(DefaultBodyLimit::max(4 * 1024));
     let api = authed.merge(open).with_state(state.clone());
 
     let mut app = Router::new().nest("/api", api);
-    if let Some(dir) = &state.downloads_dir {
+    if let Some(dir) = &state.0.read().unwrap().downloads_dir {
         app = app.nest_service("/downloads", tower_http::services::ServeDir::new(dir));
     }
     if let Some(dist) = web_dist {
@@ -695,6 +727,24 @@ async fn set_net_config(
 }
 
 #[derive(Deserialize)]
+struct PasscodeBody {
+    passcode: String,
+}
+
+/// Change the browser passcode — a token-set event, "latest wins" across
+/// every synced peer (`Journal::set_passcode`), same as when it's set for
+/// the first time by `setup_passcode`. Deliberately not the same mechanism
+/// as `rotate_master_password`: the passcode doesn't wrap or encrypt
+/// anything, so there's nothing for other devices to "adopt" — they just
+/// pick up the new value on their next sync, same as a device rename.
+async fn change_passcode(State(state): State<SharedState>, Json(body): Json<PasscodeBody>) -> Response {
+    match state.journal().set_passcode(&body.passcode) {
+        Ok(_) => Json(json!({"ok": true})).into_response(),
+        Err(e) => err(StatusCode::BAD_REQUEST, &format!("{e:#}")),
+    }
+}
+
+#[derive(Deserialize)]
 struct MasterPasswordBody {
     password: String,
 }
@@ -735,45 +785,154 @@ async fn adopt_master_password(
     }
 }
 
-/// Shut the node down and delete this peer's data directory — the part of a
-/// reset that's safe to unit test in-process, unlike the exit that follows
-/// it in the real handler (which would kill whatever process called it).
-/// `pub` for exactly that reason (see `tests/api.rs`).
-pub async fn reset_journal(state: &AppState) -> std::io::Result<()> {
+/// Shut the node down, delete this peer's data directory, and open a fresh
+/// empty journal in its place under the `MEMORIOUS_PASSWORD` this process
+/// was started with. `pub` and returning the new `Node` (rather than just
+/// wiping) is what lets `reset_device` hot-swap instead of exiting — see
+/// its doc comment for why that matters. Unit-tested directly in
+/// `tests/api.rs`.
+pub async fn reset_journal(state: &AppState) -> Result<Node> {
     state.node.shutdown_ref().await;
-    std::fs::remove_dir_all(&state.data_dir)
+    std::fs::remove_dir_all(&state.data_dir).context("delete data dir")?;
+    let password = std::env::var("MEMORIOUS_PASSWORD")
+        .ok()
+        .filter(|p| !p.is_empty())
+        .context("MEMORIOUS_PASSWORD not set in this process's environment")?;
+    let journal = Journal::init(&state.data_dir, &password)?;
+    journal.ensure_device_name("web")?;
+    journal.ensure_peer_join()?;
+    journal.ensure_version_seen()?;
+    Node::spawn(journal).await
 }
 
-/// Delete this peer's own copy of the journal and its identity, then exit —
-/// every other peer keeps its copy. Same "reset this device" semantics as
-/// the desktop app, but the consequences are bigger here: the next start
-/// (`apps/server/src/main.rs`: no `db.sqlite` → `Journal::init`) comes back
-/// with an empty, unpaired journal, and this process does not restart
-/// itself — an operator brings it back (`devhost up` on the Mac; Docker's
-/// `restart: unless-stopped` handles the EC2 peers automatically, and their
-/// compose command re-joins from `MEMORIOUS_TICKET` on an empty data dir,
-/// so those two land back on the *same* shared journal rather than a fresh
-/// empty one). An empty journal also has no passcode yet — `check_passcode`
-/// fails closed with none set — so browser access stays cut off everywhere
-/// until the operator re-pairs this peer or runs `memorious set-passcode`.
-async fn reset_device(State(state): State<SharedState>) -> Response {
-    if let Err(e) = reset_journal(&state).await {
-        tracing::error!("reset: could not delete {}: {e:#}", state.data_dir.display());
-    }
-    tracing::warn!("reset: journal deleted, exiting — an operator or the platform's restart policy must bring this peer back");
-    // Delay the exit so this response actually reaches the client first; the
-    // node (and this request's response) don't depend on anything past this
-    // point, so nothing else this process does after replying matters.
-    tokio::spawn(async {
-        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-        std::process::exit(0);
-    });
+/// Delete this peer's own copy of the journal and swap in a fresh empty one
+/// — every other peer keeps its copy, nothing else on this box restarts.
+/// The first version of this exited the process instead (LOG.md
+/// 2026-09-18) on the theory that reusing `main.rs`'s startup path beat
+/// teaching every handler and background task to tolerate a swapped-out
+/// `Node`. That theory didn't survive contact with reality: the Mac dev
+/// app doesn't restart itself (devhost's `availability.restart` is off by
+/// design) and has no ticket to rejoin with even if it did, so a real
+/// reset left the founding device dead until someone ran the CLI by hand
+/// to rejoin it — see the incident note in LOG.md. `RouterState` (above)
+/// exists to fix exactly this: the browser that clicked reset lands
+/// straight on an empty, ready-for-setup journal instead of a dead server.
+async fn reset_device(State(router_state): State<RouterState>) -> Response {
+    let current = router_state.0.read().unwrap().clone();
+    let node = match reset_journal(&current).await {
+        Ok(node) => node,
+        Err(e) => return internal(e),
+    };
+    let new_state = Arc::new(AppState::new(node, current.downloads_dir.clone(), current.data_dir.clone()));
+    *router_state.0.write().unwrap() = new_state;
     Json(json!({
         "ok": true,
-        "note": "journal deleted — this server is exiting; bring it back up and \
-                 re-pair it (or set a new passcode) before browser access works again",
+        "note": "journal deleted — this server now has a fresh empty one; use \
+                 setup to pick a passcode or join an existing journal",
     }))
     .into_response()
+}
+
+// ---- setup: only reachable while this peer has never had a passcode ----
+
+/// True exactly in the window where `setup/passcode` and `setup/join` are
+/// allowed to run: no passcode has ever been set on this peer. This is what
+/// makes it safe for both routes to sit in the *unauthenticated* group —
+/// before a passcode exists there's nothing here to protect (an empty
+/// journal, or one about to be replaced by whatever the ticket points at:
+/// same trust model as pairing anywhere else in this app, possession of the
+/// ticket + the master password is what authorizes it). The instant a
+/// passcode exists, both refuse — same closed door as every other route.
+fn ensure_unprovisioned(state: &AppState) -> std::result::Result<(), Response> {
+    match state.journal().active_passcode_hash() {
+        Ok(None) => Ok(()),
+        Ok(Some(_)) => Err(err(StatusCode::FORBIDDEN, "already set up — log in normally")),
+        Err(e) => Err(internal(e)),
+    }
+}
+
+#[derive(Serialize)]
+struct SetupStateBody {
+    state: &'static str,
+}
+
+/// "empty" (no passcode yet — offer setup) or "ready" (normal login).
+async fn setup_state(State(state): State<SharedState>) -> Response {
+    match state.journal().active_passcode_hash() {
+        Ok(None) => Json(SetupStateBody { state: "empty" }).into_response(),
+        Ok(Some(_)) => Json(SetupStateBody { state: "ready" }).into_response(),
+        Err(e) => internal(e),
+    }
+}
+
+#[derive(Deserialize)]
+struct SetupPasscodeBody {
+    passcode: String,
+}
+
+/// Start using the journal that's already here — freshly created at boot,
+/// or left behind by a reset — by picking a passcode for it. There's no
+/// separate "create" step: `main.rs` already creates an empty journal under
+/// `MEMORIOUS_DATA`/`MEMORIOUS_PASSWORD` whenever none exists; this just
+/// unlocks browser access to it.
+async fn setup_passcode(State(state): State<SharedState>, Json(body): Json<SetupPasscodeBody>) -> Response {
+    if let Err(resp) = ensure_unprovisioned(&state) {
+        return resp;
+    }
+    match state.journal().set_passcode(&body.passcode) {
+        Ok(_) => Json(json!({"ok": true})).into_response(),
+        Err(e) => err(StatusCode::BAD_REQUEST, &format!("{e:#}")),
+    }
+}
+
+#[derive(Deserialize)]
+struct SetupJoinBody {
+    ticket: String,
+    /// Set explicitly right after joining rather than left to arrive with
+    /// the rest of the synced log — same belt-and-braces reasoning as the
+    /// EC2 peers' compose entrypoint (`docs/DEPLOY.md`): this device is
+    /// usable immediately instead of waiting on one specific event.
+    passcode: String,
+}
+
+/// Replace this peer's empty/orphaned journal with a synced copy of an
+/// existing one — the browser-driven equivalent of `memorious --data <dir>
+/// join <ticket>`. Swaps a brand new `AppState` (new `Node`, new identity)
+/// into the running server; a request already in flight against the old
+/// journal finishes against it, the next one sees the new one. Concurrent
+/// captures against the peer being replaced mid-join aren't guarded against
+/// beyond that — acceptable because this only ever runs against an empty,
+/// just-reset journal nobody is using yet.
+async fn setup_join(State(router_state): State<RouterState>, Json(body): Json<SetupJoinBody>) -> Response {
+    let current = router_state.0.read().unwrap().clone();
+    if let Err(resp) = ensure_unprovisioned(&current) {
+        return resp;
+    }
+    let password = match std::env::var("MEMORIOUS_PASSWORD").ok().filter(|p| !p.is_empty()) {
+        Some(p) => p,
+        None => return internal(anyhow::anyhow!("MEMORIOUS_PASSWORD not set in this process's environment")),
+    };
+    current.node.shutdown_ref().await;
+    if let Err(e) = std::fs::remove_dir_all(&current.data_dir).context("clear the old journal before joining") {
+        return internal(e);
+    }
+    let (node, _report) = match Node::join_from_ticket(&current.data_dir, &body.ticket, &password).await {
+        Ok(pair) => pair,
+        Err(e) => return err(StatusCode::BAD_REQUEST, &format!("{e:#}")),
+    };
+    for step in [
+        node.journal().ensure_device_name("web"),
+        node.journal().ensure_peer_join(),
+        node.journal().ensure_version_seen(),
+        node.journal().set_passcode(&body.passcode).map(|_| ()),
+    ] {
+        if let Err(e) = step {
+            return internal(e);
+        }
+    }
+    let new_state = Arc::new(AppState::new(node, current.downloads_dir.clone(), current.data_dir.clone()));
+    *router_state.0.write().unwrap() = new_state;
+    Json(json!({"ok": true})).into_response()
 }
 
 // ---- helpers ----

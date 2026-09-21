@@ -39,6 +39,50 @@
   `peer_ping` reachability, relay ping timeouts, and pkarr publish failures are a
   separate dial/discovery problem; this does not change them.
 
+## 2026-09-21 (browser-driven re-pair: paste a ticket into the web UI)
+
+- **The web UI had no way to join or re-pair from a browser at all.** The server
+  (`apps/server`) already exposed `/api/setup/state|passcode|join` (unauthenticated,
+  refuses once a passcode exists — `ensure_unprovisioned`), but `apps/web`'s HTTP
+  adapter never implemented `JournalApi.setup`, so `App.tsx` always treated the browser
+  as `setupState: 'ready'` and skipped straight to the passcode-login screen — with
+  nothing behind it once a reset (2026-09-18) left the journal empty, and no path in
+  for a fresh server peer either. `Setup.tsx`'s "join from another device" screen (with
+  its pairing-ticket textarea) existed and was fully wired for Tauri, just never reached
+  by a browser.
+- **`RouterState`** (`apps/server/src/lib.rs`) is what makes a browser-driven join safe on
+  a long-running, headless peer: `Arc<RwLock<Arc<AppState>>>` instead of a plain
+  `Arc<AppState>`, so `setup_join` (and `reset_device`, replacing the 2026-09-18
+  process-exit approach) can atomically swap in a brand new `Node`/identity — new data
+  dir, new everything — without restarting the process. `main.rs`, `peer_ping.rs`, and
+  `sweeper.rs` now re-resolve the current `AppState` on every tick/request instead of
+  capturing one at startup, so the ping loop and the enrichment sweeper follow a swap
+  instead of chasing a stale `Node`.
+- **`POST /api/setup/join`** clears the current (empty/orphaned) data dir and calls
+  `Node::join_from_ticket` with `MEMORIOUS_PASSWORD` — the browser-driven equivalent of
+  `memorious --data <dir> join <ticket>`. It sets a passcode on the new journal in the
+  same request, so the operator never has to SSH in. Unit-tested in `tests/api.rs`
+  (`setup_join_pairs_with_an_existing_journal_and_sets_a_passcode`,
+  `setup_passcode_only_works_before_one_is_set`).
+- **Wired the browser adapter (`apps/web/src/api/http.ts`) to it.** The server's model
+  doesn't map onto `SetupApi` one-for-one: there's no `'locked'` state (the master
+  password lives in `MEMORIOUS_PASSWORD`, never typed into a browser) and no real
+  `unlock`. `initFresh`/`joinTicket` both stash the chosen passcode as this browser's
+  bearer token on success (`setToken`), and `App.tsx`'s `onDone` now re-checks
+  `getToken()` so finishing setup drops straight into the journal instead of bouncing
+  back to a login screen.
+- **`Setup.tsx` now branches copy on `api.needsAuth`.** Reusing the desktop/phone copy
+  verbatim on the web would have been actively wrong: "master password — no reset, no
+  recovery, write it down" describes the actual encryption key (Tauri/phone choose it
+  right there), not the browser login passcode a server operator can always reset. The
+  web variant drops the master-password ritual (checkbox, warning copy) and calls the
+  field what it is; the join screen's second field is labelled "passcode", not "master
+  password", since that's already fixed by whoever set `MEMORIOUS_PASSWORD`.
+- Verified against a throwaway seed+joiner pair (`cargo test -p memorious-server`, 19/19
+  green) and a real browser pass (agent-browser against a scratch, unprovisioned server
+  peer): paste ticket → pick passcode → journal opens straight to the stream showing the
+  seed device's entry, no bounce back to login.
+
 ## 2026-09-18 (browser passcode keyboard, log out, reset this server)
 
 - **Browser passcode field was locked to a numeric keyboard.** `inputMode="numeric"` on

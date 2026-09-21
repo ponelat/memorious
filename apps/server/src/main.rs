@@ -54,7 +54,16 @@ async fn main() -> Result<()> {
         tracing::info!("pairing ticket: {ticket}");
     }
 
-    let state = Arc::new(AppState::new(node, downloads_dir, data));
+    // RwLock<Arc<AppState>>, not a plain Arc<AppState>: reset and the
+    // browser-driven join (apps/server/src/lib.rs, RouterState) swap a whole
+    // new AppState in while this process keeps running, so every long-lived
+    // holder below re-resolves the current one on each use instead of
+    // capturing today's forever.
+    let state = memorious_server::RouterState(Arc::new(std::sync::RwLock::new(Arc::new(AppState::new(
+        node,
+        downloads_dir,
+        data,
+    )))));
     if let Some(engines) = memorious_server::sweeper::SystemEngines::detect() {
         memorious_server::sweeper::spawn(state.clone(), Arc::new(engines));
         tracing::info!("enrichment sweeper running");
@@ -72,7 +81,8 @@ async fn main() -> Result<()> {
         .with_graceful_shutdown(async move {
             shutdown_signal().await;
             tracing::info!("shutting down — final peer ping");
-            memorious_server::peer_ping::ping_once(&shutdown_state).await;
+            let snapshot = shutdown_state.0.read().unwrap().clone();
+            memorious_server::peer_ping::ping_once(&snapshot).await;
         })
         .await?;
     Ok(())

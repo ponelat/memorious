@@ -1,4 +1,4 @@
-import type { Entry, FeedPage, JournalApi, MediaRef, NetConfig, Status } from './types'
+import type { Entry, FeedPage, JournalApi, MediaRef, NetConfig, Status, SyncReport } from './types'
 
 const TOKEN_KEY = 'memorious.passcode'
 
@@ -155,6 +155,37 @@ export const httpApi: JournalApi = {
   logout() {
     setToken(null)
     window.dispatchEvent(new Event('journal:unauthorized'))
+  },
+
+  // First run on a server peer: apps/server/src/lib.rs's /api/setup/* only
+  // ever answers 'ready' or 'empty' (never 'locked' — the master password
+  // lives in this box's MEMORIOUS_PASSWORD env var, not typed into a
+  // browser), and the passcode chosen here doubles as the bearer token, so
+  // both actions log the browser straight in on success.
+  setup: {
+    async state() {
+      return (await json<{ state: 'ready' | 'empty' }>('/api/setup/state')).state
+    },
+    async initFresh(passcode: string) {
+      await json('/api/setup/passcode', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ passcode }),
+      })
+      setToken(passcode)
+    },
+    async joinTicket(ticket: string, passcode: string): Promise<SyncReport> {
+      await json('/api/setup/join', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ticket, passcode }),
+      })
+      setToken(passcode)
+      return { received: 0, blobs: 0 }
+    },
+    async unlock() {
+      throw new Error('this server has no locked state to unlock')
+    },
   },
 
   async downloads() {

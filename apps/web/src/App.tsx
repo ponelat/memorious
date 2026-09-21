@@ -30,8 +30,11 @@ function useScrollingClass(ref: React.RefObject<HTMLElement>) {
   }, [ref])
 }
 
+/** Browser needs a stored passcode; a host with its own core has nothing to check. */
+const isAuthed = () => !api.needsAuth || getToken() !== null
+
 export function App() {
-  const [authed, setAuthed] = useState(() => !api.needsAuth || getToken() !== null)
+  const [authed, setAuthed] = useState(isAuthed)
   const frame = useRef<HTMLDivElement>(null)
   useScrollingClass(frame)
   useAppearance()
@@ -67,7 +70,18 @@ export function App() {
 
   if (setupState === 'unknown') return null
   if (setupState === 'empty' && api.setup) {
-    return <Setup setup={api.setup} onDone={() => setSetupState('ready')} />
+    // initFresh/joinTicket already stashed a working passcode as this
+    // browser's token (http.ts) — pick that up so setup drops straight
+    // into the journal instead of back to a login screen.
+    return (
+      <Setup
+        setup={api.setup}
+        onDone={() => {
+          setAuthed(isAuthed())
+          setSetupState('ready')
+        }}
+      />
+    )
   }
   if (setupState === 'locked' && api.setup) {
     const { unlock } = api.setup

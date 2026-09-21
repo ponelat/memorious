@@ -4,7 +4,6 @@
 //! `com.ponelat.memorious-peer-ping` LaunchAgent) to be the only thing that
 //! ever dials out — every server now does it for itself while it's running.
 
-use std::sync::Arc;
 use std::time::Duration;
 
 use crate::AppState;
@@ -26,14 +25,16 @@ pub async fn ping_once(state: &AppState) {
 /// matches the old LaunchAgent cadence), repeat. Caller keeps the returned
 /// handle only if it wants to abort the loop explicitly; otherwise it runs
 /// for the life of the process.
-pub fn spawn(state: Arc<AppState>) -> tokio::task::JoinHandle<()> {
+pub fn spawn(state: crate::RouterState) -> tokio::task::JoinHandle<()> {
     let interval_ms = std::env::var("PEER_PING_INTERVAL_MS")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(900_000u64);
     tokio::spawn(async move {
         loop {
-            ping_once(&state).await;
+            // Re-resolved every tick — see the matching note in sweeper.rs.
+            let snapshot = state.0.read().unwrap().clone();
+            ping_once(&snapshot).await;
             tokio::time::sleep(Duration::from_millis(interval_ms)).await;
         }
     })
