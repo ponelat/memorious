@@ -39,6 +39,53 @@
   `peer_ping` reachability, relay ping timeouts, and pkarr publish failures are a
   separate dial/discovery problem; this does not change them.
 
+## 2026-09-21 (build info: version/git sha/compile date, self and per-peer)
+
+- **Every client now knows exactly what it's running, and what every other
+  known device is running.** `crates/core/build.rs` (new) stamps each
+  binary with its git commit (`GIT_SHA`, short SHA + `-dirty` for an
+  uncommitted worktree) and UTC compile date (`BUILD_DATE`), alongside the
+  existing Cargo-version `VERSION` — `BUILD_INFO` is the one-line
+  `v0.2.2 (abc1234, 2026-09-21)` const every client shows for itself (CLI
+  `--version`/`status`, server startup log, `Node::status_json`'s
+  `git_sha`/`build_date` next to `version`). Best-effort, on purpose: a
+  Nix build's sandboxed `src = self` has no `.git` (same reason `VERSION`
+  itself uses the Cargo version, not a git hash — LOG.md 2026-09-17), so
+  `flake.nix` now passes `self.shortRev` as `MEMORIOUS_GIT_SHA`; anything
+  with neither shows "unknown" rather than failing the build.
+- **`version_seen`'s payload grew two fields — free, by the open-world
+  design `EventKind::Infra` was built for.** It now carries `git_sha` and
+  `build_date` alongside `version`; an older peer's announcement (or a
+  `.git`-less build) just has `None`/`null` there, not an error.
+  `Journal::peer_builds()` (new) replaces `peer_versions()` as the
+  interesting read — device_id → `PeerBuild { version, git_sha,
+  build_date, behind }`, `behind` true when *this* device's own version is
+  strictly newer than that peer's (same comparison
+  `newer_version_available` already used for the journal-wide "update
+  available" banner, applied per row). `status_json`'s `versions` map is
+  gone, replaced by the richer `builds` — nothing in any client actually
+  read `versions` (checked before removing it).
+- **Every device list now shows it, per row.** Web/desktop's Peers page
+  (`StatusView.tsx`) and the iPhone app's devices list (`StatusSheet.swift`)
+  both grew a `v0.2.2 · abc1234 · built 2026-09-21` line under every
+  device — this device and every known peer — in `.orange`/`.behind` when
+  that peer is running an older build. Answers "which of my devices need
+  updating" without opening each one. The existing per-device "build" `<dl>`
+  row (web/desktop) and the App Store version line (mobile) still show just
+  this device's own build as a quick standalone glance.
+- Bumped `crates/core` 0.2.1→0.2.2 (`flake.nix` to match) so the richer
+  `version_seen` payload actually has something new to announce.
+- Covered in `crates/core/src/journal.rs` unit tests (own build round-trips
+  with `behind: false`; an old-shape, version-only announcement decodes
+  with `git_sha`/`build_date: None` and `behind: true`) and two
+  `convergence.rs` assertions extended in place (a peer genuinely ahead is
+  never marked `behind`). Verified live: `cargo test -p memorious-core -p
+  memorious-server` (82 tests) and a real browser pass against a scratch
+  server — both the devices-list row and the `<dl>` "build" row render the
+  live version/sha/date. iOS: `xcodebuild … -sdk iphonesimulator` build
+  succeeds against the existing simulator `xcframework` (no FFI surface
+  changed, so no bindings regen needed).
+
 ## 2026-09-21 (browser-driven re-pair: paste a ticket into the web UI)
 
 - **The web UI had no way to join or re-pair from a browser at all.** The server

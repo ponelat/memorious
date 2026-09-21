@@ -116,6 +116,23 @@ pub struct PeerHoldings {
     pub media: Option<MediaHeld>,
 }
 
+/// One device's self-announced build, from its latest `version_seen` infra
+/// event — the Peers page's "who's out of date" (LOG.md 2026-09-21).
+/// `git_sha`/`build_date` are `None` for an announcement made before this
+/// engine round added them to `version_seen`'s payload — an older peer's
+/// announcement, not a broken one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PeerBuild {
+    pub version: String,
+    pub git_sha: Option<String>,
+    pub build_date: Option<String>,
+    /// True when this device's own running version is strictly newer than
+    /// this peer's — same semver comparison `newer_version_available` uses
+    /// for the journal-wide "update available" banner, applied per row.
+    /// Always false for this device's own entry (compared to itself).
+    pub behind: bool,
+}
+
 pub struct Journal {
     pub store: Store,
     root: PathBuf,
@@ -758,36 +775,56 @@ impl Journal {
     // how an older peer learns a newer one exists — the "a future upgrade
     // notice" case `EventKind::Infra` was built for (LOG.md 2026-09-16).
 
-    /// Publish this device's running version, unless it's already the
-    /// latest thing this device announced. Safe to call on every launch.
+    /// Publish this device's running build — version, git commit, compile
+    /// date — unless it's already exactly what this device last announced.
+    /// Safe to call on every launch.
     pub fn ensure_version_seen(&self) -> Result<()> {
-        let current_matches = matches!(
+        let current = serde_json::json!({
+            "version": crate::VERSION,
+            "git_sha": crate::GIT_SHA,
+            "build_date": crate::BUILD_DATE,
+        });
+        let already = matches!(
             self.latest_infra_for_target("version_seen", self.device_id())?,
-            Some(Event { payload: Payload::Infra { data, .. }, .. })
-                if data.get("version").and_then(|v| v.as_str()) == Some(crate::VERSION)
+            Some(Event { payload: Payload::Infra { data, .. }, .. }) if data == current
         );
-        if !current_matches {
-            self.append_infra(
-                "version_seen",
-                Some(self.device_id()),
-                serde_json::json!({ "version": crate::VERSION }),
-            )?;
+        if !already {
+            self.append_infra("version_seen", Some(self.device_id()), current)?;
         }
         Ok(())
     }
 
-    /// Each known device's latest announced version, device_id → semver
-    /// string, from the `version_seen` event log.
-    pub fn peer_versions(&self) -> Result<std::collections::HashMap<String, String>> {
+    /// Each known device's latest announced build, device_id → [`PeerBuild`]
+    /// (version, git commit, compile date, and whether it's behind this
+    /// device's own version) — the Peers page's per-row "who's out of
+    /// date" (LOG.md 2026-09-21). Includes this device's own entry: it
+    /// announces itself the same way every peer does.
+    pub fn peer_builds(&self) -> Result<std::collections::HashMap<String, PeerBuild>> {
+        let own = parse_semver(crate::VERSION);
         let mut out = std::collections::HashMap::new();
         for e in self.infra_events("version_seen")? {
-            if let Payload::Infra { data, .. } = &e.payload {
-                if let Some(v) = data.get("version").and_then(|v| v.as_str()) {
-                    out.insert(e.device_id, v.to_string());
-                }
-            }
+            let Payload::Infra { data, .. } = &e.payload else { continue };
+            let Some(version) = data.get("version").and_then(|v| v.as_str()) else { continue };
+            let behind = matches!((parse_semver(version), own), (Some(peer), Some(own)) if peer < own);
+            out.insert(
+                e.device_id,
+                PeerBuild {
+                    version: version.to_string(),
+                    git_sha: data.get("git_sha").and_then(|v| v.as_str()).map(str::to_string),
+                    build_date: data.get("build_date").and_then(|v| v.as_str()).map(str::to_string),
+                    behind,
+                },
+            );
         }
         Ok(out)
+    }
+
+    /// Each known device's latest announced version only, device_id →
+    /// semver string — `newer_version_available`'s input. [`peer_builds`]
+    /// for the full (version, git_sha, build_date, behind) the Peers page
+    /// shows.
+    pub fn peer_versions(&self) -> Result<std::collections::HashMap<String, String>> {
+        Ok(self.peer_builds()?.into_iter().map(|(id, b)| (id, b.version)).collect())
     }
 
     /// The newest version any known peer has announced, if it's newer than
@@ -1035,5 +1072,42 @@ mod tests {
         j.set_passcode("second").unwrap();
         assert!(!j.check_passcode("first").unwrap());
         assert!(j.check_passcode("second").unwrap());
+    }
+
+    #[test]
+    fn version_seen_carries_git_sha_and_build_date_and_is_never_behind_itself() {
+        let dir = tempdir().unwrap();
+        let j = Journal::init(&dir.path().join("j"), PW).unwrap();
+        j.ensure_version_seen().unwrap();
+
+        let builds = j.peer_builds().unwrap();
+        let mine = builds.get(j.device_id()).expect("own device announced");
+        assert_eq!(mine.version, crate::VERSION);
+        assert_eq!(mine.git_sha.as_deref(), Some(crate::GIT_SHA));
+        assert_eq!(mine.build_date.as_deref(), Some(crate::BUILD_DATE));
+        // Compared to itself, a device is never "behind" — same rule
+        // `newer_version_available` uses (strictly newer, not just different).
+        assert!(!mine.behind);
+    }
+
+    #[test]
+    fn peer_builds_treats_a_version_only_announcement_as_an_older_peer_not_a_broken_one() {
+        let dir = tempdir().unwrap();
+        let j = Journal::init(&dir.path().join("j"), PW).unwrap();
+        // A single journal can only author events as itself (append_local
+        // always stamps the local device id), so this simulates the
+        // pre-2026-09-21 shape as this device's own earlier announcement
+        // — checked before `ensure_version_seen` would supersede it. A
+        // *peer's* old-shape announcement round-trips the same way once
+        // synced in (see the convergence test's `version_only` assertion).
+        j.append_infra("version_seen", Some(j.device_id()), serde_json::json!({ "version": "0.0.1" }))
+            .unwrap();
+
+        let builds = j.peer_builds().unwrap();
+        let mine = builds.get(j.device_id()).expect("own device announced");
+        assert_eq!(mine.version, "0.0.1");
+        assert_eq!(mine.git_sha, None, "no git_sha in an old-shape announcement");
+        assert_eq!(mine.build_date, None, "no build_date in an old-shape announcement");
+        assert!(mine.behind, "0.0.1 is older than this build's own VERSION");
     }
 }

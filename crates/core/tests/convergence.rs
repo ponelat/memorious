@@ -356,6 +356,15 @@ async fn version_announce_republishes_only_when_the_version_changes() {
     j.ensure_version_seen().unwrap();
     let latest = j.peer_versions().unwrap();
     assert_eq!(latest.get(j.device_id()).map(String::as_str), Some(memorious_core::VERSION));
+
+    // The re-announcement carries the full build, not just the version —
+    // the leftover event above was version-only ("0.0.1"), same as a real
+    // peer running a build from before this engine round.
+    let builds = j.peer_builds().unwrap();
+    let mine = builds.get(j.device_id()).unwrap();
+    assert_eq!(mine.git_sha.as_deref(), Some(memorious_core::GIT_SHA));
+    assert_eq!(mine.build_date.as_deref(), Some(memorious_core::BUILD_DATE));
+    assert!(!mine.behind);
 }
 
 #[tokio::test]
@@ -378,6 +387,14 @@ async fn newer_version_available_reports_the_max_peer_version() {
         a.journal().peer_versions().unwrap().get(b.journal().device_id()).map(String::as_str),
         Some("99.0.0")
     );
+
+    // b is ahead of a, not "behind" — the per-row Peers page flag only
+    // fires for a peer running an *older* build than this device's own.
+    let builds = a.journal().peer_builds().unwrap();
+    let b_build = builds.get(b.journal().device_id()).unwrap();
+    assert_eq!(b_build.version, "99.0.0");
+    assert_eq!(b_build.git_sha, None, "b's synthetic announcement was version-only");
+    assert!(!b_build.behind);
 
     a.shutdown().await;
     b.shutdown().await;

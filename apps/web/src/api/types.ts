@@ -55,6 +55,22 @@ export interface MediaHeld {
   policy?: unknown
 }
 
+/** One device's self-announced build (version, git commit, compile date),
+ * from Status.builds — keyed by device_id, includes this device's own
+ * entry too. */
+export interface PeerBuild {
+  version: string
+  /** `null` for an announcement from before this engine round
+   * (2026-09-21) added git_sha/build_date to version_seen's payload — an
+   * older peer, not a broken one. */
+  git_sha: string | null
+  build_date: string | null
+  /** True when this device's own version is strictly newer than this
+   * peer's — same comparison as the journal-wide "update available"
+   * banner, applied per row. */
+  behind: boolean
+}
+
 /** A known sync peer, as fresh as our last contact with it. */
 export interface PeerInfo {
   endpoint_id: string
@@ -122,9 +138,15 @@ export interface Status {
   net?: NetConfig
   /** This device's own running version (Cargo package version). */
   version?: string
-  /** device_id → latest version that device announced, from the
-   * version_seen event log. */
-  versions?: Record<string, string>
+  /** The git commit this build was compiled from (short SHA, `-dirty` for
+   * an uncommitted worktree, "unknown" for a `.git`-less package build). */
+  git_sha?: string
+  /** UTC date this build was compiled (`YYYY-MM-DD`), or "unknown". */
+  build_date?: string
+  /** device_id → that device's own latest announced build (incl. this
+   * device) — the Peers page's per-row version/sha/date and "who's out of
+   * date", from the version_seen event log. */
+  builds?: Record<string, PeerBuild>
   /** Set when some known peer announced a version newer than this
    * device's own — the Peers page's "update available" banner. */
   newer_version?: string | null

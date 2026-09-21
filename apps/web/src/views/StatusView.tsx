@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { api, DownloadFile, ExportReport, NetConfig, PeerInfo, PeerPing, Status } from '../api'
+import { api, DownloadFile, ExportReport, NetConfig, PeerBuild, PeerInfo, PeerPing, Status } from '../api'
 import { agoLabel, edgeKind, MapPeer, PeerMap } from '../components/PeerMap'
 import { Appearance, onAppearanceChange, readAppearance, setAppearance } from '../appearance'
 
@@ -98,6 +98,16 @@ function holdingsLabel(peer: PeerInfo, status: Status): { text: string; behind: 
     }
   }
   return { text, behind }
+}
+
+/** `v0.2.1 · abc1234 · built 2026-09-21` for one row of the devices list —
+ * "who's out of date" without opening each device separately. `null` for a
+ * device that has never announced (synced before this engine round, or a
+ * log-only device we've never actually heard from). */
+function buildLabel(build: PeerBuild | undefined): { text: string; behind: boolean } | null {
+  if (!build) return null
+  const text = `v${build.version} · ${build.git_sha ?? 'unknown'} · built ${build.build_date ?? 'unknown'}`
+  return { text, behind: build.behind }
 }
 
 /** When a device joined, from the peer_join event log — the founding device
@@ -621,6 +631,10 @@ export function StatusView() {
               {!row.isSelf && !row.peer && (
                 <span>known from the log only{row.headSeq !== undefined && ` · ${row.headSeq} events`}</span>
               )}
+              {(() => {
+                const b = buildLabel(row.deviceId ? status.builds?.[row.deviceId] : undefined)
+                return b && <span className={b.behind ? 'behind' : undefined}>{b.text}</span>
+              })()}
             </span>
           </li>
         ))}
@@ -740,6 +754,10 @@ export function StatusView() {
             </dd>
           </>
         )}
+        <dt>build</dt>
+        <dd>
+          v{status.version ?? '?'} <span className="hint">· {status.git_sha ?? '?'} · built {status.build_date ?? '?'}</span>
+        </dd>
       </dl>
       <p className="hint">
         a peer's status is only as fresh as our last contact with it.

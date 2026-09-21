@@ -14,6 +14,8 @@ async fn main() -> Result<()> {
         )
         .init();
 
+    tracing::info!("build: {}", memorious_core::BUILD_INFO);
+
     let data: PathBuf = std::env::var_os("MEMORIOUS_DATA")
         .map(PathBuf::from)
         .context("MEMORIOUS_DATA env var required")?;

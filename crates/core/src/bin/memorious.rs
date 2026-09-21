@@ -9,7 +9,7 @@ use memorious_core::node::JournalTicket;
 use memorious_core::{Journal, Node};
 
 #[derive(Parser)]
-#[command(name = "journal", about = "Infinite Journal peer")]
+#[command(name = "journal", about = "Infinite Journal peer", version = memorious_core::BUILD_INFO)]
 struct Cli {
     /// Journal data directory.
     #[arg(long, global = true, default_value_os_t = default_data_dir())]
@@ -247,6 +247,7 @@ async fn main() -> Result<()> {
         }
         Cmd::Status => {
             let j = open(&pw)?;
+            println!("build: {}", memorious_core::BUILD_INFO);
             println!("journal: {}", data.display());
             println!("device: {}", j.device_id());
             println!("entries: {}", j.list()?.len());

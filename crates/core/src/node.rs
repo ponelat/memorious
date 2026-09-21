@@ -1034,7 +1034,11 @@ impl Node {
             "peers": self.peers().await?,
             "net": journal.net_config(),
             "version": crate::VERSION,
-            "versions": journal.peer_versions()?,
+            "git_sha": crate::GIT_SHA,
+            "build_date": crate::BUILD_DATE,
+            // device_id → that device's own announced build (incl. this one) —
+            // the Peers page's per-row version/sha/date and "behind" marker.
+            "builds": journal.peer_builds()?,
             "newer_version": journal.newer_version_available()?,
         });
         if let Ok(t) = self.ticket() {

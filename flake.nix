@@ -18,10 +18,17 @@
           lib = pkgs.lib;
 
           common = {
-            version = "0.2.1";
+            version = "0.2.2";
             src = self;
             cargoLock.lockFile = ./Cargo.lock;
             doCheck = false; # tests spin up live iroh endpoints — no sandbox network
+            # crates/core/build.rs stamps every binary with its git commit and
+            # compile date (Status.git_sha/build_date, CLI --version); the
+            # sandboxed `src = self` above has no `.git` for it to ask (same
+            # reason `version` here is hand-maintained, not `self.rev` — see
+            # LOG.md 2026-09-17), so give it the commit directly. Build date is
+            # left to build.rs's own `date` fallback (present in stdenv).
+            MEMORIOUS_GIT_SHA = self.shortRev or self.dirtyShortRev or "unknown";
             # openssl-src (vendored into SQLCipher's build) configures with perl.
             nativeBuildInputs = [ pkgs.perl ];
           };
