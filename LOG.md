@@ -1,5 +1,21 @@
 # LOG
 
+## 2026-10-19 (blob fetch storm)
+
+- **A reconnect loop was opening one blob download per handshake.** `fetch_missing_blobs`
+  runs on every inbound sync (and every `sync_with`), and the initiator closes the sync
+  stream before the responder's download finishes, so the attempts overlap. A hash the
+  peer resets — production's `io: stream reset by peer: error 3`, iroh-blobs
+  `ERR_INTERNAL`, the export failed before the size header — was retried on the next
+  handshake with a fresh QUIC connection. Failed connections are not dropped immediately.
+  Measured: 40 sequential resets retained ~7MB; a few hundred plateaued near +14MB;
+  25 overlapping attempts added ~6MB on top. One download at a time
+  (`FetchGate` semaphore), duplicate hashes fetched once, and a failed hash waits
+  15s, doubling to a 15min cap, before it is asked again. A connect failure does not
+  start that pause (the peer was unreachable, the blob might be fine). The 0/5
+  `peer_ping` reachability, relay ping timeouts, and pkarr publish failures are a
+  separate dial/discovery problem; this does not change them.
+
 ## 2026-09-18 (browser passcode keyboard, log out, reset this server)
 
 - **Browser passcode field was locked to a numeric keyboard.** `inputMode="numeric"` on

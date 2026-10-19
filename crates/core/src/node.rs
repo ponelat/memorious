@@ -10,10 +10,10 @@
 //! (the responder dials back using the addr carried in Hello). Fetching *all* missing
 //! referenced blobs each sync also heals earlier interrupted transfers.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 use iroh::endpoint::{presets, Connection, RecvStream, SendStream, VarInt};
@@ -280,6 +280,8 @@ pub struct Node {
     endpoint: Endpoint,
     router: Router,
     _fs_store: FsStore,
+    /// One blob download at a time, and a pause after a hash the peer reset.
+    fetch_gate: Arc<FetchGate>,
 }
 
 impl Node {
@@ -366,10 +368,12 @@ impl Node {
         }
         let endpoint = builder.bind().await.context("bind iroh endpoint")?;
 
+        let fetch_gate = Arc::new(FetchGate::new());
         let proto = SyncProto {
             journal: journal.clone(),
             blobs: blobs.clone(),
             endpoint: endpoint.clone(),
+            fetch_gate: fetch_gate.clone(),
         };
         let blobs_proto = BlobsProtocol::new(&blobs, None);
         let router = Router::builder(endpoint.clone())
@@ -383,6 +387,7 @@ impl Node {
             endpoint,
             router,
             _fs_store: fs_store,
+            fetch_gate,
         })
     }
 
@@ -445,10 +450,15 @@ impl Node {
     ) -> Result<(Self, SyncReport)> {
         let (node, mut report) = Self::pair_from_ticket(root, ticket, password).await?;
         let peer_addr = JournalTicket::decode(ticket)?.addr()?;
-        report.blobs_fetched =
-            fetch_missing_blobs(&node.endpoint, &node.blobs, &node.journal, &peer_addr)
-                .await
-                .context("fetch blobs")?;
+        report.blobs_fetched = fetch_missing_blobs(
+            &node.endpoint,
+            &node.blobs,
+            &node.journal,
+            &peer_addr,
+            &node.fetch_gate,
+        )
+        .await
+        .context("fetch blobs")?;
         Ok((node, report))
     }
 
@@ -620,9 +630,15 @@ impl Node {
     /// One full sync round-trip with the peer at `addr`: events, then media.
     pub async fn sync_with(&self, addr: &EndpointAddr) -> Result<SyncReport> {
         let mut report = self.sync_events_with(addr).await?;
-        report.blobs_fetched = fetch_missing_blobs(&self.endpoint, &self.blobs, &self.journal, addr)
-            .await
-            .context("fetch blobs")?;
+        report.blobs_fetched = fetch_missing_blobs(
+            &self.endpoint,
+            &self.blobs,
+            &self.journal,
+            addr,
+            &self.fetch_gate,
+        )
+        .await
+        .context("fetch blobs")?;
         Ok(report)
     }
 
@@ -856,12 +872,94 @@ async fn media_held(blobs: &BlobStore, journal: &Journal) -> Result<MediaHeld> {
     Ok(tally)
 }
 
+/// First retry after a blob fetch fails, then doubling until [`BLOB_RETRY_CAP`].
+const BLOB_RETRY_BASE: Duration = Duration::from_secs(15);
+/// Stop lengthening the pause. A blob the peer cannot serve is asked again
+/// every fifteen minutes, not on every handshake.
+const BLOB_RETRY_CAP: Duration = Duration::from_secs(15 * 60);
+
+struct BlobRetry {
+    failures: u32,
+    not_before: Instant,
+}
+
+/// Serialises blob downloads and remembers hashes a peer just failed to serve.
+///
+/// Every inbound sync calls [`fetch_missing_blobs`], and the initiator closes
+/// its sync stream before that download finishes, so a peer that reconnects
+/// in a loop used to open one QUIC connection per attempt. A failed attempt
+/// does not drop that connection immediately (it drains until the idle
+/// timeout). Measured on a reset-at-header peer — the production failure
+/// `io: stream reset by peer: error 3`, iroh-blobs `ERR_INTERNAL` — forty
+/// sequential attempts retained about 7MB and a few hundred plateaued near
+/// 14MB, with overlapping attempts stacking on top. One download at a time,
+/// and a pause after a hash that actually failed, keeps a reconnect storm
+/// from allocating a connection per handshake.
+struct FetchGate {
+    slots: tokio::sync::Semaphore,
+    retries: Mutex<HashMap<Hash, BlobRetry>>,
+}
+
+impl FetchGate {
+    fn new() -> Self {
+        Self {
+            slots: tokio::sync::Semaphore::new(1),
+            retries: Mutex::new(HashMap::new()),
+        }
+    }
+
+    fn retry_delay(failures: u32) -> Duration {
+        let exp = failures.saturating_sub(1).min(6);
+        let secs = BLOB_RETRY_BASE
+            .as_secs()
+            .checked_shl(exp)
+            .unwrap_or(u64::MAX)
+            .min(BLOB_RETRY_CAP.as_secs());
+        Duration::from_secs(secs)
+    }
+
+    fn ready(&self, hash: &Hash) -> bool {
+        let map = self.retries.lock().unwrap();
+        match map.get(hash) {
+            Some(retry) => Instant::now() >= retry.not_before,
+            None => true,
+        }
+    }
+
+    fn note_failure(&self, hash: Hash) {
+        let mut map = self.retries.lock().unwrap();
+        let entry = map.entry(hash).or_insert(BlobRetry {
+            failures: 0,
+            not_before: Instant::now(),
+        });
+        entry.failures = entry.failures.saturating_add(1);
+        entry.not_before = Instant::now() + Self::retry_delay(entry.failures);
+    }
+
+    fn note_success(&self, hash: &Hash) {
+        self.retries.lock().unwrap().remove(hash);
+    }
+
+    #[cfg(test)]
+    fn clear(&self) {
+        self.retries.lock().unwrap().clear();
+    }
+}
+
 async fn fetch_missing_blobs(
     endpoint: &Endpoint,
     blobs: &BlobStore,
     journal: &Journal,
     provider: &EndpointAddr,
+    gate: &FetchGate,
 ) -> Result<usize> {
+    // A burst of handshakes must not each open a download. The one in flight
+    // covers this peer; the next handshake retries anything it skipped.
+    let Ok(_permit) = gate.slots.try_acquire() else {
+        tracing::debug!("blob fetch already in progress");
+        return Ok(0);
+    };
+
     // Retention: don't pull back what this device's policy says it may drop
     // (retention.rs) — the GC would only remove it again.
     let evictable: HashSet<String> = journal
@@ -869,11 +967,19 @@ async fn fetch_missing_blobs(
         .into_iter()
         .collect();
     let mut missing = Vec::new();
+    let mut seen = HashSet::new();
     for hex in journal.store.referenced_blob_hashes()? {
         if evictable.contains(&hex) {
             continue;
         }
         let hash: Hash = hex.parse().context("bad hash in log")?;
+        if !seen.insert(hash) {
+            continue;
+        }
+        if !gate.ready(&hash) {
+            tracing::debug!("blob {} still in retry backoff", hash.fmt_short());
+            continue;
+        }
         if !blobs.has(hash).await? {
             missing.push(hash);
         }
@@ -881,17 +987,28 @@ async fn fetch_missing_blobs(
     if missing.is_empty() {
         return Ok(0);
     }
-    let conn = tokio::time::timeout(SYNC_CONNECT_TIMEOUT, endpoint.connect(provider.clone(), iroh_blobs::ALPN))
-        .await
-        .map_err(|_| anyhow::anyhow!("peer unreachable ({}s)", SYNC_CONNECT_TIMEOUT.as_secs()))?
-        .context("connect for blobs")?;
+    let conn = tokio::time::timeout(
+        SYNC_CONNECT_TIMEOUT,
+        endpoint.connect(provider.clone(), iroh_blobs::ALPN),
+    )
+    .await
+    .map_err(|_| anyhow::anyhow!("peer unreachable ({}s)", SYNC_CONNECT_TIMEOUT.as_secs()))?
+    .context("connect for blobs")?;
     let mut fetched = 0;
     for hash in missing {
         match blobs.remote().fetch(conn.clone(), hash).await {
-            Ok(_) => fetched += 1,
+            Ok(_) => {
+                gate.note_success(&hash);
+                fetched += 1;
+            }
             // The provider may legitimately not hold this blob (it came from a third
-            // peer). Sync must not fail over it; a later sync will heal it.
-            Err(err) => tracing::warn!("blob {} not fetched: {err:#}", hash.fmt_short()),
+            // peer). Sync must not fail over it; a later sync will heal it — after
+            // the retry pause, so a hash that resets on every attempt cannot pin a
+            // new connection per handshake.
+            Err(err) => {
+                gate.note_failure(hash);
+                tracing::warn!("blob {} not fetched: {err:#}", hash.fmt_short());
+            }
         }
     }
     conn.close(VarInt::from(0u32), b"done");
@@ -1058,6 +1175,7 @@ struct SyncProto {
     journal: Arc<Journal>,
     blobs: BlobStore,
     endpoint: Endpoint,
+    fetch_gate: Arc<FetchGate>,
 }
 
 impl std::fmt::Debug for SyncProto {
@@ -1161,8 +1279,14 @@ impl ProtocolHandler for SyncProto {
         }
 
         // Pull blobs we now reference but don't hold, dialing back the initiator.
-        if let Err(err) =
-            fetch_missing_blobs(&self.endpoint, &self.blobs, &self.journal, &initiator_addr).await
+        if let Err(err) = fetch_missing_blobs(
+            &self.endpoint,
+            &self.blobs,
+            &self.journal,
+            &initiator_addr,
+            &self.fetch_gate,
+        )
+        .await
         {
             tracing::warn!("responder blob fetch failed: {err:#}");
         }
@@ -1201,6 +1325,9 @@ async fn read_msg(recv: &mut RecvStream) -> Result<Option<Msg>> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
     use super::*;
 
     #[test]
@@ -1293,5 +1420,238 @@ mod tests {
         assert_ne!(a, c);
         // and it is not just the raw secret or a plain hash of it
         assert_ne!(a[..], blake3::hash(&[1u8; SECRET_LEN]).as_bytes()[..]);
+    }
+
+    /// Provider that accepts the blobs ALPN and resets the response stream with
+    /// error 3 (iroh-blobs `ERR_INTERNAL`) once the request arrives — the same
+    /// failure production logs as `io: stream reset by peer: error 3`.
+    #[derive(Debug)]
+    struct ResetBlobs {
+        dials: Arc<AtomicUsize>,
+        streams: Arc<AtomicUsize>,
+        inflight: Arc<AtomicUsize>,
+        max_inflight: Arc<AtomicUsize>,
+        hold: Duration,
+    }
+
+    impl ProtocolHandler for ResetBlobs {
+        async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
+            self.dials.fetch_add(1, Ordering::SeqCst);
+            let now = self.inflight.fetch_add(1, Ordering::SeqCst) + 1;
+            self.max_inflight.fetch_max(now, Ordering::SeqCst);
+            // One connection carries every hash of that fetch. Count streams,
+            // not dials, so a duplicate hash is visible.
+            loop {
+                let (mut send, mut recv) = match connection.accept_bi().await {
+                    Ok(pair) => pair,
+                    Err(_) => break,
+                };
+                self.streams.fetch_add(1, Ordering::SeqCst);
+                let mut buf = [0u8; 256];
+                let _ = recv.read(&mut buf).await;
+                if !self.hold.is_zero() {
+                    tokio::time::sleep(self.hold).await;
+                }
+                let _ = send.reset(VarInt::from_u32(3));
+            }
+            self.inflight.fetch_sub(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    async fn wait_addr(endpoint: &Endpoint) -> EndpointAddr {
+        for _ in 0..100 {
+            let addr = endpoint.addr();
+            if !addr.addrs.is_empty() {
+                return addr;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        panic!("endpoint never became dialable");
+    }
+
+    async fn quiet_node(root: &std::path::Path) -> Node {
+        let journal = crate::Journal::init(root, "pw").unwrap();
+        journal
+            .set_net_config(&NetConfig {
+                relay_mode: "disabled".into(),
+                relay_urls: vec![],
+                public_lookup: false,
+            })
+            .unwrap();
+        Node::spawn_with_gc_interval(journal, Duration::from_secs(3600))
+            .await
+            .unwrap()
+    }
+
+    fn reference_missing_blob(node: &Node) {
+        node.journal
+            .store
+            .append_local(
+                node.journal.device_id(),
+                crate::event::EventKind::Capture,
+                Payload::Photo {
+                    hash: Hash::from_bytes([0xAB; 32]).to_hex(),
+                    size: 1024,
+                    crypto: None,
+                },
+                false,
+            )
+            .unwrap();
+    }
+
+    async fn bind_reset_provider(handler: ResetBlobs) -> (Endpoint, Router, EndpointAddr) {
+        let endpoint = Endpoint::builder(presets::Minimal)
+            .relay_mode(iroh::RelayMode::Disabled)
+            .bind()
+            .await
+            .unwrap();
+        let router = Router::builder(endpoint.clone())
+            .accept(iroh_blobs::ALPN, handler)
+            .spawn();
+        let addr = wait_addr(&endpoint).await;
+        (endpoint, router, addr)
+    }
+
+    /// A burst of syncs must not open one blob download per sync.
+    ///
+    /// `fetch_missing_blobs` runs after every handshake, and the initiator
+    /// closes the sync stream before the responder's download finishes, so a
+    /// peer that reconnects in a loop stacks a download per attempt. Each
+    /// attempt is its own QUIC connection, and a reset does not free it
+    /// immediately.
+    #[tokio::test]
+    async fn overlapping_reset_fetches_stay_single_flight() {
+        let dir = tempfile::tempdir().unwrap();
+        let node = quiet_node(&dir.path().join("j")).await;
+        reference_missing_blob(&node);
+
+        let dials = Arc::new(AtomicUsize::new(0));
+        let inflight = Arc::new(AtomicUsize::new(0));
+        let max_inflight = Arc::new(AtomicUsize::new(0));
+        let (_provider, _router, addr) = bind_reset_provider(ResetBlobs {
+            dials: dials.clone(),
+            streams: Arc::new(AtomicUsize::new(0)),
+            inflight: inflight.clone(),
+            max_inflight: max_inflight.clone(),
+            hold: Duration::from_millis(400),
+        })
+        .await;
+
+        let fetch = || {
+            fetch_missing_blobs(
+                &node.endpoint,
+                &node.blobs,
+                &node.journal,
+                &addr,
+                &node.fetch_gate,
+            )
+        };
+        let (r1, r2, r3, r4) = tokio::join!(fetch(), fetch(), fetch(), fetch());
+        r1.unwrap();
+        r2.unwrap();
+        r3.unwrap();
+        r4.unwrap();
+
+        assert_eq!(
+            max_inflight.load(Ordering::SeqCst),
+            1,
+            "blob fetches from overlapping syncs must share one in-flight download"
+        );
+        assert_eq!(
+            dials.load(Ordering::SeqCst),
+            1,
+            "a hash the peer just reset must not be dialed again immediately"
+        );
+
+        node.shutdown().await;
+    }
+
+    /// The same missing hash, asked again on the next sync, waits out a
+    /// backoff instead of dialing on every handshake.
+    #[tokio::test]
+    async fn reset_blob_is_not_refetched_until_backoff_clears() {
+        let dir = tempfile::tempdir().unwrap();
+        let node = quiet_node(&dir.path().join("j")).await;
+        reference_missing_blob(&node);
+
+        let dials = Arc::new(AtomicUsize::new(0));
+        let (_provider, _router, addr) = bind_reset_provider(ResetBlobs {
+            dials: dials.clone(),
+            streams: Arc::new(AtomicUsize::new(0)),
+            inflight: Arc::new(AtomicUsize::new(0)),
+            max_inflight: Arc::new(AtomicUsize::new(0)),
+            hold: Duration::ZERO,
+        })
+        .await;
+
+        let fetch = || {
+            fetch_missing_blobs(
+                &node.endpoint,
+                &node.blobs,
+                &node.journal,
+                &addr,
+                &node.fetch_gate,
+            )
+        };
+        fetch().await.unwrap();
+        fetch().await.unwrap();
+        assert_eq!(
+            dials.load(Ordering::SeqCst),
+            1,
+            "second sync must not redial a hash that just failed"
+        );
+
+        // A later sync, once the pause is lifted, tries again.
+        node.fetch_gate.clear();
+        fetch().await.unwrap();
+        assert_eq!(dials.load(Ordering::SeqCst), 2);
+
+        node.shutdown().await;
+    }
+
+    /// The same hash referenced by two captures is one download, not two.
+    #[tokio::test]
+    async fn duplicate_blob_refs_are_fetched_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let node = quiet_node(&dir.path().join("j")).await;
+        reference_missing_blob(&node);
+        reference_missing_blob(&node);
+
+        let streams = Arc::new(AtomicUsize::new(0));
+        let (_provider, _router, addr) = bind_reset_provider(ResetBlobs {
+            dials: Arc::new(AtomicUsize::new(0)),
+            streams: streams.clone(),
+            inflight: Arc::new(AtomicUsize::new(0)),
+            max_inflight: Arc::new(AtomicUsize::new(0)),
+            hold: Duration::ZERO,
+        })
+        .await;
+
+        fetch_missing_blobs(
+            &node.endpoint,
+            &node.blobs,
+            &node.journal,
+            &addr,
+            &node.fetch_gate,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            streams.load(Ordering::SeqCst),
+            1,
+            "two captures of one hash must open one blob stream"
+        );
+        node.shutdown().await;
+    }
+
+    #[test]
+    fn blob_retry_backs_off_exponentially_and_caps() {
+        assert_eq!(FetchGate::retry_delay(1), Duration::from_secs(15));
+        assert_eq!(FetchGate::retry_delay(2), Duration::from_secs(30));
+        assert_eq!(FetchGate::retry_delay(3), Duration::from_secs(60));
+        assert_eq!(FetchGate::retry_delay(6), Duration::from_secs(480));
+        assert_eq!(FetchGate::retry_delay(7), Duration::from_secs(15 * 60));
+        assert_eq!(FetchGate::retry_delay(100), Duration::from_secs(15 * 60));
     }
 }
