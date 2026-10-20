@@ -25,6 +25,8 @@ use memorious_core::node::BlobOpenError;
 use memorious_core::{Journal, Node};
 use serde::{Deserialize, Serialize};
 
+pub mod mcp;
+pub mod oauth;
 pub mod peer_ping;
 pub mod sweeper;
 use serde_json::json;
@@ -67,6 +69,8 @@ pub struct AppState {
     /// This peer's data directory (`MEMORIOUS_DATA`) — needed only by
     /// `reset_device`, to delete it after shutting the node down.
     pub data_dir: PathBuf,
+    /// Pending OAuth authorization codes for the MCP endpoint (in memory, 60s).
+    pub oauth_codes: oauth::Codes,
 }
 
 impl AppState {
@@ -76,6 +80,7 @@ impl AppState {
             downloads_dir,
             auth: AuthGuard::new(AuthLimits::default()),
             data_dir,
+            oauth_codes: Default::default(),
         }
     }
 
@@ -131,7 +136,7 @@ impl AuthGuard {
     }
 
     /// Seconds the client still has to wait, if it is locked out.
-    fn locked_for(&self, client: &str) -> Option<u64> {
+    pub(crate) fn locked_for(&self, client: &str) -> Option<u64> {
         let mut map = self.failures.lock().unwrap();
         let expired = matches!(map.get(client), Some(f) if f.since.elapsed() >= self.limits.window);
         if expired {
@@ -147,7 +152,7 @@ impl AuthGuard {
     }
 
     /// Count a miss, then hold the global gate for the delay.
-    async fn failed(&self, client: &str) {
+    pub(crate) async fn failed(&self, client: &str) {
         {
             let mut map = self.failures.lock().unwrap();
             let now = Instant::now();
@@ -169,7 +174,7 @@ impl AuthGuard {
         }
     }
 
-    fn succeeded(&self, client: &str) {
+    pub(crate) fn succeeded(&self, client: &str) {
         self.failures.lock().unwrap().remove(client);
     }
 }
@@ -177,7 +182,7 @@ impl AuthGuard {
 /// The client behind Caddy. The listener is loopback-only, so X-Forwarded-For
 /// is always Caddy's own header and can be trusted; without it (tests, a
 /// direct local curl) everything is one client.
-fn client_key(headers: &HeaderMap) -> String {
+pub(crate) fn client_key(headers: &HeaderMap) -> String {
     headers
         .get("x-forwarded-for")
         .and_then(|v| v.to_str().ok())
@@ -227,7 +232,16 @@ pub fn app(state: RouterState, web_dist: Option<PathBuf>) -> Router {
         .layer(DefaultBodyLimit::max(4 * 1024));
     let api = authed.merge(open).with_state(state.clone());
 
-    let mut app = Router::new().nest("/api", api);
+    let mut app = Router::new()
+        .nest("/api", api)
+        .route("/mcp", post(mcp::endpoint).get(mcp::not_allowed))
+        .route("/.well-known/oauth-protected-resource", get(oauth::protected_resource))
+        .route("/.well-known/oauth-protected-resource/mcp", get(oauth::protected_resource))
+        .route("/.well-known/oauth-authorization-server", get(oauth::server_metadata))
+        .route("/oauth/register", post(oauth::register).layer(DefaultBodyLimit::max(8 * 1024)))
+        .route("/oauth/authorize", get(oauth::authorize_page).post(oauth::authorize_submit))
+        .route("/oauth/token", post(oauth::token))
+        .with_state(state.clone());
     if let Some(dir) = &state.0.read().unwrap().downloads_dir {
         app = app.nest_service("/downloads", tower_http::services::ServeDir::new(dir));
     }
@@ -316,7 +330,7 @@ async fn require_auth(
     next.run(req).await
 }
 
-fn too_many(retry_after_secs: u64) -> Response {
+pub(crate) fn too_many(retry_after_secs: u64) -> Response {
     (
         StatusCode::TOO_MANY_REQUESTS,
         [(header::RETRY_AFTER, retry_after_secs.to_string())],
@@ -665,30 +679,61 @@ struct SearchParams {
 }
 
 async fn search(State(state): State<SharedState>, Query(p): Query<SearchParams>) -> Response {
-    let journal = state.journal();
-    let run = || -> Result<Vec<serde_json::Value>> {
-        let redacted = journal.store.redacted_ids()?;
-        let mut out = Vec::new();
-        for id in journal.store.search(&p.q)? {
-            if let Some(e) = journal.store.get_event(&id)? {
-                // Annotations surface as their target entry (M5 wires this fully).
-                let display = match &e.payload {
-                    Payload::Annotation { target, .. } => journal.store.get_event(target)?,
-                    _ => Some(e),
-                };
-                if let Some(e) = display {
-                    if e.kind == EventKind::Capture && !redacted.contains(&e.event_id) {
-                        out.push(annotated_entry(journal, &e));
-                    }
-                }
-            }
-        }
-        Ok(out)
-    };
-    match run() {
+    match search_entries(state.journal(), &p.q, usize::MAX) {
         Ok(entries) => Json(json!({"entries": entries})).into_response(),
         Err(e) => internal(e),
     }
+}
+
+/// Entries matching `q`, best first. Raw FTS5 syntax, so a stray quote is an
+/// error — callers that take free text from an agent should use `fts_quote`.
+pub(crate) fn search_entries(
+    journal: &Journal,
+    q: &str,
+    limit: usize,
+) -> Result<Vec<serde_json::Value>> {
+    let redacted = journal.store.redacted_ids()?;
+    let mut out = Vec::new();
+    for id in journal.store.search(q)? {
+        if out.len() >= limit {
+            break;
+        }
+        if let Some(e) = journal.store.get_event(&id)? {
+            // Annotations surface as their target entry.
+            let display = match &e.payload {
+                Payload::Annotation { target, .. } => journal.store.get_event(target)?,
+                _ => Some(e),
+            };
+            if let Some(e) = display {
+                if e.kind == EventKind::Capture && !redacted.contains(&e.event_id) {
+                    out.push(annotated_entry(journal, &e));
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Free text → an FTS5 query that can't be a syntax error: every word quoted
+/// (implicit AND), so punctuation and operators are just words.
+pub(crate) fn fts_quote(q: &str) -> String {
+    q.split_whitespace()
+        .map(|w| format!("\"{}\"", w.replace('"', "")))
+        .filter(|w| w != "\"\"")
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Newest-first captures (the feed, minus pagination).
+pub(crate) fn recent_entries(journal: &Journal, limit: usize) -> Result<Vec<serde_json::Value>> {
+    let annotations = journal.annotations().unwrap_or_default();
+    let mut entries = journal.list()?;
+    entries.reverse();
+    Ok(entries
+        .iter()
+        .take(limit)
+        .map(|e| memorious_core::api_json::entry_json_annotated(e, &annotations))
+        .collect())
 }
 
 async fn status(State(state): State<SharedState>) -> Response {
@@ -738,6 +783,8 @@ struct PasscodeBody {
 /// anything, so there's nothing for other devices to "adopt" — they just
 /// pick up the new value on their next sync, same as a device rename.
 async fn change_passcode(State(state): State<SharedState>, Json(body): Json<PasscodeBody>) -> Response {
+    // MCP tokens are bound to the passcode hash in force when issued, so this
+    // (and a passcode set on any synced peer) signs every MCP client out.
     match state.journal().set_passcode(&body.passcode) {
         Ok(_) => Json(json!({"ok": true})).into_response(),
         Err(e) => err(StatusCode::BAD_REQUEST, &format!("{e:#}")),
@@ -937,11 +984,11 @@ async fn setup_join(State(router_state): State<RouterState>, Json(body): Json<Se
 
 // ---- helpers ----
 
-fn err(code: StatusCode, msg: &str) -> Response {
+pub(crate) fn err(code: StatusCode, msg: &str) -> Response {
     (code, Json(json!({"error": msg}))).into_response()
 }
 
-fn internal(e: anyhow::Error) -> Response {
+pub(crate) fn internal(e: anyhow::Error) -> Response {
     tracing::error!("internal error: {e:#}");
     err(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
 }

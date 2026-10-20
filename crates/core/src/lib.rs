@@ -9,6 +9,7 @@ pub mod journal;
 pub mod media;
 pub mod migrate;
 pub mod node;
+pub mod oauth;
 pub mod retention;
 pub mod store;
 

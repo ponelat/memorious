@@ -4018,11 +4018,13 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum",
+ "data-encoding",
  "http-body-util",
  "image",
  "memorious-core",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "tempfile",
  "tokio",
  "tower",

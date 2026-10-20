@@ -101,6 +101,18 @@ Single bearer passcode, generated on any trusted peer → appended as a token-se
 to the server peer, which validates browser requests against the hash. Browser stores the
 token in localStorage/cookie. No sessions, no email, no users.
 
+## MCP endpoint (decided 2026-10-20)
+
+The server peer exposes `POST /mcp` (MCP streamable HTTP, JSON responses) for AI agents.
+Tools: `add_entry` (text capture only), `search`, `recent`. No redact/delete/media — an
+agent can add and read, nothing more. Still **no accounts**: the server is a single-owner
+OAuth 2.1 authorization server (dynamic client registration, PKCE S256 only, public
+clients). The consent page's only credential is the browser passcode. Tokens and registered
+clients are local `meta` rows (hashed, never synced). Every token is bound to the passcode
+hash active at issue time, so changing the passcode — on any peer — signs all MCP clients
+out. MCP tokens never open `/api`, and the raw passcode is never an MCP credential.
+Public URL comes from `MEMORIOUS_PUBLIC_URL` or the proxy's forwarded headers.
+
 ## Media
 
 Exactly one stored format per type, chosen for native-iOS-capture + universal playback:

@@ -33,6 +33,12 @@ fn civil(ms: i64) -> (i64, i64, i64) {
     (if m <= 2 { y + 1 } else { y }, m, d)
 }
 
+/// "YYYY-MM-DD HH:MM" in UTC — for agents and logs, not the UI.
+pub fn format_ms_utc(ms: i64) -> String {
+    let (y, m, d) = civil(ms);
+    format!("{y:04}-{m:02}-{d:02} {} UTC", hhmm(ms))
+}
+
 fn hhmm(ms: i64) -> String {
     let tod = ms.rem_euclid(86_400_000) / 60_000;
     format!("{:02}:{:02}", tod / 60, tod % 60)

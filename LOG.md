@@ -39,6 +39,9 @@
   `peer_ping` reachability, relay ping timeouts, and pkarr publish failures are a
   separate dial/discovery problem; this does not change them.
 
+## 2026-10-20
+- MCP endpoint + single-owner OAuth 2.1 for the web server (`apps/server/src/{mcp,oauth}.rs`, `crates/core/src/oauth.rs`); see UNDERSTANDING §"MCP endpoint". Tokens live in `meta`; auth codes in memory (60s, single use).
+
 ## 2026-09-21 (build info: version/git sha/compile date, self and per-peer)
 
 - **Every client now knows exactly what it's running, and what every other

@@ -118,6 +118,12 @@ impl Store {
         Ok(())
     }
 
+    pub fn meta_delete(&self, key: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("DELETE FROM meta WHERE key = ?1", [key])?;
+        Ok(())
+    }
+
     /// Every meta row — the migration tool copies identity wholesale.
     pub(crate) fn meta_all(&self) -> Result<Vec<(String, Vec<u8>)>> {
         let conn = self.conn.lock().unwrap();
