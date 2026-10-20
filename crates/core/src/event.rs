@@ -353,6 +353,26 @@ impl Payload {
         }
     }
 
+    /// Photo, audio, or video — the capture kinds that reference a blob.
+    pub fn media_kind(&self) -> Option<MediaKind> {
+        match self {
+            Payload::Photo { .. } => Some(MediaKind::Photo),
+            Payload::Audio { .. } => Some(MediaKind::Audio),
+            Payload::Video { .. } => Some(MediaKind::Video),
+            _ => None,
+        }
+    }
+
+    /// Plaintext length of a media payload, in bytes.
+    pub fn media_len(&self) -> Option<u64> {
+        match self {
+            Payload::Photo { size, .. }
+            | Payload::Audio { size, .. }
+            | Payload::Video { size, .. } => Some(*size),
+            _ => None,
+        }
+    }
+
     /// The encryption envelope of a media payload, if any.
     pub fn blob_crypto(&self) -> Option<&BlobCrypto> {
         match self {
