@@ -7,7 +7,10 @@ use std::time::Duration;
 
 use memorious_core::search::{embed_pending, Embedder};
 
-const BATCH: usize = 64;
+/// Small batches, and a breather between them: the model sits behind one
+/// mutex, and a search waiting for it must not starve behind a long backfill.
+const BATCH: usize = 8;
+const BREATHER: Duration = Duration::from_millis(40);
 
 /// Embed everything pending right now. Returns rows written.
 pub fn sweep_once(store: &memorious_core::store::Store, embedder: &dyn Embedder) -> anyhow::Result<usize> {
@@ -18,6 +21,7 @@ pub fn sweep_once(store: &memorious_core::store::Store, embedder: &dyn Embedder)
             return Ok(total);
         }
         total += n;
+        std::thread::sleep(BREATHER);
     }
 }
 

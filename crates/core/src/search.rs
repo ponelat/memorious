@@ -12,6 +12,12 @@ use crate::store::Store;
 pub trait Embedder: Send + Sync {
     fn model(&self) -> &str;
     fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>>;
+    /// Embed a user's query. Interactive: an implementation may give up
+    /// (Err) rather than queue behind a backfill — search then degrades to
+    /// keyword results instead of hanging.
+    fn embed_query(&self, text: &str) -> Result<Vec<f32>> {
+        self.embed(&[text.to_string()])?.pop().ok_or_else(|| anyhow::anyhow!("no vector"))
+    }
 }
 
 /// Cosine floor for a vector hit to count at all; below this it is noise.
@@ -48,11 +54,8 @@ pub fn hybrid_search(
 ) -> Result<Vec<String>> {
     let mut keyword = store.search(fts_query)?;
     let semantic = match embedder {
-        Some(e) => match e.embed(&[query.to_string()]) {
-            Ok(mut v) if v.len() == 1 => {
-                store.nearest(e.model(), &v.remove(0), DEPTH, MIN_SIMILARITY)?
-            }
-            Ok(_) => Vec::new(),
+        Some(e) => match e.embed_query(query) {
+            Ok(v) => store.nearest(e.model(), &v, DEPTH, MIN_SIMILARITY)?,
             Err(err) => {
                 tracing::warn!("query embedding failed, keyword only: {err:#}");
                 Vec::new()

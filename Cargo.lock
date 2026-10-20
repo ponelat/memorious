@@ -4289,6 +4289,7 @@ dependencies = [
  "iroh",
  "iroh-blobs",
  "n0-future",
+ "ort",
  "postcard",
  "rand 0.9.5",
  "rpassword",

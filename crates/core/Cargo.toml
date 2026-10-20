@@ -15,10 +15,12 @@ path = "src/bin/memorious.rs"
 [features]
 # Local semantic-search embeddings (ONNX via fastembed). Off by default so
 # peers that never run a model (phone, small servers) don't compile or ship it.
-embeddings = ["dep:fastembed"]
+embeddings = ["dep:fastembed", "dep:ort"]
 
 [dependencies]
 fastembed = { version = "7", optional = true }
+# Same version fastembed resolves; named here only to pick the CPU provider.
+ort = { version = "=2.0.0-rc.15", optional = true, default-features = false }
 anyhow = "1"
 argon2 = "0.5"
 blake3 = "1"

@@ -66,7 +66,16 @@ pub async fn endpoint(State(state): State<SharedState>, headers: HeaderMap, body
         }
         "ping" => json!({}),
         "tools/list" => json!({"tools": tools()}),
-        "tools/call" => call(&state, &params),
+        // Search may run the embedding model: CPU-bound and possibly queued behind
+        // the backfill, so never on an async worker, and never unboundedly.
+        "tools/call" => {
+            let st = state.clone();
+            let p = params.clone();
+            match tokio::task::spawn_blocking(move || call(&st, &p)).await {
+                Ok(r) => r,
+                Err(_) => tool_result("internal error".into(), true),
+            }
+        }
         _ => return rpc_error(id, -32601, "method not found"),
     };
     Json(json!({"jsonrpc": "2.0", "id": id, "result": result})).into_response()

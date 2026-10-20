@@ -689,7 +689,13 @@ struct SearchParams {
 }
 
 async fn search(State(state): State<SharedState>, Query(p): Query<SearchParams>) -> Response {
-    match search_entries(state.journal(), state.embedder.as_deref(), &p.q, &p.q, usize::MAX) {
+    let st = state.clone();
+    let q = p.q.clone();
+    let res = tokio::task::spawn_blocking(move || {
+        search_entries(st.journal(), st.embedder.as_deref(), &q, &q, usize::MAX)
+    })
+    .await;
+    match res.unwrap_or_else(|e| Err(e.into())) {
         Ok(entries) => Json(json!({"entries": entries})).into_response(),
         Err(e) => internal(e),
     }
