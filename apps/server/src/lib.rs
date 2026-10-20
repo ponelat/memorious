@@ -27,6 +27,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod mcp;
 pub mod oauth;
+pub mod embed_sweeper;
 pub mod peer_ping;
 pub mod sweeper;
 use serde_json::json;
@@ -71,6 +72,9 @@ pub struct AppState {
     pub data_dir: PathBuf,
     /// Pending OAuth authorization codes for the MCP endpoint (in memory, 60s).
     pub oauth_codes: oauth::Codes,
+    /// Semantic-search model, on peers configured to run one. Set once at
+    /// startup (`with_embedder`); `None` means keyword search only.
+    pub embedder: Option<Arc<dyn memorious_core::search::Embedder>>,
 }
 
 impl AppState {
@@ -81,7 +85,13 @@ impl AppState {
             auth: AuthGuard::new(AuthLimits::default()),
             data_dir,
             oauth_codes: Default::default(),
+            embedder: None,
         }
+    }
+
+    pub fn with_embedder(mut self, embedder: Arc<dyn memorious_core::search::Embedder>) -> Self {
+        self.embedder = Some(embedder);
+        self
     }
 
     fn journal(&self) -> &memorious_core::Journal {
@@ -679,7 +689,7 @@ struct SearchParams {
 }
 
 async fn search(State(state): State<SharedState>, Query(p): Query<SearchParams>) -> Response {
-    match search_entries(state.journal(), &p.q, usize::MAX) {
+    match search_entries(state.journal(), state.embedder.as_deref(), &p.q, &p.q, usize::MAX) {
         Ok(entries) => Json(json!({"entries": entries})).into_response(),
         Err(e) => internal(e),
     }
@@ -689,12 +699,16 @@ async fn search(State(state): State<SharedState>, Query(p): Query<SearchParams>)
 /// error — callers that take free text from an agent should use `fts_quote`.
 pub(crate) fn search_entries(
     journal: &Journal,
+    embedder: Option<&dyn memorious_core::search::Embedder>,
     q: &str,
+    fts_q: &str,
     limit: usize,
 ) -> Result<Vec<serde_json::Value>> {
     let redacted = journal.store.redacted_ids()?;
-    let mut out = Vec::new();
-    for id in journal.store.search(q)? {
+    let mut out: Vec<serde_json::Value> = Vec::new();
+    // Over-fetch: several rows (an entry and its annotations) collapse to one.
+    let fetch = limit.saturating_mul(3);
+    for id in memorious_core::search::hybrid_search(&journal.store, embedder, q, fts_q, fetch)? {
         if out.len() >= limit {
             break;
         }
@@ -705,7 +719,10 @@ pub(crate) fn search_entries(
                 _ => Some(e),
             };
             if let Some(e) = display {
-                if e.kind == EventKind::Capture && !redacted.contains(&e.event_id) {
+                if e.kind == EventKind::Capture
+                    && !redacted.contains(&e.event_id)
+                    && !out.iter().any(|o| o["event_id"] == e.event_id.as_str())
+                {
                     out.push(annotated_entry(journal, &e));
                 }
             }
@@ -870,7 +887,9 @@ async fn reset_device(State(router_state): State<RouterState>) -> Response {
         Ok(node) => node,
         Err(e) => return internal(e),
     };
-    let new_state = Arc::new(AppState::new(node, current.downloads_dir.clone(), current.data_dir.clone()));
+    let mut new_state = AppState::new(node, current.downloads_dir.clone(), current.data_dir.clone());
+    new_state.embedder = current.embedder.clone(); // the opt-in is per process, not per journal
+    let new_state = Arc::new(new_state);
     *router_state.0.write().unwrap() = new_state;
     Json(json!({
         "ok": true,
@@ -977,7 +996,9 @@ async fn setup_join(State(router_state): State<RouterState>, Json(body): Json<Se
             return internal(e);
         }
     }
-    let new_state = Arc::new(AppState::new(node, current.downloads_dir.clone(), current.data_dir.clone()));
+    let mut new_state = AppState::new(node, current.downloads_dir.clone(), current.data_dir.clone());
+    new_state.embedder = current.embedder.clone(); // the opt-in is per process, not per journal
+    let new_state = Arc::new(new_state);
     *router_state.0.write().unwrap() = new_state;
     Json(json!({"ok": true})).into_response()
 }

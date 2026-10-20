@@ -319,3 +319,49 @@ async fn refresh_rotates_and_changing_the_passcode_revokes() {
     let (st, _) = token(&router, &[("grant_type","refresh_token"),("refresh_token",&new_refresh),("client_id",&client)]).await;
     assert_eq!(st, StatusCode::BAD_REQUEST);
 }
+
+/// Same fake as core's tests: "car"/"automobile" share a vector axis.
+struct Fake;
+impl memorious_core::search::Embedder for Fake {
+    fn model(&self) -> &str {
+        "fake"
+    }
+    fn embed(&self, texts: &[String]) -> anyhow::Result<Vec<Vec<f32>>> {
+        Ok(texts
+            .iter()
+            .map(|t| {
+                let t = t.to_lowercase();
+                let hit = t.contains("car") || t.contains("automobile");
+                if hit { vec![1.0, 0.0] } else { vec![0.0, 1.0] }
+            })
+            .collect())
+    }
+}
+
+#[tokio::test]
+async fn search_is_semantic_only_on_peers_with_an_embedder() {
+    let dir = tempfile::tempdir().unwrap();
+    let data_dir = dir.path().join("j");
+    let journal = Journal::init(&data_dir, "pw").unwrap();
+    journal.set_passcode("sesame").unwrap();
+    journal.capture_text("my automobile broke down").unwrap();
+    journal.capture_text("bought an apple").unwrap();
+    let node = Node::spawn(journal).await.unwrap();
+    let state = Arc::new(AppState::new(node, None, data_dir).with_embedder(Arc::new(Fake)));
+    let router = app(RouterState(Arc::new(std::sync::RwLock::new(state.clone()))), None);
+    let (access, _, _) = login(&router).await;
+
+    let ask = |q: &'static str| {
+        let (router, access) = (router.clone(), access.clone());
+        async move {
+            let r = rpc(&router, &access, "tools/call", json!({"name":"search","arguments":{"query":q}})).await;
+            r["result"]["content"][0]["text"].as_str().unwrap().to_string()
+        }
+    };
+    // Nothing embedded yet: keyword only, "car" matches nothing.
+    assert_eq!(ask("car").await, "No entries.");
+    let n = memorious_server::embed_sweeper::sweep_once(&state.node.journal().store, &Fake).unwrap();
+    assert_eq!(n, 2);
+    let text = ask("car").await;
+    assert!(text.contains("automobile") && !text.contains("apple"), "{text}");
+}

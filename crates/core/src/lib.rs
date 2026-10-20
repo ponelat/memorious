@@ -11,6 +11,9 @@ pub mod migrate;
 pub mod node;
 pub mod oauth;
 pub mod retention;
+pub mod search;
+#[cfg(feature = "embeddings")]
+pub mod embed_local;
 pub mod store;
 
 pub use event::{AudioKind, BlobCrypto, Event, EventKind, MediaKind, Payload};

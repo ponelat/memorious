@@ -12,7 +12,13 @@ path = "src/lib.rs"
 name = "memorious"
 path = "src/bin/memorious.rs"
 
+[features]
+# Local semantic-search embeddings (ONNX via fastembed). Off by default so
+# peers that never run a model (phone, small servers) don't compile or ship it.
+embeddings = ["dep:fastembed"]
+
 [dependencies]
+fastembed = { version = "7", optional = true }
 anyhow = "1"
 argon2 = "0.5"
 blake3 = "1"

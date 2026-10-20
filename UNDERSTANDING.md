@@ -161,7 +161,13 @@ re-implements it.
   disk. Considered as *the* storage and rejected: day files are mutable aggregates that fight
   log-union sync. Canonical stays the log; the tree is an export.
 
-QMD (tobi/qmd hybrid search) was evaluated and **rejected** — plain FTS is enough.
+QMD (tobi/qmd hybrid search) was first **rejected**, then **adopted in spirit 2026-10-20**
+as a native Rust port (not the Node tool): BM25 from FTS5 fused (Reciprocal Rank Fusion) with
+vector similarity. Vectors live in a derived `embeddings` table inside the encrypted DB —
+local, rebuildable, never synced, keyed by model name. The embedder is a trait; the real one
+(BGE-small, ONNX, `embeddings` cargo feature) is **per-peer opt-in** (`MEMORIOUS_EMBEDDINGS=on`).
+A peer without it, or whose embedder fails, has plain keyword search — never an error. No LLM
+re-ranking, no query expansion (minimalism).
 
 ## Enrichment (transcription + OCR)
 

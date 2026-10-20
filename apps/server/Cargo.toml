@@ -12,6 +12,10 @@ path = "src/main.rs"
 name = "memorious_server"
 path = "src/lib.rs"
 
+[features]
+# Local semantic search (see crates/core/src/search.rs); off unless the peer opts in at runtime too.
+embeddings = ["memorious-core/embeddings"]
+
 [dependencies]
 anyhow = "1"
 data-encoding = "2"

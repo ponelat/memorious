@@ -40,6 +40,11 @@
   separate dial/discovery problem; this does not change them.
 
 ## 2026-10-20
+- Hybrid search (`crates/core/src/search.rs`): FTS5 + embeddings fused with RRF. Feature
+  `embeddings` (core + server) pulls fastembed/ONNX; runtime switch `MEMORIOUS_EMBEDDINGS=on`
+  (model cache `MEMORIOUS_MODEL_DIR`, default `<data>/models`, first run downloads ~130MB).
+  Used by `/api/search` and the MCP `search` tool. Internal `journal:*` annotations (password
+  proof) are never embedded. Intended: on for the Mac peer, off for small hosts.
 - MCP endpoint + single-owner OAuth 2.1 for the web server (`apps/server/src/{mcp,oauth}.rs`, `crates/core/src/oauth.rs`); see UNDERSTANDING §"MCP endpoint". Tokens live in `meta`; auth codes in memory (60s, single use).
 
 ## 2026-09-21 (build info: version/git sha/compile date, self and per-peer)

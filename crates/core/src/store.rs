@@ -37,6 +37,14 @@ CREATE TABLE IF NOT EXISTS events (
 CREATE INDEX IF NOT EXISTS idx_events_recorded ON events(recorded_at, event_id);
 CREATE INDEX IF NOT EXISTS idx_events_kind ON events(kind, recorded_at, device_id, seq);
 CREATE VIRTUAL TABLE IF NOT EXISTS events_fts USING fts5(text, event_id UNINDEXED);
+-- Derived semantic index (see search.rs): one unit vector per FTS row per
+-- model, f32 little-endian. Local, rebuildable, never syncs.
+CREATE TABLE IF NOT EXISTS embeddings (
+  event_id TEXT NOT NULL,
+  model    TEXT NOT NULL,
+  vec      BLOB NOT NULL,
+  PRIMARY KEY (event_id, model)
+);
 ";
 
 impl Store {
@@ -363,6 +371,68 @@ impl Store {
             )
             .optional()?;
         Ok(v)
+    }
+
+    /// FTS rows with no stored vector for `model`: (event_id, text).
+    pub fn rows_missing_embedding(&self, model: &str, limit: usize) -> Result<Vec<(String, String)>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT f.event_id, f.text FROM events_fts f
+             JOIN events ev ON ev.event_id = f.event_id
+             LEFT JOIN embeddings e ON e.event_id = f.event_id AND e.model = ?1
+             WHERE e.event_id IS NULL
+               -- internal annotations (e.g. the password proof) target `journal:*`
+               AND COALESCE(json_extract(ev.payload, '$.target'), '') NOT LIKE 'journal:%'
+             LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(params![model, limit as i64], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        Ok(rows.collect::<std::result::Result<_, _>>()?)
+    }
+
+    pub fn put_embeddings(&self, model: &str, items: &[(String, Vec<f32>)]) -> Result<()> {
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        for (id, v) in items {
+            let blob: Vec<u8> = v.iter().flat_map(|x| x.to_le_bytes()).collect();
+            tx.execute(
+                "INSERT OR REPLACE INTO embeddings (event_id, model, vec) VALUES (?1, ?2, ?3)",
+                params![id, model, blob],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// The `k` stored vectors most similar to `query` (dot product — vectors
+    /// are unit length) scoring at least `min_score`, best first. Streams the
+    /// table; never holds more than `k` candidates in memory.
+    pub fn nearest(&self, model: &str, query: &[f32], k: usize, min_score: f32) -> Result<Vec<(String, f32)>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare("SELECT event_id, vec FROM embeddings WHERE model = ?1")?;
+        let mut rows = stmt.query([model])?;
+        let mut best: Vec<(String, f32)> = Vec::new();
+        while let Some(r) = rows.next()? {
+            let blob: Vec<u8> = r.get(1)?;
+            if blob.len() != query.len() * 4 {
+                continue;
+            }
+            let score: f32 = blob
+                .chunks_exact(4)
+                .zip(query)
+                .map(|(b, q)| f32::from_le_bytes([b[0], b[1], b[2], b[3]]) * q)
+                .sum();
+            if score < min_score {
+                continue;
+            }
+            best.push((r.get(0)?, score));
+            if best.len() > k * 2 {
+                best.sort_by(|a, b| b.1.total_cmp(&a.1));
+                best.truncate(k);
+            }
+        }
+        best.sort_by(|a, b| b.1.total_cmp(&a.1));
+        best.truncate(k);
+        Ok(best)
     }
 
     /// FTS search over entry text + annotations. Returns matching event ids.

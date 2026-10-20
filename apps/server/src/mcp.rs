@@ -120,7 +120,7 @@ fn call(state: &SharedState, params: &Value) -> Value {
         }
         "search" => {
             let q = args["query"].as_str().unwrap_or("");
-            crate::search_entries(journal, &crate::fts_quote(q), limit(args)).map(|v| render(&v))
+            crate::search_entries(journal, state.embedder.as_deref(), q, &crate::fts_quote(q), limit(args)).map(|v| render(&v))
         }
         "recent" => crate::recent_entries(journal, limit(args)).map(|v| render(&v)),
         other => return tool_result(format!("unknown tool: {other}"), true),

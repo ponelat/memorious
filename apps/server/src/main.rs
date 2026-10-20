@@ -61,11 +61,16 @@ async fn main() -> Result<()> {
     // new AppState in while this process keeps running, so every long-lived
     // holder below re-resolves the current one on each use instead of
     // capturing today's forever.
-    let state = memorious_server::RouterState(Arc::new(std::sync::RwLock::new(Arc::new(AppState::new(
-        node,
-        downloads_dir,
-        data,
-    )))));
+    // Semantic search is per-peer opt-in: MEMORIOUS_EMBEDDINGS=on, and a build
+    // with the `embeddings` feature. Small hosts leave it off and keep FTS.
+    let embedder = load_embedder(&data).await;
+    let mut app_state = AppState::new(node, downloads_dir, data);
+    app_state.embedder = embedder.clone();
+    let state = memorious_server::RouterState(Arc::new(std::sync::RwLock::new(Arc::new(app_state))));
+    if let Some(e) = embedder {
+        memorious_server::embed_sweeper::spawn(state.clone(), e);
+        tracing::info!("semantic search on (embedding sweeper running)");
+    }
     if let Some(engines) = memorious_server::sweeper::SystemEngines::detect() {
         memorious_server::sweeper::spawn(state.clone(), Arc::new(engines));
         tracing::info!("enrichment sweeper running");
@@ -111,4 +116,28 @@ async fn shutdown_signal() {
         _ = ctrl_c => {}
         _ = terminate => {}
     }
+}
+
+async fn load_embedder(data: &std::path::Path) -> Option<Arc<dyn memorious_core::search::Embedder>> {
+    if !matches!(std::env::var("MEMORIOUS_EMBEDDINGS").as_deref(), Ok("on" | "1" | "true")) {
+        return None;
+    }
+    #[cfg(feature = "embeddings")]
+    {
+        let dir = std::env::var_os("MEMORIOUS_MODEL_DIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| data.join("models"));
+        tracing::info!("loading embedding model (first run downloads ~130MB)");
+        match tokio::task::spawn_blocking(move || memorious_core::embed_local::LocalEmbedder::load(&dir)).await {
+            Ok(Ok(e)) => return Some(Arc::new(e)),
+            Ok(Err(err)) => tracing::error!("embedding model failed to load, keyword search only: {err:#}"),
+            Err(err) => tracing::error!("embedding model load panicked: {err}"),
+        }
+    }
+    #[cfg(not(feature = "embeddings"))]
+    {
+        let _ = data;
+        tracing::warn!("MEMORIOUS_EMBEDDINGS is set but this build lacks the `embeddings` feature; keyword search only");
+    }
+    None
 }
