@@ -176,6 +176,29 @@ pub fn seal(plaintext: &[u8]) -> Result<Sealed> {
     Ok(Sealed { ciphertext, ck, nonce_base })
 }
 
+/// Decrypt one ciphertext chunk. `index` is the STREAM counter; `is_final`
+/// must be set only on the last chunk, or authentication fails.
+pub fn open_chunk(
+    ciphertext: &[u8],
+    ck: &[u8; KEY_LEN],
+    nonce_base: &[u8; NONCE_BASE_LEN],
+    index: u32,
+    is_final: bool,
+) -> Result<Vec<u8>> {
+    let max = CHUNK_LEN + TAG_LEN;
+    if ciphertext.len() < TAG_LEN || ciphertext.len() > max {
+        bail!("blob chunk {index} has a bad length");
+    }
+    if !is_final && ciphertext.len() != max {
+        bail!("blob chunk {index} is short");
+    }
+    let cipher = XChaCha20Poly1305::new(ck.into());
+    let nonce = chunk_nonce(nonce_base, index, is_final);
+    cipher
+        .decrypt(XNonce::from_slice(&nonce), ciphertext)
+        .map_err(|_| anyhow::anyhow!("blob chunk {index} fails authentication"))
+}
+
 /// Open a sealed blob. Any bit flip, chunk swap, or truncation errors out.
 pub fn open(
     ciphertext: &[u8],
@@ -192,14 +215,17 @@ pub fn open(
         bail!("ciphertext has a malformed final chunk");
     }
     let n_chunks = full + (rem > 0) as usize;
-    let cipher = XChaCha20Poly1305::new(ck.into());
-    let mut out = Vec::with_capacity(ciphertext.len());
+    let mut out = Vec::with_capacity(ciphertext.len().saturating_sub(n_chunks * TAG_LEN));
     for i in 0..n_chunks {
-        let ct = &ciphertext[i * CT_CHUNK..ciphertext.len().min((i + 1) * CT_CHUNK)];
-        let nonce = chunk_nonce(nonce_base, i as u32, i == n_chunks - 1);
-        let chunk = cipher
-            .decrypt(XNonce::from_slice(&nonce), ct)
-            .map_err(|_| anyhow::anyhow!("blob chunk {i} fails authentication"))?;
+        let start = i * CT_CHUNK;
+        let end = ciphertext.len().min(start + CT_CHUNK);
+        let chunk = open_chunk(
+            &ciphertext[start..end],
+            ck,
+            nonce_base,
+            i as u32,
+            i + 1 == n_chunks,
+        )?;
         out.extend_from_slice(&chunk);
     }
     Ok(out)
@@ -240,6 +266,40 @@ mod tests {
             let back = open(&sealed.ciphertext, &sealed.ck, &sealed.nonce_base).unwrap();
             assert_eq!(back, plaintext, "len {len}");
         }
+    }
+
+    #[test]
+    fn open_chunk_round_trips_without_the_rest_of_the_blob() {
+        let plaintext: Vec<u8> = (0..2 * CHUNK_LEN + 100).map(|i| (i % 251) as u8).collect();
+        let sealed = seal(&plaintext).unwrap();
+        let n = plaintext.len().div_ceil(CHUNK_LEN);
+        const CT: usize = CHUNK_LEN + TAG_LEN;
+        let mut got = Vec::new();
+        for i in 0..n {
+            let end = sealed.ciphertext.len().min((i + 1) * CT);
+            let chunk = open_chunk(
+                &sealed.ciphertext[i * CT..end],
+                &sealed.ck,
+                &sealed.nonce_base,
+                i as u32,
+                i + 1 == n,
+            )
+            .unwrap();
+            got.extend_from_slice(&chunk);
+        }
+        assert_eq!(got, plaintext);
+
+        // A chunk authenticated as final when it is not, and the reverse.
+        assert!(open_chunk(
+            &sealed.ciphertext[..CT],
+            &sealed.ck,
+            &sealed.nonce_base,
+            0,
+            true,
+        )
+        .is_err());
+        let last = &sealed.ciphertext[(n - 1) * CT..];
+        assert!(open_chunk(last, &sealed.ck, &sealed.nonce_base, (n - 1) as u32, false).is_err());
     }
 
     #[test]

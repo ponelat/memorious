@@ -12,17 +12,22 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
+use std::pin::Pin;
 use std::sync::{Arc, Mutex};
+use std::task::Poll;
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 use iroh::endpoint::{presets, Connection, RecvStream, SendStream, VarInt};
 use iroh::protocol::{AcceptError, ProtocolHandler, Router};
 use iroh::{Endpoint, EndpointAddr, SecretKey};
+use iroh_blobs::api::blobs::BlobReader;
 use iroh_blobs::api::Store as BlobStore;
 use iroh_blobs::store::fs::FsStore;
 use iroh_blobs::{BlobsProtocol, Hash};
 use serde::{Deserialize, Serialize};
+use tokio::io::AsyncRead;
+use zeroize::Zeroize;
 
 use crate::event::{AudioKind, Event, MediaKind, Payload};
 use crate::journal::{Journal, MediaHeld, SECRET_LEN};
@@ -282,6 +287,132 @@ pub struct Node {
     _fs_store: FsStore,
     /// One blob download at a time, and a pause after a hash the peer reset.
     fetch_gate: Arc<FetchGate>,
+}
+
+/// Why [`Node::open_blob`] refused.
+#[derive(Debug)]
+pub enum BlobOpenError {
+    /// No capture event references this hash.
+    Unreferenced,
+    /// The hash is malformed, the key will not unwrap, or the blob is not here.
+    Unavailable(anyhow::Error),
+}
+
+impl std::fmt::Display for BlobOpenError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unreferenced => write!(f, "no capture references this blob"),
+            Self::Unavailable(err) => write!(f, "{err:#}"),
+        }
+    }
+}
+
+impl std::error::Error for BlobOpenError {}
+
+/// A stored blob opened for chunked decrypt. `len` is the plaintext size.
+pub struct OpenedBlob {
+    pub kind: MediaKind,
+    pub len: u64,
+    pub plaintext: BlobPlaintext,
+}
+
+/// Plaintext chunks of one blob. Each item is at most [`crate::crypto::CHUNK_LEN`]
+/// bytes; the ciphertext of that chunk is dropped before the next one is read.
+pub struct BlobPlaintext {
+    reader: Pin<Box<BlobReader>>,
+    ck: [u8; crate::crypto::KEY_LEN],
+    nonce_base: [u8; crate::crypto::NONCE_BASE_LEN],
+    index: u32,
+    n_chunks: u32,
+    plaintext_len: u64,
+    buf: Vec<u8>,
+    filled: usize,
+    ct_len: usize,
+    done: bool,
+    failed: bool,
+}
+
+fn chunk_ct_len(index: u32, n_chunks: u32, plaintext_len: u64) -> usize {
+    let pt = if index + 1 == n_chunks {
+        plaintext_len - index as u64 * crate::crypto::CHUNK_LEN as u64
+    } else {
+        crate::crypto::CHUNK_LEN as u64
+    };
+    pt as usize + crate::crypto::TAG_LEN
+}
+
+impl Drop for BlobPlaintext {
+    fn drop(&mut self) {
+        self.ck.zeroize();
+        self.buf.zeroize();
+    }
+}
+
+impl n0_future::Stream for BlobPlaintext {
+    type Item = Result<Vec<u8>>;
+
+    fn poll_next(
+        self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> Poll<Option<Self::Item>> {
+        let this = self.get_mut();
+        if this.done || this.failed {
+            return Poll::Ready(None);
+        }
+        loop {
+            if this.filled < this.ct_len {
+                let n = {
+                    let mut read_buf =
+                        tokio::io::ReadBuf::new(&mut this.buf[this.filled..this.ct_len]);
+                    match this.reader.as_mut().poll_read(cx, &mut read_buf) {
+                        Poll::Pending => return Poll::Pending,
+                        Poll::Ready(Err(err)) => {
+                            this.failed = true;
+                            return Poll::Ready(Some(Err(
+                                anyhow::Error::from(err).context("read blob"),
+                            )));
+                        }
+                        Poll::Ready(Ok(())) => read_buf.filled().len(),
+                    }
+                };
+                if n == 0 {
+                    this.failed = true;
+                    return Poll::Ready(Some(Err(anyhow::anyhow!(
+                        "blob ended during chunk {}",
+                        this.index
+                    ))));
+                }
+                this.filled += n;
+                continue;
+            }
+
+            let is_final = this.index + 1 == this.n_chunks;
+            let pt = match crate::crypto::open_chunk(
+                &this.buf[..this.ct_len],
+                &this.ck,
+                &this.nonce_base,
+                this.index,
+                is_final,
+            ) {
+                Ok(pt) => pt,
+                Err(err) => {
+                    this.failed = true;
+                    return Poll::Ready(Some(Err(err)));
+                }
+            };
+            this.buf[..this.ct_len].zeroize();
+            this.index += 1;
+            if this.index == this.n_chunks {
+                this.done = true;
+                this.buf.clear();
+            } else {
+                this.ct_len = chunk_ct_len(this.index, this.n_chunks, this.plaintext_len);
+                this.buf.resize(this.ct_len, 0);
+                this.filled = 0;
+            }
+            return Poll::Ready(Some(Ok(pt)));
+        }
+    }
 }
 
 impl Node {
@@ -596,6 +727,10 @@ impl Node {
 
     /// Whole blob plaintext, by (ciphertext) hex hash: fetch, unwrap the
     /// content key from the referencing capture event, decrypt.
+    ///
+    /// This holds the ciphertext and the plaintext at once. The HTTP media
+    /// route serves many blobs together and must use [`Self::open_blob`]
+    /// instead, which decrypts one chunk at a time.
     pub async fn blob_bytes(&self, hash_hex: &str) -> Result<Vec<u8>> {
         let hash: Hash = hash_hex.parse().context("bad blob hash")?;
         let (capture_event_id, payload) = self
@@ -614,6 +749,82 @@ impl Node {
         let ciphertext = self.blobs.get_bytes(hash).await?;
         tokio::task::spawn_blocking(move || crate::crypto::open(&ciphertext, &ck, &nonce_base))
             .await?
+    }
+
+    /// Plaintext of one stored blob, decrypted a chunk at a time.
+    ///
+    /// The chunk size is the seal size (64 KiB plus its tag). Callers that
+    /// pull the stream and drop each chunk — the HTTP media handler — keep
+    /// a few kilobytes per request instead of a copy of the file.
+    pub async fn open_blob(
+        &self,
+        hash_hex: &str,
+    ) -> std::result::Result<OpenedBlob, BlobOpenError> {
+        let hash: Hash = hash_hex
+            .parse()
+            .map_err(|e| BlobOpenError::Unavailable(anyhow::anyhow!("bad blob hash: {e}")))?;
+        let (capture_event_id, payload) = self
+            .journal
+            .store
+            .capture_for_hash(hash_hex)
+            .map_err(BlobOpenError::Unavailable)?
+            .ok_or(BlobOpenError::Unreferenced)?;
+        let kind = payload.media_kind().ok_or(BlobOpenError::Unreferenced)?;
+        let len = payload.media_len().ok_or(BlobOpenError::Unreferenced)?;
+        let original = payload.blob_crypto().ok_or_else(|| {
+            BlobOpenError::Unavailable(anyhow::anyhow!(
+                "media predates encryption — run `memorious migrate-encrypt`"
+            ))
+        })?;
+        let (ck, nonce_base) = self
+            .journal
+            .unwrap_capture_blob_keys(&capture_event_id, original)
+            .map_err(BlobOpenError::Unavailable)?;
+        let n_chunks = len.div_ceil(crate::crypto::CHUNK_LEN as u64).max(1);
+        if n_chunks > u32::MAX as u64 {
+            return Err(BlobOpenError::Unavailable(anyhow::anyhow!("blob too large")));
+        }
+        // Refuse before the first plaintext byte if the stored ciphertext is
+        // missing or not the length `seal` would have written for `len`.
+        let expected = len + n_chunks * crate::crypto::TAG_LEN as u64;
+        match self
+            .blobs
+            .status(hash)
+            .await
+            .map_err(|e| BlobOpenError::Unavailable(e.into()))?
+        {
+            iroh_blobs::api::blobs::BlobStatus::Complete { size } if size == expected => {}
+            iroh_blobs::api::blobs::BlobStatus::Complete { size } => {
+                return Err(BlobOpenError::Unavailable(anyhow::anyhow!(
+                    "blob length {size} does not match sealed plaintext {len}"
+                )));
+            }
+            iroh_blobs::api::blobs::BlobStatus::NotFound
+            | iroh_blobs::api::blobs::BlobStatus::Partial { .. } => {
+                return Err(BlobOpenError::Unavailable(anyhow::anyhow!(
+                    "blob not on this device"
+                )));
+            }
+        }
+        let n_chunks = n_chunks as u32;
+        let ct_len = chunk_ct_len(0, n_chunks, len);
+        Ok(OpenedBlob {
+            kind,
+            len,
+            plaintext: BlobPlaintext {
+                reader: Box::pin(self.blobs.reader(hash)),
+                ck,
+                nonce_base,
+                index: 0,
+                n_chunks,
+                plaintext_len: len,
+                buf: vec![0u8; ct_len],
+                filled: 0,
+                ct_len,
+                done: false,
+                failed: false,
+            },
+        })
     }
 
     pub async fn has_blob(&self, hash_hex: &str) -> Result<bool> {

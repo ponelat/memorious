@@ -21,6 +21,7 @@ use axum::{Json, Router};
 use memorious_core::api_json::entry_json;
 use memorious_core::event::{AudioKind, EventKind, MediaKind, Payload};
 use memorious_core::media::{is_mp4_family, normalize_photo, sniff_audio, AudioContainer};
+use memorious_core::node::BlobOpenError;
 use memorious_core::Node;
 use serde::{Deserialize, Serialize};
 
@@ -577,42 +578,29 @@ async fn feed(State(state): State<SharedState>, Query(p): Query<FeedParams>) -> 
 }
 
 async fn media(State(state): State<SharedState>, UrlPath(hash): UrlPath<String>) -> Response {
-    // Content type comes from which capture references the hash.
-    let kind = match media_kind_for_hash(&state, &hash) {
-        Ok(Some(k)) => k,
-        Ok(None) => return err(StatusCode::NOT_FOUND, "no entry references this media"),
-        Err(e) => return internal(e),
+    // One decrypted chunk in flight, not the whole file. The feed fires a
+    // GET per mounted photo/audio/video; buffering each one is what crossed
+    // the 192MB cgroup.
+    let opened = match state.node.open_blob(&hash).await {
+        Ok(opened) => opened,
+        Err(BlobOpenError::Unreferenced) => {
+            return err(StatusCode::NOT_FOUND, "no entry references this media");
+        }
+        Err(BlobOpenError::Unavailable(e)) => {
+            return err(StatusCode::NOT_FOUND, &format!("blob unavailable: {e:#}"));
+        }
     };
-    match state.node.blob_bytes(&hash).await {
-        Ok(bytes) => {
-            let content_type = match kind {
-                MediaKind::Photo => "image/jpeg",
-                MediaKind::Audio => "audio/mp4",
-                MediaKind::Video => "video/mp4",
-            };
-            (
-                [
-                    (header::CONTENT_TYPE, content_type),
-                    (header::CACHE_CONTROL, "private, max-age=31536000, immutable"),
-                ],
-                bytes,
-            )
-                .into_response()
-        }
-        Err(e) => err(StatusCode::NOT_FOUND, &format!("blob unavailable: {e:#}")),
-    }
-}
-
-fn media_kind_for_hash(state: &AppState, hash: &str) -> Result<Option<MediaKind>> {
-    for e in state.journal().store.all_events()? {
-        match &e.payload {
-            Payload::Photo { hash: h, .. } if h == hash => return Ok(Some(MediaKind::Photo)),
-            Payload::Audio { hash: h, .. } if h == hash => return Ok(Some(MediaKind::Audio)),
-            Payload::Video { hash: h, .. } if h == hash => return Ok(Some(MediaKind::Video)),
-            _ => {}
-        }
-    }
-    Ok(None)
+    let content_type = match opened.kind {
+        MediaKind::Photo => "image/jpeg",
+        MediaKind::Audio => "audio/mp4",
+        MediaKind::Video => "video/mp4",
+    };
+    Response::builder()
+        .header(header::CONTENT_TYPE, content_type)
+        .header(header::CONTENT_LENGTH, opened.len.to_string())
+        .header(header::CACHE_CONTROL, "private, max-age=31536000, immutable")
+        .body(Body::from_stream(opened.plaintext))
+        .expect("media response")
 }
 
 #[derive(Deserialize)]

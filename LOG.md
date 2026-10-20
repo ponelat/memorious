@@ -1,5 +1,28 @@
 # LOG
 
+## 2026-10-20 (media read OOM)
+
+- **`GET /api/media` was decrypting every blob into one `Vec` before the first
+  byte.** The feed mounts a row and immediately fetches its media (the `<img
+  loading="lazy">` does not delay `useMediaUrl`). Each request called
+  `Node::blob_bytes`: `get_bytes` of the whole ciphertext, then `crypto::open`
+  of the whole plaintext, then axum held that `Vec` as the body. Six parallel
+  4MiB reads grew anonymous RSS by 64MB (15MB → 79MB). Production idle is ~11MB
+  against a 192MB cgroup, so a page of photos did the same thing and the OOM
+  killer reported anon-rss ~194MB. There is no thumbnail decode on this path.
+  The `POST /api/capture/text` 502s were the process dying under that burst.
+- **The handler now streams one 64KiB chunk.** `open_blob` reads ciphertext
+  through `BlobReader` and `open_chunk` decrypts it with the same STREAM nonce
+  (counter + final flag) as `open`. The HTTP body pulls that stream, so a
+  request holds one ciphertext chunk and one plaintext chunk. The same six
+  reads then grew anonymous RSS by 1.9MB (14.2MB → 16.2MB). `blob_bytes` is unchanged for the
+  sweeper, export, and the other faces, which still need one whole file and
+  run one at a time.
+- **Still open.** A capture upload still buffers the multipart body (limit
+  64MB) and photo normalize still decodes a full bitmap, so one large upload
+  can approach the cgroup on its own. Peer reachability, relay timeouts, and
+  pkarr are unchanged from 2026-10-19.
+
 ## 2026-10-19 (blob fetch storm)
 
 - **A reconnect loop was opening one blob download per handshake.** `fetch_missing_blobs`
