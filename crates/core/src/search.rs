@@ -42,6 +42,35 @@ pub fn embed_pending(store: &Store, embedder: &dyn Embedder, batch: usize) -> Re
     Ok(items.len())
 }
 
+/// Cosine floor for a suggested related word.
+const MIN_WORD_SIMILARITY: f32 = 0.5;
+/// A word in more than this share of the notes says nothing about a query.
+const MAX_WORD_DOC_FRACTION: f32 = 0.5;
+
+/// Embed up to `batch` indexed words that have no vector yet. Returns how many
+/// were written; call until it returns 0.
+pub fn embed_pending_words(store: &Store, embedder: &dyn Embedder, batch: usize) -> Result<usize> {
+    let words = store.words_missing_embedding(embedder.model(), batch)?;
+    if words.is_empty() {
+        return Ok(0);
+    }
+    let vecs = embedder.embed(&words)?;
+    anyhow::ensure!(vecs.len() == words.len(), "embedder returned {} vectors for {} words", vecs.len(), words.len());
+    let items: Vec<(String, Vec<f32>)> = words.into_iter().zip(vecs).collect();
+    store.put_word_embeddings(embedder.model(), &items)?;
+    Ok(items.len())
+}
+
+/// Words from the journal closest in meaning to `query`, best first — what a
+/// search is "also about". Never the query's own words or their inflections.
+pub fn related_terms(store: &Store, embedder: &dyn Embedder, query: &str, k: usize) -> Result<Vec<(String, f32)>> {
+    let own: Vec<String> = query.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).map(str::to_lowercase).collect();
+    let v = embedder.embed_query(query)?;
+    let near = store.nearest_words(embedder.model(), &v, k + 3 * own.len() + 10, MIN_WORD_SIMILARITY, MAX_WORD_DOC_FRACTION)?;
+    let same = |w: &str| own.iter().any(|q| q.len() >= 3 && (w.starts_with(q.as_str()) || q.starts_with(w)));
+    Ok(near.into_iter().filter(|(w, _)| !same(w)).take(k).collect())
+}
+
 /// One ranked result and why it matched.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Hit {
@@ -226,6 +255,34 @@ mod tests {
         // No embedder: every hit is keyword with no similarity.
         let kw = hybrid_search_hits(&j.store, None, "car", "\"car\"", 5).unwrap();
         assert!(kw.iter().all(|h| h.keyword && h.similarity.is_none()));
+    }
+
+    #[test]
+    fn related_terms_are_the_nearest_words_in_the_journal() {
+        let (_d, j) = journal();
+        let e = Fake("fake-1");
+        j.capture_text("my automobile and truck broke down").unwrap();
+        j.capture_text("an apple a day").unwrap();
+        embed_pending_words(&j.store, &e, 100).unwrap();
+        let words: Vec<String> = related_terms(&j.store, &e, "car", 5).unwrap().into_iter().map(|(w, _)| w).collect();
+        assert!(words.contains(&"automobile".to_string()) && words.contains(&"truck".to_string()), "{words:?}");
+        assert!(!words.contains(&"apple".to_string()), "{words:?}");
+        // Idempotent, and a query's own words (and their inflections) are never suggested.
+        assert_eq!(embed_pending_words(&j.store, &e, 100).unwrap(), 0);
+        let again: Vec<String> = related_terms(&j.store, &e, "trucks", 5).unwrap().into_iter().map(|(w, _)| w).collect();
+        assert!(!again.contains(&"truck".to_string()), "{again:?}");
+    }
+
+    #[test]
+    fn words_in_most_notes_are_not_suggested() {
+        let (_d, j) = journal();
+        let e = Fake("fake-1");
+        for t in ["truck one", "truck two", "truck three", "truck four automobile"] {
+            j.capture_text(t).unwrap();
+        }
+        embed_pending_words(&j.store, &e, 100).unwrap();
+        let words: Vec<String> = related_terms(&j.store, &e, "car", 5).unwrap().into_iter().map(|(w, _)| w).collect();
+        assert_eq!(words, ["automobile"]);
     }
 
     #[test]

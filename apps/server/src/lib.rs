@@ -220,6 +220,7 @@ pub fn app(state: RouterState, web_dist: Option<PathBuf>) -> Router {
         .route("/redact", post(redact))
         .route("/trash", get(trash))
         .route("/search", get(search))
+        .route("/search/related", get(search_related))
         .route("/status", get(status))
         .route("/peers/ping", post(ping_peers))
         .route("/device-name", post(set_device_name))
@@ -697,6 +698,20 @@ async fn search(State(state): State<SharedState>, Query(p): Query<SearchParams>)
     .await;
     match res.unwrap_or_else(|e| Err(e.into())) {
         Ok(entries) => Json(json!({"entries": entries})).into_response(),
+        Err(e) => internal(e),
+    }
+}
+
+/// Words from the journal near `q` in meaning. Empty on peers with no embedder.
+async fn search_related(State(state): State<SharedState>, Query(p): Query<SearchParams>) -> Response {
+    let st = state.clone();
+    let res = tokio::task::spawn_blocking(move || match st.embedder.as_deref() {
+        Some(e) => memorious_core::search::related_terms(&st.journal().store, e, &p.q, 8),
+        None => Ok(Vec::new()),
+    })
+    .await;
+    match res.unwrap_or_else(|e| Err(e.into())) {
+        Ok(w) => Json(json!({"related": w.into_iter().map(|(word, similarity)| json!({"word": word, "similarity": similarity})).collect::<Vec<_>>()})).into_response(),
         Err(e) => internal(e),
     }
 }

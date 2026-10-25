@@ -5,11 +5,13 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use memorious_core::search::{embed_pending, Embedder};
+use memorious_core::search::{embed_pending, embed_pending_words, Embedder};
 
 /// Small batches, and a breather between them: the model sits behind one
 /// mutex, and a search waiting for it must not starve behind a long backfill.
 const BATCH: usize = 8;
+/// Words are one or two tokens: far cheaper per item than entries.
+const WORD_BATCH: usize = 64;
 const BREATHER: Duration = Duration::from_millis(40);
 
 /// Embed everything pending right now. Returns rows written.
@@ -18,11 +20,16 @@ pub fn sweep_once(store: &memorious_core::store::Store, embedder: &dyn Embedder)
     loop {
         let n = embed_pending(store, embedder, BATCH)?;
         if n == 0 {
-            return Ok(total);
+            break;
         }
         total += n;
         std::thread::sleep(BREATHER);
     }
+    // Then the vocabulary behind related-terms; not counted in the return.
+    while embed_pending_words(store, embedder, WORD_BATCH)? > 0 {
+        std::thread::sleep(BREATHER);
+    }
+    Ok(total)
 }
 
 /// Run forever, re-resolving the current `AppState` each tick (reset and

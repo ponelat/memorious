@@ -101,6 +101,10 @@ export const httpApi: JournalApi = {
     return (await json<{ entries: Entry[] }>('/api/trash')).entries
   },
 
+  async related(q: string) {
+    const r = await json<{ related: { word: string }[] }>(`/api/search/related?q=${encodeURIComponent(q)}`)
+    return r.related.map((x) => x.word)
+  },
   async search(q: string) {
     return (await json<{ entries: Entry[] }>(`/api/search?q=${encodeURIComponent(q)}`)).entries
   },

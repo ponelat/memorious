@@ -1,5 +1,16 @@
 # LOG
 
+## 2026-10-25 (related terms: "also about")
+
+- **Query expansion without an LLM.** FTS5's `fts5vocab` already lists every distinct
+  word in the journal; the sweeper embeds those (derived `word_embeddings` table, per
+  model, local, never synced) and `related_terms` returns the nearest ones to the query,
+  excluding the query's own words/inflections and any word in over half the notes
+  (stop-words, no list). `GET /api/search/related?q=` (empty without an embedder); the web
+  search shows them as clickable "also about" chips. Words come from the journal only, so
+  none are invented ("animal" appears only if you wrote it). Known gap: vocabulary comes from
+  the FTS index, which still holds text of redacted entries until they are purged.
+
 ## 2026-10-25 (search shows why it matched)
 
 - **`hybrid_search_hits`** returns, per result, whether the query's words matched

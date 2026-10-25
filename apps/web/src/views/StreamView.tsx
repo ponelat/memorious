@@ -66,6 +66,7 @@ export function StreamView() {
   const [nextBefore, setNextBefore] = useState<number | null>(null)
   const [query, setQuery] = useState('')
   const [results, setResults] = useState<Entry[] | null>(null)
+  const [related, setRelated] = useState<string[]>([])
   const [lightbox, setLightbox] = useState<Entry[] | null>(null)
   const sentinel = useRef<HTMLDivElement>(null)
   const loading = useRef(false)
@@ -149,10 +150,12 @@ export function StreamView() {
   useEffect(() => {
     if (query.trim() === '') {
       setResults(null)
+      setRelated([])
       return
     }
     const t = setTimeout(() => {
       api.search(query).then(setResults).catch(() => setResults([]))
+      api.related?.(query).then(setRelated).catch(() => setRelated([]))
     }, 250)
     return () => clearTimeout(t)
   }, [query])
@@ -181,6 +184,16 @@ export function StreamView() {
         value={query}
         onChange={(e) => setQuery(e.target.value)}
       />
+      {results && related.length > 0 && (
+        <p className="related">
+          also about{' '}
+          {related.map((w) => (
+            <button key={w} className="ghost" onClick={() => setQuery(w)}>
+              {w}
+            </button>
+          ))}
+        </p>
+      )}
       {results && <p className="hint">{results.length} result{results.length === 1 ? '' : 's'}</p>}
       <div className="day-marker" ref={dayMarker} aria-hidden="true" />
       <ol className="entries">

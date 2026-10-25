@@ -391,3 +391,23 @@ async fn api_search_reports_how_each_entry_matched() {
     assert_eq!(m("my automobile broke down")["keyword"], false);
     assert!(m("my automobile broke down")["similarity"].is_number());
 }
+
+#[tokio::test]
+async fn api_search_related_suggests_words_from_the_journal() {
+    let dir = tempfile::tempdir().unwrap();
+    let data_dir = dir.path().join("j");
+    let journal = Journal::init(&data_dir, "pw").unwrap();
+    journal.set_passcode("sesame").unwrap();
+    journal.capture_text("my automobile broke down").unwrap();
+    journal.capture_text("bought an apple").unwrap();
+    let node = Node::spawn(journal).await.unwrap();
+    let state = Arc::new(AppState::new(node, None, data_dir).with_embedder(Arc::new(Fake)));
+    let router = app(RouterState(Arc::new(std::sync::RwLock::new(state.clone()))), None);
+    memorious_server::embed_sweeper::sweep_once(&state.node.journal().store, &Fake).unwrap();
+    let req = Request::get("/api/search/related?q=car").header(header::AUTHORIZATION, "Bearer sesame").body(Body::empty()).unwrap();
+    let (st, _, body) = send(&router, req).await;
+    assert_eq!(st, StatusCode::OK);
+    let v: Value = serde_json::from_slice(&body).unwrap();
+    let words: Vec<&str> = v["related"].as_array().unwrap().iter().map(|r| r["word"].as_str().unwrap()).collect();
+    assert_eq!(words, ["automobile"]);
+}

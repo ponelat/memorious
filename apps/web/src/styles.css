@@ -1306,3 +1306,7 @@ h2 {
 
 /* A peer last seen holding less than we do (StatusView holdingsLabel). */
 .device-meta .behind { color: var(--accent, #FF5200); }
+
+/* "also about": nearest words in the journal to the query (embeddings only). */
+.related { margin: 0 0 4px; font-size: 14px; color: var(--faint); }
+.related button { font-size: 14px; padding: 0 6px; text-decoration: underline; text-decoration-style: dotted; }

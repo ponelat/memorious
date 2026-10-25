@@ -204,6 +204,8 @@ export interface JournalApi {
   redact(eventId: string): Promise<void>
   trash(): Promise<Entry[]>
   search(q: string): Promise<Entry[]>
+  /** Words from the journal near the query in meaning (peers with embeddings only). */
+  related?(q: string): Promise<string[]>
   status(): Promise<Status>
   /** Rename a device (any device — names sync). */
   setDeviceName(deviceId: string, name: string): Promise<void>

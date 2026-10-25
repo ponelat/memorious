@@ -45,6 +45,15 @@ CREATE TABLE IF NOT EXISTS embeddings (
   vec      BLOB NOT NULL,
   PRIMARY KEY (event_id, model)
 );
+-- Distinct words in the FTS index (term, doc = rows containing it), and one
+-- unit vector per word per model for related-terms. Derived like embeddings.
+CREATE VIRTUAL TABLE IF NOT EXISTS events_vocab USING fts5vocab(events_fts, 'row');
+CREATE TABLE IF NOT EXISTS word_embeddings (
+  word  TEXT NOT NULL,
+  model TEXT NOT NULL,
+  vec   BLOB NOT NULL,
+  PRIMARY KEY (word, model)
+);
 ";
 
 impl Store {
@@ -428,6 +437,65 @@ impl Store {
             if best.len() > k * 2 {
                 best.sort_by(|a, b| b.1.total_cmp(&a.1));
                 best.truncate(k);
+            }
+        }
+        best.sort_by(|a, b| b.1.total_cmp(&a.1));
+        best.truncate(k);
+        Ok(best)
+    }
+
+    /// Indexed words (3+ letters, no digits) with no stored vector for `model`.
+    pub fn words_missing_embedding(&self, model: &str, limit: usize) -> Result<Vec<String>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT v.term FROM events_vocab v
+             LEFT JOIN word_embeddings w ON w.word = v.term AND w.model = ?1
+             WHERE w.word IS NULL AND length(v.term) >= 3 AND v.term NOT GLOB '*[0-9_]*'
+             LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(params![model, limit as i64], |r| r.get(0))?;
+        Ok(rows.collect::<std::result::Result<_, _>>()?)
+    }
+
+    pub fn put_word_embeddings(&self, model: &str, items: &[(String, Vec<f32>)]) -> Result<()> {
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        for (word, v) in items {
+            let blob: Vec<u8> = v.iter().flat_map(|x| x.to_le_bytes()).collect();
+            tx.execute(
+                "INSERT OR REPLACE INTO word_embeddings (word, model, vec) VALUES (?1, ?2, ?3)",
+                params![word, model, blob],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// The `k` indexed words nearest to `query` scoring at least `min_score`,
+    /// skipping words found in more than `max_doc_fraction` of the FTS rows
+    /// (stop-words, without a list). Words no longer indexed drop out.
+    pub fn nearest_words(&self, model: &str, query: &[f32], k: usize, min_score: f32, max_doc_fraction: f32) -> Result<Vec<(String, f32)>> {
+        let conn = self.conn.lock().unwrap();
+        let total: i64 = conn.query_row("SELECT count(*) FROM events_fts", [], |r| r.get(0))?;
+        let max_doc = (total as f32 * max_doc_fraction).floor() as i64;
+        let mut stmt = conn.prepare(
+            "SELECT w.word, w.vec FROM word_embeddings w JOIN events_vocab v ON v.term = w.word
+             WHERE w.model = ?1 AND v.doc <= ?2",
+        )?;
+        let mut rows = stmt.query(params![model, max_doc])?;
+        let mut best: Vec<(String, f32)> = Vec::new();
+        while let Some(r) = rows.next()? {
+            let blob: Vec<u8> = r.get(1)?;
+            if blob.len() != query.len() * 4 {
+                continue;
+            }
+            let score: f32 = blob
+                .chunks_exact(4)
+                .zip(query)
+                .map(|(b, q)| f32::from_le_bytes([b[0], b[1], b[2], b[3]]) * q)
+                .sum();
+            if score >= min_score {
+                best.push((r.get(0)?, score));
             }
         }
         best.sort_by(|a, b| b.1.total_cmp(&a.1));
