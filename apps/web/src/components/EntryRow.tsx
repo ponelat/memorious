@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Entry, mediaObjectUrl } from '../api'
 import { AudioPlayer } from './AudioPlayer'
 import { linkify } from './Linkify'
+import { Marked } from './SearchMatch'
 
 function timeOf(ms: number): string {
   return new Date(ms).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', hour12: false })
@@ -66,7 +67,7 @@ function ClampedText({ text, className }: { text: string; className?: string }) 
   return (
     <div className={className ? `clampable ${className}` : 'clampable'}>
       <p ref={ref} className={expanded ? undefined : 'clamped'}>
-        {linkify(text)}
+        {linkify(text, (t) => <Marked text={t} />)}
       </p>
       {(overflows || expanded) && (
         <button className="ghost more" onClick={() => setExpanded(!expanded)}>

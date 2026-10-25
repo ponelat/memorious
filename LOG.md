@@ -1,5 +1,14 @@
 # LOG
 
+## 2026-10-25 (search shows why it matched)
+
+- **`hybrid_search_hits`** returns, per result, whether the query's words matched
+  (`keyword`) and the cosine `similarity` when the vector side matched; `hybrid_search`
+  is a thin wrapper. `/api/search` adds `match: {keyword, similarity}` to each entry
+  (an entry and its annotations fold into one reason). The web UI shows "words" /
+  "meaning NN%" chips and `<mark>`s the query's whole words in keyword matches.
+  Meaning-only hits have no words to mark; chunk-level embeddings would be needed for that.
+
 ## 2026-10-20 (media read OOM)
 
 - **`GET /api/media` was decrypting every blob into one `Vec` before the first

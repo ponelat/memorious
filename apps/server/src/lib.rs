@@ -714,22 +714,29 @@ pub(crate) fn search_entries(
     let mut out: Vec<serde_json::Value> = Vec::new();
     // Over-fetch: several rows (an entry and its annotations) collapse to one.
     let fetch = limit.saturating_mul(3);
-    for id in memorious_core::search::hybrid_search(&journal.store, embedder, q, fts_q, fetch)? {
+    for hit in memorious_core::search::hybrid_search_hits(&journal.store, embedder, q, fts_q, fetch)? {
         if out.len() >= limit {
             break;
         }
-        if let Some(e) = journal.store.get_event(&id)? {
+        let how = json!({"keyword": hit.keyword, "similarity": hit.similarity});
+        if let Some(e) = journal.store.get_event(&hit.id)? {
             // Annotations surface as their target entry.
             let display = match &e.payload {
                 Payload::Annotation { target, .. } => journal.store.get_event(target)?,
                 _ => Some(e),
             };
             if let Some(e) = display {
-                if e.kind == EventKind::Capture
-                    && !redacted.contains(&e.event_id)
-                    && !out.iter().any(|o| o["event_id"] == e.event_id.as_str())
-                {
-                    out.push(annotated_entry(journal, &e));
+                if e.kind == EventKind::Capture && !redacted.contains(&e.event_id) {
+                    // An entry and its annotations are separate rows: fold
+                    // their reasons into the best-ranked one.
+                    if let Some(o) = out.iter_mut().find(|o| o["event_id"] == e.event_id.as_str()) {
+                        let (k, s) = (hit.keyword || o["match"]["keyword"] == true, hit.similarity.or(o["match"]["similarity"].as_f64().map(|f| f as f32)));
+                        o["match"] = json!({"keyword": k, "similarity": s});
+                    } else {
+                        let mut entry = annotated_entry(journal, &e);
+                        entry["match"] = how;
+                        out.push(entry);
+                    }
                 }
             }
         }

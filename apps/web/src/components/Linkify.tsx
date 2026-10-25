@@ -1,4 +1,4 @@
-import { MouseEvent, ReactNode } from 'react'
+import { Fragment, MouseEvent, ReactNode } from 'react'
 import { inTauri } from '../api'
 
 /** http(s) URLs and bare www. hosts, as people paste them into a note. */
@@ -10,7 +10,7 @@ const TRAILING = /[.,;:!?'"’”)\]}]+$/
  * text (a URL at the end of a sentence), and a close-paren is only part of the
  * link when the link itself opened one (Wikipedia-style URLs).
  */
-export function linkify(text: string): ReactNode[] {
+export function linkify(text: string, plain: (t: string) => ReactNode = (t) => t): ReactNode[] {
   const out: ReactNode[] = []
   let last = 0
   for (const m of text.matchAll(URL_RE)) {
@@ -25,7 +25,7 @@ export function linkify(text: string): ReactNode[] {
       for (let i = 0; i < trail.length && opens > closes + i && trail[i] === ')'; i++) keep++
       url = url.slice(0, keep)
     }
-    if (start > last) out.push(text.slice(last, start))
+    if (start > last) out.push(<Fragment key={`t${last}`}>{plain(text.slice(last, start))}</Fragment>)
     const href = url.startsWith('www.') ? `https://${url}` : url
     out.push(
       <a key={start} className="link" href={href} target="_blank" rel="noopener noreferrer" onClick={open}>
@@ -34,7 +34,7 @@ export function linkify(text: string): ReactNode[] {
     )
     last = start + url.length
   }
-  if (last < text.length) out.push(text.slice(last))
+  if (last < text.length) out.push(<Fragment key={`t${last}`}>{plain(text.slice(last))}</Fragment>)
   return out
 }
 

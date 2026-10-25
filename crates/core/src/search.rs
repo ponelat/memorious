@@ -42,6 +42,16 @@ pub fn embed_pending(store: &Store, embedder: &dyn Embedder, batch: usize) -> Re
     Ok(items.len())
 }
 
+/// One ranked result and why it matched.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Hit {
+    pub id: String,
+    /// Matched the query's words (FTS5).
+    pub keyword: bool,
+    /// Cosine similarity when the vector side matched, else `None`.
+    pub similarity: Option<f32>,
+}
+
 /// Ranked event ids (annotation rows included, as in FTS) for `query`.
 /// `fts_query` is the keyword form of the query; the vector side embeds `query`.
 /// Without an embedder, or if embedding the query fails, this is keyword search.
@@ -52,6 +62,17 @@ pub fn hybrid_search(
     fts_query: &str,
     limit: usize,
 ) -> Result<Vec<String>> {
+    Ok(hybrid_search_hits(store, embedder, query, fts_query, limit)?.into_iter().map(|h| h.id).collect())
+}
+
+/// `hybrid_search`, keeping which side(s) each result came from.
+pub fn hybrid_search_hits(
+    store: &Store,
+    embedder: Option<&dyn Embedder>,
+    query: &str,
+    fts_query: &str,
+    limit: usize,
+) -> Result<Vec<Hit>> {
     let mut keyword = store.search(fts_query)?;
     let semantic = match embedder {
         Some(e) => match e.embed_query(query) {
@@ -65,24 +86,29 @@ pub fn hybrid_search(
     };
     if semantic.is_empty() {
         keyword.truncate(limit);
-        return Ok(keyword);
+        return Ok(keyword.into_iter().map(|id| Hit { id, keyword: true, similarity: None }).collect());
     }
     let mut scores: std::collections::HashMap<String, f32> = std::collections::HashMap::new();
+    let mut hits: std::collections::HashMap<String, Hit> = std::collections::HashMap::new();
     let mut order: Vec<String> = Vec::new();
-    let lists = [keyword.into_iter().take(DEPTH).collect::<Vec<_>>(), semantic.into_iter().map(|(id, _)| id).collect()];
-    for list in lists {
-        for (rank, id) in list.into_iter().enumerate() {
+    let keyword: Vec<(String, Option<f32>)> = keyword.into_iter().take(DEPTH).map(|id| (id, None)).collect();
+    let semantic: Vec<(String, Option<f32>)> = semantic.into_iter().map(|(id, sim)| (id, Some(sim))).collect();
+    for (is_keyword, list) in [(true, keyword), (false, semantic)] {
+        for (rank, (id, sim)) in list.into_iter().enumerate() {
             let s = scores.entry(id.clone()).or_insert_with(|| {
-                order.push(id);
+                order.push(id.clone());
                 0.0
             });
             *s += 1.0 / (RRF_K + rank as f32 + 1.0);
+            let h = hits.entry(id.clone()).or_insert(Hit { id, keyword: false, similarity: None });
+            h.keyword |= is_keyword;
+            h.similarity = h.similarity.or(sim);
         }
     }
     // Stable on ties: first-seen order (keyword list first).
     order.sort_by(|a, b| scores[b].total_cmp(&scores[a]));
     order.truncate(limit);
-    Ok(order)
+    Ok(order.into_iter().map(|id| hits.remove(&id).unwrap()).collect())
 }
 
 #[cfg(test)]
@@ -179,6 +205,27 @@ mod tests {
         let ids = hybrid_search(&j.store, Some(&e), "car", "\"car\"", 5).unwrap();
         assert_eq!(texts(&j, &ids)[0], "the car is red");
         assert_eq!(ids.len(), 3);
+    }
+
+    #[test]
+    fn hits_say_whether_keyword_meaning_or_both_matched() {
+        let (_d, j) = journal();
+        let e = Fake("fake-1");
+        j.capture_text("the car is red").unwrap(); // keyword + semantic
+        j.capture_text("automobile club").unwrap(); // semantic only
+        embed_pending(&j.store, &e, 100).unwrap();
+        let hits = hybrid_search_hits(&j.store, Some(&e), "car", "\"car\"", 5).unwrap();
+        let by_text = |t: &str| {
+            let id = hits.iter().map(|h| &h.id).find(|id| texts(&j, std::slice::from_ref(*id))[0] == t).unwrap();
+            hits.iter().find(|h| &h.id == id).unwrap()
+        };
+        let both = by_text("the car is red");
+        assert!(both.keyword && both.similarity.is_some());
+        let sem = by_text("automobile club");
+        assert!(!sem.keyword && sem.similarity.unwrap() >= MIN_SIMILARITY);
+        // No embedder: every hit is keyword with no similarity.
+        let kw = hybrid_search_hits(&j.store, None, "car", "\"car\"", 5).unwrap();
+        assert!(kw.iter().all(|h| h.keyword && h.similarity.is_none()));
     }
 
     #[test]

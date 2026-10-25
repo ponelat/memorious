@@ -26,6 +26,8 @@ export interface Entry {
   media?: MediaRef
   /** Enrichment text (transcription/OCR), attached by the adapter when present. */
   annotation?: string
+  /** Search results only: why this entry matched. */
+  match?: { keyword: boolean; similarity: number | null }
 }
 
 export interface FeedPage {

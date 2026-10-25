@@ -3,6 +3,7 @@ import { api, Entry } from '../api'
 import { CaptureBar } from '../components/CaptureBar'
 import { EntryRow, PhotoRun } from '../components/EntryRow'
 import { Lightbox } from '../components/Lightbox'
+import { MarkTerms, MatchBadge, queryTerms } from '../components/SearchMatch'
 
 /** Consecutive photos within this gap collapse into one polaroid fan. */
 const PHOTO_RUN_GAP_MS = 30 * 60 * 1000
@@ -200,11 +201,14 @@ export function StreamView() {
           }
           return (
             <li key={item.key}>
-              <EntryRow
-                entry={item.entry}
-                onRedact={onRedact}
-                onOpenPhoto={() => setLightbox([item.entry])}
-              />
+              <MarkTerms.Provider value={results && item.entry.match?.keyword ? queryTerms(query) : []}>
+                <EntryRow
+                  entry={item.entry}
+                  onRedact={onRedact}
+                  onOpenPhoto={() => setLightbox([item.entry])}
+                />
+              </MarkTerms.Provider>
+              {results && <MatchBadge match={item.entry.match} />}
             </li>
           )
         })}
