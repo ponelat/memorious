@@ -1310,3 +1310,6 @@ h2 {
 /* "also about": nearest words in the journal to the query (embeddings only). */
 .related { margin: 0 0 4px; font-size: 14px; color: var(--faint); }
 .related button { font-size: 14px; padding: 0 6px; text-decoration: underline; text-decoration-style: dotted; }
+
+/* Search results: no day headers, so every row shows its date + time. */
+.entries.dated .entry .time { opacity: 1; line-height: 1.3; }

@@ -172,7 +172,11 @@ export function StreamView() {
   }, [])
 
   const shown = results ?? entries
-  const items = deriveStream(shown)
+  // Search results are in relevance order, not date order: no day headers or
+  // photo runs (they would repeat per row); each row carries its own date.
+  const items: StreamItem[] = results
+    ? results.map((entry) => ({ type: 'entry', key: entry.event_id, entry }))
+    : deriveStream(shown)
 
   return (
     <main className="stream">
@@ -196,7 +200,7 @@ export function StreamView() {
       )}
       {results && <p className="hint">{results.length} result{results.length === 1 ? '' : 's'}</p>}
       <div className="day-marker" ref={dayMarker} aria-hidden="true" />
-      <ol className="entries">
+      <ol className={results ? 'entries dated' : 'entries'}>
         {items.map((item) => {
           if (item.type === 'day') {
             return (
@@ -216,6 +220,7 @@ export function StreamView() {
             <li key={item.key}>
               <MarkTerms.Provider value={results && item.entry.match?.keyword ? queryTerms(query) : []}>
                 <EntryRow
+                  dated={!!results}
                   entry={item.entry}
                   onRedact={onRedact}
                   onOpenPhoto={() => setLightbox([item.entry])}

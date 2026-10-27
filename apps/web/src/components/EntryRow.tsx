@@ -4,8 +4,10 @@ import { AudioPlayer } from './AudioPlayer'
 import { linkify } from './Linkify'
 import { Marked } from './SearchMatch'
 
-function timeOf(ms: number): string {
-  return new Date(ms).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', hour12: false })
+function timeOf(ms: number, dated = false): string {
+  const t = new Date(ms).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', hour12: false })
+  // Search results have no day headers, so the date rides with the time.
+  return dated ? `${new Date(ms).toLocaleDateString(undefined, { day: 'numeric', month: 'short' })} ${t}` : t
 }
 
 /** The copyable text of an entry: its own text, else its transcript/OCR. */
@@ -99,19 +101,21 @@ export function useMediaUrl(entry: Entry | undefined): string | null {
 
 export function EntryRow({
   entry,
+  dated,
   onRedact,
   onOpenPhoto,
 }: {
   entry: Entry
+  dated?: boolean
   onRedact?: (e: Entry) => void
   onOpenPhoto?: () => void
 }) {
-  if (entry.kind === 'photo') return <PhotoSingle entry={entry} onOpen={onOpenPhoto} />
-  if (entry.kind === 'video') return <VideoSingle entry={entry} onOpen={onOpenPhoto} />
-  if (entry.kind === 'audio') return <AudioRow entry={entry} onRedact={onRedact} />
+  if (entry.kind === 'photo') return <PhotoSingle entry={entry} dated={dated} onOpen={onOpenPhoto} />
+  if (entry.kind === 'video') return <VideoSingle entry={entry} dated={dated} onOpen={onOpenPhoto} />
+  if (entry.kind === 'audio') return <AudioRow entry={entry} dated={dated} onRedact={onRedact} />
   return (
     <div className="entry text">
-      <span className="time">{timeOf(entry.recorded_at)}</span>
+      <span className="time">{timeOf(entry.recorded_at, dated)}</span>
       <ClampedText text={entry.text ?? ''} />
       <span className="actions">
         {copyableOf(entry) && <CopyButton text={copyableOf(entry)!} />}
@@ -125,11 +129,11 @@ export function EntryRow({
   )
 }
 
-function PhotoSingle({ entry, onOpen }: { entry: Entry; onOpen?: () => void }) {
+function PhotoSingle({ entry, dated, onOpen }: { entry: Entry; dated?: boolean; onOpen?: () => void }) {
   const url = useMediaUrl(entry)
   return (
     <div className="entry photo">
-      <span className="time">{timeOf(entry.recorded_at)}</span>
+      <span className="time">{timeOf(entry.recorded_at, dated)}</span>
       <button className="polaroid" onClick={onOpen}>
         {url ? <img src={url} alt="" loading="lazy" /> : <span className="ph" />}
       </button>
@@ -143,11 +147,11 @@ function PhotoSingle({ entry, onOpen }: { entry: Entry; onOpen?: () => void }) {
   )
 }
 
-function VideoSingle({ entry, onOpen }: { entry: Entry; onOpen?: () => void }) {
+function VideoSingle({ entry, dated, onOpen }: { entry: Entry; dated?: boolean; onOpen?: () => void }) {
   const url = useMediaUrl(entry)
   return (
     <div className="entry photo">
-      <span className="time">{timeOf(entry.recorded_at)}</span>
+      <span className="time">{timeOf(entry.recorded_at, dated)}</span>
       <button className="polaroid video" onClick={onOpen}>
         {url ? (
           <>
@@ -196,9 +200,11 @@ function FanThumb({ entry, index }: { entry: Entry; index: number }) {
 
 export function AudioRow({
   entry,
+  dated,
   onRedact,
 }: {
   entry: Entry
+  dated?: boolean
   onRedact?: (e: Entry) => void
 }) {
   const music = entry.audio_kind === 'music'
@@ -206,7 +212,7 @@ export function AudioRow({
   const url = useMediaUrl(evicted ? undefined : entry)
   return (
     <div className={`entry audio${music ? ' music' : ''}`}>
-      <span className="time">{timeOf(entry.recorded_at)}</span>
+      <span className="time">{timeOf(entry.recorded_at, dated)}</span>
       {music && !url && <span className="music-mark" title="music recording">♪</span>}
       {evicted ? (
         <span className="ph audio-ph" title="audio pruned from this device; the transcript is the record">
