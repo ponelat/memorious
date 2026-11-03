@@ -393,8 +393,35 @@ function AgentsRow() {
   const snippet = (t: string) =>
     JSON.stringify({ mcpServers: { memorious: { command: 'memorious', args: ['mcp-bridge', t] } } }, null, 2)
 
+  // Only a browser-served peer has an HTTP endpoint to connect to directly.
+  const directUrl = api.needsAuth ? `${window.location.origin}/mcp` : null
+
   return (
     <div className="net-form">
+      <div className="agent-help">
+        <p className="hint">
+          Give an AI client search, recent and add-a-note on this journal. Two ways to connect:
+        </p>
+        {directUrl && (
+          <>
+            <p>
+              <strong>directly</strong> — in claude.ai (or any client with remote MCP + OAuth), add a custom connector
+              with this URL. It will ask for this journal’s browser passcode; changing the passcode signs it out.
+            </p>
+            <div className="net-actions">
+              <code className="agent-url">{directUrl}</code>
+              <button className="ghost" onClick={() => copy(directUrl, 'url')}>
+                {copied === 'url' ? 'copied' : 'copy url'}
+              </button>
+            </div>
+          </>
+        )}
+        <p>
+          <strong>through a bridge</strong> — works with any peer, no public address needed. Make a ticket below, then
+          have your client run <code>memorious mcp-bridge &lt;ticket&gt;</code> (Claude Desktop / Claude Code: an MCP
+          server with that command). Revoking a ticket cuts the bridge off.
+        </p>
+      </div>
       {keys.length === 0 && <p className="hint">no agents yet</p>}
       {keys.map((k) => (
         <div key={k.id} className="net-row">
