@@ -34,3 +34,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 http-body-util = "0.1"
 image = "0.25"
 tower = { version = "0.5", features = ["util"] }
+
+# RSS guards (tests/blob_fetch.rs, tests/media_rss.rs) read Mach task_info on macOS.
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+libc = "0.2"

@@ -47,3 +47,7 @@ zeroize = { version = "1", features = ["derive"] }
 [dev-dependencies]
 iroh = "1"
 tempfile = "3"
+
+# RSS guards (tests/blob_fetch.rs, tests/media_rss.rs) read Mach task_info on macOS.
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+libc = "0.2"

@@ -28,6 +28,7 @@ const BLOB_LEN: usize = 4 * 1024 * 1024;
 /// plaintext alone, and the decrypt holds the ciphertext beside that.
 const MAX_GROWTH: u64 = 8 * 1024 * 1024;
 
+#[cfg(target_os = "linux")]
 fn rss_anon_bytes() -> u64 {
     let status = std::fs::read_to_string("/proc/self/status").expect("/proc/self/status");
     for line in status.lines() {
@@ -39,11 +40,40 @@ fn rss_anon_bytes() -> u64 {
     panic!("RssAnon missing from /proc/self/status");
 }
 
+/// Current resident set, in bytes. macOS has no `/proc`; Mach `task_info` is
+/// the equivalent (resident pages, which on a quiet test process is dominated
+/// by heap — the growth we guard against).
+#[cfg(target_os = "macos")]
+#[allow(deprecated)] // libc points at mach2; one call is not worth a new dependency
+fn rss_anon_bytes() -> u64 {
+    let mut info: libc::mach_task_basic_info = unsafe { std::mem::zeroed() };
+    let mut count = (std::mem::size_of::<libc::mach_task_basic_info>() / std::mem::size_of::<libc::natural_t>()) as libc::mach_msg_type_number_t;
+    let kr = unsafe {
+        libc::task_info(
+            libc::mach_task_self(),
+            libc::MACH_TASK_BASIC_INFO as libc::task_flavor_t,
+            &mut info as *mut _ as libc::task_info_t,
+            &mut count,
+        )
+    };
+    assert_eq!(kr, 0, "task_info failed");
+    info.resident_size
+}
+
+#[cfg(target_os = "linux")]
 fn trim_heap() {
     extern "C" {
         fn malloc_trim(pad: usize) -> i32;
     }
     unsafe { malloc_trim(0) };
+}
+
+#[cfg(target_os = "macos")]
+fn trim_heap() {
+    extern "C" {
+        fn malloc_zone_pressure_relief(zone: *mut std::ffi::c_void, goal: usize) -> usize;
+    }
+    unsafe { malloc_zone_pressure_relief(std::ptr::null_mut(), 0) };
 }
 
 fn watch_rss(flag: Arc<AtomicBool>) -> (Arc<AtomicU64>, std::thread::JoinHandle<()>) {
@@ -97,7 +127,7 @@ async fn parallel_media_reads_do_not_hold_every_blob() {
     let baseline = rss_anon_bytes();
 
     let state = Arc::new(AppState::new(node, None, dir.path().join("j")));
-    let router = app(state.clone(), None);
+    let router = app(memorious_server::RouterState(Arc::new(std::sync::RwLock::new(state.clone()))), None);
 
     let flag = Arc::new(AtomicBool::new(true));
     let (peak, watcher) = watch_rss(flag.clone());

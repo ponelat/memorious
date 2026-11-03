@@ -14,6 +14,7 @@ use memorious_core::node::Node;
 use memorious_core::Journal;
 use tempfile::tempdir;
 
+#[cfg(target_os = "linux")]
 fn rss_bytes() -> u64 {
     let status = std::fs::read_to_string("/proc/self/status").expect("read /proc/self/status");
     for line in status.lines() {
@@ -28,6 +29,26 @@ fn rss_bytes() -> u64 {
         }
     }
     panic!("VmRSS missing from /proc/self/status");
+}
+
+/// Current resident set, in bytes. macOS has no `/proc`; Mach `task_info` is
+/// the equivalent (resident pages, which on a quiet test process is dominated
+/// by heap — the growth we guard against).
+#[cfg(target_os = "macos")]
+#[allow(deprecated)] // libc points at mach2; one call is not worth a new dependency
+fn rss_bytes() -> u64 {
+    let mut info: libc::mach_task_basic_info = unsafe { std::mem::zeroed() };
+    let mut count = (std::mem::size_of::<libc::mach_task_basic_info>() / std::mem::size_of::<libc::natural_t>()) as libc::mach_msg_type_number_t;
+    let kr = unsafe {
+        libc::task_info(
+            libc::mach_task_self(),
+            libc::MACH_TASK_BASIC_INFO as libc::task_flavor_t,
+            &mut info as *mut _ as libc::task_info_t,
+            &mut count,
+        )
+    };
+    assert_eq!(kr, 0, "task_info failed");
+    info.resident_size
 }
 
 /// Highest RSS observed while `flag` stays set. Samples from a dedicated
