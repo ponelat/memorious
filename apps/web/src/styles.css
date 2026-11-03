@@ -1283,6 +1283,14 @@ h2 {
   font-size: 14px;
 }
 
+/* the one-time agent ticket: wide enough to see it's a long string, mono */
+.net-form textarea[readonly] {
+  width: calc(100% - 26px);
+  margin-left: 0;
+  font-family: ui-monospace, monospace;
+  font-size: 12px;
+}
+
 .net-actions {
   display: flex;
   align-items: center;

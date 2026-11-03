@@ -6,6 +6,8 @@ pub mod export_md;
 pub mod import_v1;
 pub mod infra;
 pub mod journal;
+pub mod mcp;
+pub mod mcp_quic;
 pub mod media;
 pub mod migrate;
 pub mod node;

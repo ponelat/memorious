@@ -66,6 +66,9 @@ async fn main() -> Result<()> {
     let embedder = load_embedder(&data).await;
     let mut app_state = AppState::new(node, downloads_dir, data);
     app_state.embedder = embedder.clone();
+    if let Some(e) = &embedder {
+        app_state.node.set_embedder(e.clone()); // MCP over QUIC searches by meaning too
+    }
     let state = memorious_server::RouterState(Arc::new(std::sync::RwLock::new(Arc::new(app_state))));
     if let Some(e) = embedder {
         memorious_server::embed_sweeper::spawn(state.clone(), e);

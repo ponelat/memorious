@@ -425,6 +425,30 @@ async fn set_net_config<R: tauri::Runtime>(
     Ok(())
 }
 
+// ---- MCP agent keys ----
+
+#[tauri::command]
+async fn mint_agent<R: tauri::Runtime>(app: AppHandle<R>, state: State<'_, NodeState>, name: String) -> Result<String, String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("name must not be empty".into());
+    }
+    let n = node(&app, &state).await.map_err(estr)?;
+    n.mint_agent_ticket(name).await.map_err(estr)
+}
+
+#[tauri::command]
+async fn list_agents<R: tauri::Runtime>(app: AppHandle<R>, state: State<'_, NodeState>) -> Result<Vec<memorious_core::mcp_quic::AgentKey>, String> {
+    let n = node(&app, &state).await.map_err(estr)?;
+    n.agent_keys().map_err(estr)
+}
+
+#[tauri::command]
+async fn revoke_agent<R: tauri::Runtime>(app: AppHandle<R>, state: State<'_, NodeState>, id: String) -> Result<(), String> {
+    let n = node(&app, &state).await.map_err(estr)?;
+    n.revoke_agent_key(&id).map_err(estr)
+}
+
 // ---- master password ----
 
 /// Originate a master-password change: re-wraps existing media, re-keys the
@@ -643,6 +667,9 @@ pub fn handlers<R: tauri::Runtime>(
         status,
         set_device_name,
         set_net_config,
+        mint_agent,
+        list_agents,
+        revoke_agent,
         rotate_master_password,
         adopt_master_password,
         sync_now,

@@ -632,3 +632,6 @@
     UIs (M2+), implemented once in core.
   - Endpoint secret key persisted in journal meta so a device keeps its iroh identity.
 - Repo now on GitHub (private): clawjungle/infinite-journal-v2.
+- 2026-11-03: MCP over QUIC (ALPN `memorious/mcp/1`) on every node + `memorious mcp-bridge` stdio bridge, revocable per-bridge agent keys (not the journal secret); tool logic moved to `crates/core/src/mcp.rs`, shared with HTTP `/mcp`. See UNDERSTANDING §"MCP over QUIC".
+- 2026-11-03: iroh 1.0.3 → 1.4.1 (lockfile only, no code change; core/server/mobile suites + relay-only MCP test green; a 1.4.1 client talks to a 1.0.3 peer). `memorious` CLI logs to stderr — stdout is the MCP stdio channel for `mcp-bridge`. Agent tickets wait briefly for the home relay so they work off-LAN.
+

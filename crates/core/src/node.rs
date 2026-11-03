@@ -58,7 +58,7 @@ pub struct AddrWire {
 }
 
 impl AddrWire {
-    fn from_addr(addr: &EndpointAddr) -> Self {
+    pub(crate) fn from_addr(addr: &EndpointAddr) -> Self {
         Self {
             id_hex: addr.id.to_string(),
             relays: addr.relay_urls().map(|u| u.to_string()).collect(),
@@ -66,7 +66,14 @@ impl AddrWire {
         }
     }
 
-    fn to_addr(&self) -> Result<EndpointAddr> {
+    /// Drop the direct addresses, leaving only the relay route — what a peer
+    /// on another network is left with. (Tests, `#[ignore]` network ones.)
+    pub fn relay_only(mut self) -> Self {
+        self.ips.clear();
+        self
+    }
+
+    pub(crate) fn to_addr(&self) -> Result<EndpointAddr> {
         let id: iroh::EndpointId = self.id_hex.parse().context("bad endpoint id")?;
         let mut addr = EndpointAddr::new(id);
         for r in &self.relays {
@@ -287,6 +294,7 @@ pub struct Node {
     _fs_store: FsStore,
     /// One blob download at a time, and a pause after a hash the peer reset.
     fetch_gate: Arc<FetchGate>,
+    embedder: crate::mcp_quic::SharedEmbedder,
 }
 
 /// Why [`Node::open_blob`] refused.
@@ -507,9 +515,11 @@ impl Node {
             fetch_gate: fetch_gate.clone(),
         };
         let blobs_proto = BlobsProtocol::new(&blobs, None);
+        let embedder: crate::mcp_quic::SharedEmbedder = Arc::default();
         let router = Router::builder(endpoint.clone())
             .accept(SYNC_ALPN, proto)
             .accept(iroh_blobs::ALPN, blobs_proto)
+            .accept(crate::mcp_quic::MCP_ALPN, crate::mcp_quic::McpProto { journal: journal.clone(), embedder: embedder.clone() })
             .spawn();
 
         Ok(Self {
@@ -519,6 +529,7 @@ impl Node {
             router,
             _fs_store: fs_store,
             fetch_gate,
+            embedder,
         })
     }
 
@@ -616,6 +627,39 @@ impl Node {
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
         bail!("endpoint never became dialable");
+    }
+
+    /// Opt this node's MCP-over-QUIC search into meaning-based matching.
+    pub fn set_embedder(&self, e: Arc<dyn crate::search::Embedder>) {
+        *self.embedder.write().unwrap() = Some(e);
+    }
+
+    /// Mint a revocable MCP-only agent key and return the ticket a bridge
+    /// dials with. The key is not the journal secret: it cannot sync.
+    pub async fn mint_agent_ticket(&self, name: &str) -> Result<String> {
+        let key = crate::mcp_quic::mint_key(&self.journal, name)?;
+        let mut addr = self.dialable_addr().await?;
+        // A ticket without the home relay only works on the LAN. The relay is
+        // learned a moment after the first direct address, so wait a little
+        // (best effort — a relay-less config, or an offline host, just skips).
+        if self.journal.net_config().relay_mode != "disabled" {
+            for _ in 0..60 {
+                if addr.relay_urls().next().is_some() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                addr = self.endpoint.addr();
+            }
+        }
+        Ok(crate::mcp_quic::AgentTicket::new(key, &addr).encode())
+    }
+
+    pub fn agent_keys(&self) -> Result<Vec<crate::mcp_quic::AgentKey>> {
+        crate::mcp_quic::list_keys(&self.journal)
+    }
+
+    pub fn revoke_agent_key(&self, id: &str) -> Result<()> {
+        crate::mcp_quic::revoke_key(&self.journal, id)
     }
 
     /// Pairing ticket for this journal, pointing at this peer.

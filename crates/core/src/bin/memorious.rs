@@ -100,11 +100,17 @@ enum Cmd {
     ExportMd { out: PathBuf },
     /// Encrypt a pre-encryption journal in place (old dir kept as backup).
     MigrateEncrypt,
+    /// Serve a peer's MCP tools to a chat client over stdio, dialing the peer
+    /// over QUIC. Needs no journal: the agent ticket comes from the peer's
+    /// Agents page. Point Claude Desktop/Code at `memorious mcp-bridge <ticket>`.
+    McpBridge { ticket: String },
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // stderr, never stdout: `mcp-bridge` speaks the MCP stdio protocol on stdout.
     tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| "warn".into()),
@@ -118,6 +124,9 @@ async fn main() -> Result<()> {
     };
 
     match cli.cmd {
+        Cmd::McpBridge { ticket } => {
+            memorious_core::mcp_quic::run_stdio_bridge(&ticket, tokio::io::BufReader::new(tokio::io::stdin()), tokio::io::stdout()).await?;
+        }
         Cmd::Init => {
             let password = resolve_password(&pw, true)?;
             let j = Journal::init(&data, &password)?;

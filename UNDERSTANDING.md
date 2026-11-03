@@ -113,6 +113,23 @@ hash active at issue time, so changing the passcode — on any peer — signs al
 out. MCP tokens never open `/api`, and the raw passcode is never an MCP credential.
 Public URL comes from `MEMORIOUS_PUBLIC_URL` or the proxy's forwarded headers.
 
+## MCP over QUIC (decided 2026-11-03)
+
+Every node (server, desktop, phone) answers the same three MCP tools on its iroh endpoint,
+ALPN `memorious/mcp/1`, so a chat client can use any peer that is online. The tool surface
+lives once, in `crates/core/src/mcp.rs`; the server's HTTP `/mcp` and the QUIC transport are
+two thin carriers of it. No chat client speaks MCP over QUIC, so `memorious mcp-bridge
+<agent-ticket>` is a stdio MCP server that dials the peer; a peer that is off yields a
+JSON-RPC error, never a hang.
+
+Auth is a separate **agent key**, not the journal secret: minted per bridge, shown once
+inside an `memorious-mcp-…` ticket (key + dial address), stored only as a blake3 hash in local
+`meta` (never synced, never an event), revocable, and re-checked on every request so revoking
+cuts off live sessions. It opens the three tools and nothing else — no sync, no blobs, no
+`/api`. Minting and revoking is a peer-local act (server: authed `/api/agents`). Keys are
+per node: a ticket reaches the node that minted it. A phone answers only while its app is
+running.
+
 ## Media
 
 Exactly one stored format per type, chosen for native-iOS-capture + universal playback:

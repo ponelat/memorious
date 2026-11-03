@@ -295,6 +295,25 @@ impl MobileJournal {
         Ok(())
     }
 
+    /// MCP over QUIC: mint a revocable agent ticket for a chat-client bridge.
+    /// The key inside is shown only here. Answers only while the app runs.
+    pub fn mint_agent_ticket(&self, name: String) -> Result<String> {
+        if name.trim().is_empty() {
+            return Err(JournalError::Failure { msg: "name must not be empty".into() });
+        }
+        Ok(rt().block_on(self.node.mint_agent_ticket(name.trim()))?)
+    }
+
+    /// Agent keys as JSON: `[{id, name, created_at}]` (never the secrets).
+    pub fn agent_keys(&self) -> Result<String> {
+        Ok(serde_json::to_string(&self.node.agent_keys()?).expect("serializes"))
+    }
+
+    pub fn revoke_agent_key(&self, id: String) -> Result<()> {
+        self.node.revoke_agent_key(&id)?;
+        Ok(())
+    }
+
     /// Store the network config from its JSON form. Applied on next launch.
     pub fn set_net_config(&self, json: String) -> Result<()> {
         let cfg: memorious_core::node::NetConfig =
@@ -447,5 +466,15 @@ mod tests {
         j2.set_net_config(r#"{"relay_mode":"disabled","relay_urls":[],"public_lookup":false}"#.into())
             .unwrap();
         assert!(j2.set_net_config("not json".into()).is_err());
+
+        // MCP over QUIC: mint, list (no secrets), revoke — over the FFI.
+        assert!(j2.mint_agent_ticket("  ".into()).is_err());
+        let t = j2.mint_agent_ticket("laptop".into()).unwrap();
+        assert!(t.starts_with("memorious-mcp-"));
+        let keys: serde_json::Value = serde_json::from_str(&j2.agent_keys().unwrap()).unwrap();
+        assert_eq!(keys[0]["name"], "laptop");
+        assert!(!keys.to_string().contains("memorious-mcp-"));
+        j2.revoke_agent_key(keys[0]["id"].as_str().unwrap().into()).unwrap();
+        assert_eq!(j2.agent_keys().unwrap(), "[]");
     }
 }

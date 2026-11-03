@@ -411,3 +411,43 @@ async fn api_search_related_suggests_words_from_the_journal() {
     let words: Vec<&str> = v["related"].as_array().unwrap().iter().map(|r| r["word"].as_str().unwrap()).collect();
     assert_eq!(words, ["automobile"]);
 }
+
+fn api(method: &str, uri: &str, body: Option<Value>, auth: bool) -> Request<Body> {
+    let mut b = Request::builder().method(method).uri(uri).header(header::CONTENT_TYPE, "application/json");
+    if auth {
+        b = b.header(header::AUTHORIZATION, "Bearer sesame");
+    }
+    b.body(Body::from(body.map(|v| v.to_string()).unwrap_or_default())).unwrap()
+}
+
+/// The browser passcode manages MCP-over-QUIC agent keys; OAuth MCP tokens
+/// and anonymous callers cannot.
+#[tokio::test]
+async fn agent_keys_are_managed_with_the_passcode() {
+    let (_d, router, state) = test_router().await;
+    let (st, _, _) = send(&router, api("POST", "/api/agents", Some(json!({"name": "x"})), false)).await;
+    assert_eq!(st, StatusCode::UNAUTHORIZED);
+    let (oauth_tok, _, _) = login(&router).await;
+    let mut req = api("POST", "/api/agents", Some(json!({"name": "x"})), false);
+    req.headers_mut().insert(header::AUTHORIZATION, format!("Bearer {oauth_tok}").parse().unwrap());
+    assert_eq!(send(&router, req).await.0, StatusCode::UNAUTHORIZED);
+
+    let (st, _, body) = send(&router, api("POST", "/api/agents", Some(json!({"name": "laptop"})), true)).await;
+    assert_eq!(st, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+    let ticket = serde_json::from_slice::<Value>(&body).unwrap()["ticket"].as_str().unwrap().to_string();
+    assert!(ticket.starts_with("memorious-mcp-"));
+    // The ticket works against this very node over QUIC.
+    let mut c = memorious_core::mcp_quic::McpClient::connect(&ticket).await.unwrap();
+    assert!(c.request(&json!({"jsonrpc": "2.0", "id": 1, "method": "ping"})).await.unwrap().is_some());
+
+    let (_, _, body) = send(&router, api("GET", "/api/agents", None, true)).await;
+    let list: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(list[0]["name"], "laptop");
+    assert!(!list.to_string().contains("memorious-mcp-"), "list must not leak tickets");
+    let id = list[0]["id"].as_str().unwrap();
+
+    let (st, _, _) = send(&router, api("DELETE", &format!("/api/agents/{id}"), None, true)).await;
+    assert_eq!(st, StatusCode::OK);
+    assert!(c.request(&json!({"jsonrpc": "2.0", "id": 2, "method": "ping"})).await.is_err());
+    assert!(state.node.agent_keys().unwrap().is_empty());
+}

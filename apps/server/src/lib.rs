@@ -19,7 +19,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use memorious_core::api_json::entry_json;
-use memorious_core::event::{AudioKind, EventKind, MediaKind, Payload};
+use memorious_core::event::{AudioKind, MediaKind};
 use memorious_core::media::{is_mp4_family, normalize_photo, sniff_audio, AudioContainer};
 use memorious_core::node::BlobOpenError;
 use memorious_core::{Journal, Node};
@@ -224,6 +224,8 @@ pub fn app(state: RouterState, web_dist: Option<PathBuf>) -> Router {
         .route("/status", get(status))
         .route("/peers/ping", post(ping_peers))
         .route("/device-name", post(set_device_name))
+        .route("/agents", get(list_agents).post(mint_agent))
+        .route("/agents/{id}", axum::routing::delete(revoke_agent))
         .route("/net-config", post(set_net_config))
         .route("/passcode", post(change_passcode))
         .route("/master-password/rotate", post(rotate_master_password))
@@ -595,18 +597,6 @@ struct FeedParams {
 }
 
 
-fn annotated_entry(journal: &memorious_core::Journal, e: &memorious_core::Event) -> serde_json::Value {
-    let mut v = entry_json(e);
-    if let Ok(map) = journal.annotations() {
-        if let Some(text) = map.get(&e.event_id) {
-            if !text.is_empty() {
-                v["annotation"] = text.clone().into();
-            }
-        }
-    }
-    v
-}
-
 async fn feed(State(state): State<SharedState>, Query(p): Query<FeedParams>) -> Response {
     let limit = p.limit.unwrap_or(50).min(500);
     let annotations = state.journal().annotations().unwrap_or_default();
@@ -716,70 +706,7 @@ async fn search_related(State(state): State<SharedState>, Query(p): Query<Search
     }
 }
 
-/// Entries matching `q`, best first. Raw FTS5 syntax, so a stray quote is an
-/// error — callers that take free text from an agent should use `fts_quote`.
-pub(crate) fn search_entries(
-    journal: &Journal,
-    embedder: Option<&dyn memorious_core::search::Embedder>,
-    q: &str,
-    fts_q: &str,
-    limit: usize,
-) -> Result<Vec<serde_json::Value>> {
-    let redacted = journal.store.redacted_ids()?;
-    let mut out: Vec<serde_json::Value> = Vec::new();
-    // Over-fetch: several rows (an entry and its annotations) collapse to one.
-    let fetch = limit.saturating_mul(3);
-    for hit in memorious_core::search::hybrid_search_hits(&journal.store, embedder, q, fts_q, fetch)? {
-        if out.len() >= limit {
-            break;
-        }
-        let how = json!({"keyword": hit.keyword, "similarity": hit.similarity});
-        if let Some(e) = journal.store.get_event(&hit.id)? {
-            // Annotations surface as their target entry.
-            let display = match &e.payload {
-                Payload::Annotation { target, .. } => journal.store.get_event(target)?,
-                _ => Some(e),
-            };
-            if let Some(e) = display {
-                if e.kind == EventKind::Capture && !redacted.contains(&e.event_id) {
-                    // An entry and its annotations are separate rows: fold
-                    // their reasons into the best-ranked one.
-                    if let Some(o) = out.iter_mut().find(|o| o["event_id"] == e.event_id.as_str()) {
-                        let (k, s) = (hit.keyword || o["match"]["keyword"] == true, hit.similarity.or(o["match"]["similarity"].as_f64().map(|f| f as f32)));
-                        o["match"] = json!({"keyword": k, "similarity": s});
-                    } else {
-                        let mut entry = annotated_entry(journal, &e);
-                        entry["match"] = how;
-                        out.push(entry);
-                    }
-                }
-            }
-        }
-    }
-    Ok(out)
-}
-
-/// Free text → an FTS5 query that can't be a syntax error: every word quoted
-/// (implicit AND), so punctuation and operators are just words.
-pub(crate) fn fts_quote(q: &str) -> String {
-    q.split_whitespace()
-        .map(|w| format!("\"{}\"", w.replace('"', "")))
-        .filter(|w| w != "\"\"")
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
-/// Newest-first captures (the feed, minus pagination).
-pub(crate) fn recent_entries(journal: &Journal, limit: usize) -> Result<Vec<serde_json::Value>> {
-    let annotations = journal.annotations().unwrap_or_default();
-    let mut entries = journal.list()?;
-    entries.reverse();
-    Ok(entries
-        .iter()
-        .take(limit)
-        .map(|e| memorious_core::api_json::entry_json_annotated(e, &annotations))
-        .collect())
-}
+use memorious_core::mcp::search_entries;
 
 async fn status(State(state): State<SharedState>) -> Response {
     match state.node.status_json().await {
@@ -792,6 +719,37 @@ async fn status(State(state): State<SharedState>) -> Response {
 struct DeviceNameBody {
     device_id: String,
     name: String,
+}
+
+#[derive(Deserialize)]
+struct AgentBody {
+    name: String,
+}
+
+/// Mint an MCP-over-QUIC agent ticket. The only place the key is ever shown.
+async fn mint_agent(State(state): State<SharedState>, Json(body): Json<AgentBody>) -> Response {
+    let name = body.name.trim();
+    if name.is_empty() {
+        return err(StatusCode::BAD_REQUEST, "name must not be empty");
+    }
+    match state.node.mint_agent_ticket(name).await {
+        Ok(ticket) => Json(json!({"ticket": ticket})).into_response(),
+        Err(e) => internal(e),
+    }
+}
+
+async fn list_agents(State(state): State<SharedState>) -> Response {
+    match state.node.agent_keys() {
+        Ok(keys) => Json(keys).into_response(),
+        Err(e) => internal(e),
+    }
+}
+
+async fn revoke_agent(State(state): State<SharedState>, UrlPath(id): UrlPath<String>) -> Response {
+    match state.node.revoke_agent_key(&id) {
+        Ok(()) => Json(json!({"ok": true})).into_response(),
+        Err(e) => internal(e),
+    }
 }
 
 async fn set_device_name(

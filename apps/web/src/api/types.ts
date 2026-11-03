@@ -119,6 +119,13 @@ export interface NetConfig {
   public_lookup: boolean
 }
 
+/** An MCP agent key (never the secret itself — only shown once, inside the ticket). */
+export interface AgentKey {
+  id: string
+  name: string
+  created_at: number
+}
+
 export interface Status {
   device_id: string
   entries: number
@@ -221,6 +228,13 @@ export interface JournalApi {
   /** Catch up to a rotation another device already published. Rejects a
    * wrong guess without changing anything. */
   adoptMasterPassword(newPassword: string): Promise<void>
+  /** MCP over QUIC: let a chat client reach this peer through `memorious mcp-bridge`.
+   * `mint` returns the agent ticket — the only time its key is visible. */
+  agents?: {
+    list(): Promise<AgentKey[]>
+    mint(name: string): Promise<string>
+    revoke(id: string): Promise<void>
+  }
   /** Present only on hosts that dial peers themselves (desktop). */
   setup?: SetupApi
   syncNow?(ticket?: string): Promise<SyncReport>

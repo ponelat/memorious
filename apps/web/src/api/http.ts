@@ -1,4 +1,4 @@
-import type { Entry, FeedPage, JournalApi, MediaRef, NetConfig, Status, SyncReport } from './types'
+import type { AgentKey, Entry, FeedPage, JournalApi, MediaRef, NetConfig, Status, SyncReport } from './types'
 
 const TOKEN_KEY = 'memorious.passcode'
 
@@ -119,6 +119,21 @@ export const httpApi: JournalApi = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ device_id: deviceId, name }),
     })
+  },
+
+  agents: {
+    list: () => json<AgentKey[]>('/api/agents'),
+    async mint(name: string) {
+      const r = await request('/api/agents', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name }),
+      })
+      return ((await r.json()) as { ticket: string }).ticket
+    },
+    async revoke(id: string) {
+      await request(`/api/agents/${encodeURIComponent(id)}`, { method: 'DELETE' })
+    },
   },
 
   async setNetConfig(net: NetConfig) {

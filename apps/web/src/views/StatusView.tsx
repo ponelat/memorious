@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { api, DownloadFile, ExportReport, NetConfig, PeerBuild, PeerInfo, PeerPing, Status } from '../api'
+import { api, AgentKey, DownloadFile, ExportReport, NetConfig, PeerBuild, PeerInfo, PeerPing, Status } from '../api'
 import { agoLabel, edgeKind, MapPeer, PeerMap } from '../components/PeerMap'
 import { Appearance, onAppearanceChange, readAppearance, setAppearance } from '../appearance'
 
@@ -355,6 +355,89 @@ function MasterPasswordRow() {
   )
 }
 
+/** MCP over QUIC: tickets for `memorious mcp-bridge`, so a chat client (Claude
+ * Desktop/Code…) can use this peer while it is online. One key per bridge. */
+function AgentsRow() {
+  const [keys, setKeys] = useState<AgentKey[]>([])
+  const [name, setName] = useState('')
+  const [ticket, setTicket] = useState<{ name: string; ticket: string } | null>(null)
+  const [copied, setCopied] = useState<string | null>(null)
+  const [err, setErr] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+  const agents = api.agents!
+
+  const load = () => agents.list().then(setKeys).catch((e) => setErr(String(e)))
+  useEffect(() => {
+    load()
+  }, [])
+
+  async function mint() {
+    setBusy(true)
+    setErr(null)
+    try {
+      const t = await agents.mint(name.trim())
+      setTicket({ name: name.trim(), ticket: t })
+      setName('')
+      load()
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const copy = (text: string, what: string) => {
+    navigator.clipboard.writeText(text)
+    setCopied(what)
+  }
+  const snippet = (t: string) =>
+    JSON.stringify({ mcpServers: { memorious: { command: 'memorious', args: ['mcp-bridge', t] } } }, null, 2)
+
+  return (
+    <div className="net-form">
+      {keys.length === 0 && <p className="hint">no agents yet</p>}
+      {keys.map((k) => (
+        <div key={k.id} className="net-row">
+          <span>{k.name}</span>
+          <span className="hint">{' '}· {prettyDate(k.created_at)}</span>
+          <button
+            className="ghost"
+            onClick={async () => {
+              await agents.revoke(k.id)
+              load()
+            }}
+          >
+            revoke
+          </button>
+        </div>
+      ))}
+      <div className="net-actions">
+        <input placeholder="name this agent (e.g. laptop Claude)" value={name} maxLength={80} onChange={(e) => setName(e.target.value)} />
+        <button className="ghost" disabled={busy || !name.trim()} onClick={mint}>
+          {busy ? 'working…' : 'new agent ticket'}
+        </button>
+      </div>
+      {ticket && (
+        <div>
+          <p className="hint">
+            ticket for “{ticket.name}” — shown once. It reaches this peer only while it is online.
+          </p>
+          <textarea readOnly rows={3} value={ticket.ticket} onFocus={(e) => e.currentTarget.select()} />
+          <div className="net-actions">
+            <button className="ghost" onClick={() => copy(ticket.ticket, 'ticket')}>
+              {copied === 'ticket' ? 'copied' : 'copy ticket'}
+            </button>
+            <button className="ghost" onClick={() => copy(snippet(ticket.ticket), 'config')}>
+              {copied === 'config' ? 'copied' : 'copy Claude config'}
+            </button>
+          </div>
+        </div>
+      )}
+      {err && <p className="error">{err}</p>}
+    </div>
+  )
+}
+
 /** Export the journal as a folder of markdown by day plus media (desktop). */
 function ExportRow() {
   const [busy, setBusy] = useState(false)
@@ -670,6 +753,14 @@ export function StatusView() {
             <dt>network</dt>
             <dd>
               <NetworkForm net={status.net} onSaved={refresh} />
+            </dd>
+          </>
+        )}
+        {api.agents && (
+          <>
+            <dt>AI agents (MCP)</dt>
+            <dd>
+              <AgentsRow />
             </dd>
           </>
         )}
