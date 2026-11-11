@@ -21,7 +21,7 @@ the domain noun for the data structure; Memorious is the product/brand.
 A brutally minimalist, append-only, local-first capture device for text, audio, and photos.
 One shared Rust core crate (event log, SQLite storage, custom sync protocol over iroh,
 iroh-blobs for media) with four faces: a headless always-on server peer (axum, serves the web
-client), a Tauri 2 desktop app, a native SwiftUI iPhone app (UniFFI bindings), and a browser
+client), a native Linux desktop app (GTK 4/libadwaita; Tauri on other desktops), a native SwiftUI iPhone app (UniFFI bindings), and a browser
 thin-client of the server. Peers sync directly, union-of-logs, no conflicts, no accounts, no
 central authority. There are only four event kinds: capture, redact, token-set, annotation.
 Everything is encrypted at rest under one master password per journal (SQLCipher database,
@@ -52,7 +52,8 @@ crates/core/       the engine — events, storage, sync, enrichment scheduling; 
 crates/mobile/     UniFFI face of core for iOS (JSON strings + bytes over blocking calls)
 apps/server/       axum HTTP peer; serves apps/web build; enrichment sweeper; /downloads
 apps/web/          React + Vite UI shared by the browser client and the Tauri shell
-apps/desktop/      Tauri 2 shell (its own peer, embeds core — never a client of the server)
+apps/desktop/linux/ Native GTK 4/libadwaita Linux shell (embeds core, owns its peer)
+apps/desktop/src-tauri/ Legacy desktop shell for macOS/Windows
 docs/              build + deploy context
 scripts/           make-downloads.sh (hosted app builds)
 ```
@@ -64,8 +65,9 @@ repo's `crates/mobile` via its own `ios/build.sh` (default engine path: `../../m
 Never move paid-app code into this repo.
 
 Keep the core deep and the shells thin: if logic could live in `crates/core`, it must.
-The one UI seam is `apps/web/src/api/types.ts` (`JournalApi`) — browser implements it with
-HTTP, desktop with Tauri commands. The wire shape for entries is
+The web UI seam is `apps/web/src/api/types.ts` (`JournalApi`) — browser implements it with
+HTTP, the remaining Tauri shells with commands. Native Linux uses the core local-request
+dispatcher for both embedded and background operation. The wire shape for entries is
 `crates/core/src/api_json.rs`, shared by server, desktop, and mobile.
 
 ## Versioning rules that bite

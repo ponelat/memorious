@@ -17,6 +17,11 @@ struct Cli {
     /// Master password (or set MEMORIOUS_PASSWORD; prompts interactively otherwise).
     #[arg(long, global = true)]
     password: Option<String>,
+    /// Route supported commands to a running local daemon instead of opening
+    /// the journal directly.  The daemon remains the only process owning its
+    /// database and sync peer.
+    #[arg(long, global = true)]
+    socket: Option<PathBuf>,
     #[command(subcommand)]
     cmd: Cmd,
 }
@@ -104,6 +109,27 @@ enum Cmd {
     /// over QUIC. Needs no journal: the agent ticket comes from the peer's
     /// Agents page. Point Claude Desktop/Code at `memorious mcp-bridge <ticket>`.
     McpBridge { ticket: String },
+    /// Run or inspect the owner-only local node daemon.
+    Daemon {
+        #[command(subcommand)]
+        cmd: DaemonCmd,
+    },
+}
+
+#[derive(Subcommand)]
+enum DaemonCmd {
+    /// Own this journal and serve local CLI, desktop, and capture clients.
+    Run {
+        /// Unix-domain socket path (defaults under XDG_RUNTIME_DIR).
+        #[arg(long)]
+        socket: Option<PathBuf>,
+    },
+    /// Ask a running local daemon to release its journal cleanly.
+    Stop {
+        /// Unix-domain socket path (defaults under XDG_RUNTIME_DIR).
+        #[arg(long)]
+        socket: Option<PathBuf>,
+    },
 }
 
 #[tokio::main]
@@ -117,13 +143,35 @@ async fn main() -> Result<()> {
         )
         .init();
     let cli = Cli::parse();
+    let daemon_command = matches!(&cli.cmd, Cmd::Daemon { .. });
     let data = cli.data;
     let pw = cli.password;
+    let socket = cli.socket;
+    // Direct CLI ownership and daemon ownership are mutually exclusive.  A
+    // socket-routed invocation is a client and therefore deliberately takes
+    // no database lock.
+    let _owner_lock = if daemon_command || socket.is_some() {
+        None
+    } else {
+        Some(memorious_core::local::JournalLock::acquire(&data)?)
+    };
     let open = |pw: &Option<String>| -> Result<Journal> {
         Journal::open(&data, &resolve_password(pw, false)?)
     };
 
     match cli.cmd {
+        Cmd::Daemon { cmd: DaemonCmd::Run { socket } } => {
+            let socket = socket.unwrap_or_else(memorious_core::local::default_socket);
+            let daemon = memorious_core::local::Daemon::open(&data, &resolve_password(&pw, false)?)
+                .await?;
+            println!("daemon: {}", socket.display());
+            daemon.serve(socket).await?;
+        }
+        Cmd::Daemon { cmd: DaemonCmd::Stop { socket } } => {
+            let socket = socket.unwrap_or_else(memorious_core::local::default_socket);
+            memorious_core::local::call(&socket, "shutdown", serde_json::json!({})).await?;
+            println!("daemon stopping");
+        }
         Cmd::McpBridge { ticket } => {
             memorious_core::mcp_quic::run_stdio_bridge(&ticket, tokio::io::BufReader::new(tokio::io::stdin()), tokio::io::stdout()).await?;
         }
@@ -134,6 +182,11 @@ async fn main() -> Result<()> {
             println!("device: {}", j.device_id());
         }
         Cmd::Add { text } => {
+            if let Some(socket) = &socket {
+                let entry = memorious_core::local::call(socket, "capture_text", serde_json::json!({"text": text})).await?;
+                println!("{}", entry["event_id"].as_str().unwrap_or("captured"));
+                return Ok(());
+            }
             let j = open(&pw)?;
             let e = j.capture_text(&text)?;
             println!("{}", e.event_id);
@@ -141,12 +194,22 @@ async fn main() -> Result<()> {
         Cmd::AddPhoto { file } => add_media(&data, &pw, MediaKind::Photo, &file).await?,
         Cmd::AddAudio { file } => add_media(&data, &pw, MediaKind::Audio, &file).await?,
         Cmd::List => {
+            if let Some(socket) = &socket {
+                let entries: Vec<memorious_core::Event> = serde_json::from_value(memorious_core::local::call(socket, "feed", serde_json::json!({})).await?)?;
+                for e in entries { println!("{}", format_entry(&e)); }
+                return Ok(());
+            }
             let j = open(&pw)?;
             for e in j.list()? {
                 println!("{}", format_entry(&e));
             }
         }
         Cmd::Redact { event_id } => {
+            if let Some(socket) = &socket {
+                memorious_core::local::call(socket, "redact", serde_json::json!({"event_id": event_id})).await?;
+                println!("redacted {event_id}");
+                return Ok(());
+            }
             let j = open(&pw)?;
             j.redact(&event_id)?;
             println!("redacted {event_id}");
@@ -158,6 +221,11 @@ async fn main() -> Result<()> {
             }
         }
         Cmd::Search { query } => {
+            if let Some(socket) = &socket {
+                let entries: Vec<memorious_core::Event> = serde_json::from_value(memorious_core::local::call(socket, "search", serde_json::json!({"query": query})).await?)?;
+                for e in entries { println!("{}", format_entry(&e)); }
+                return Ok(());
+            }
             let j = open(&pw)?;
             let redacted = j.store.redacted_ids()?;
             for id in j.store.search(&query)? {
@@ -195,6 +263,11 @@ async fn main() -> Result<()> {
             node.shutdown().await;
         }
         Cmd::Sync { ticket } => {
+            if let Some(socket) = &socket {
+                let report = memorious_core::local::call(socket, "sync", serde_json::json!({"ticket": ticket})).await?;
+                println!("synced: {}", report);
+                return Ok(());
+            }
             let node = Node::spawn(open(&pw)?).await?;
             let t = JournalTicket::decode(&ticket)?;
             if &t.secret != node.journal().secret() {
@@ -255,6 +328,10 @@ async fn main() -> Result<()> {
             println!("other devices must re-pair (delete their data dir, then `join`)");
         }
         Cmd::Status => {
+            if let Some(socket) = &socket {
+                println!("{}", serde_json::to_string_pretty(&memorious_core::local::call(socket, "status", serde_json::json!({})).await?)?);
+                return Ok(());
+            }
             let j = open(&pw)?;
             println!("build: {}", memorious_core::BUILD_INFO);
             println!("journal: {}", data.display());

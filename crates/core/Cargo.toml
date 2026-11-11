@@ -27,6 +27,7 @@ blake3 = "1"
 chacha20poly1305 = "0.10"
 clap = { version = "4", features = ["derive"] }
 data-encoding = "2"
+fs2 = "0.4"
 image = "0.25.10"
 iroh = "1"
 iroh-blobs = "0.103"

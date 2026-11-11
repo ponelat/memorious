@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core'
-import type { AgentKey, AudioKind, Entry, ExportReport, FeedPage, PeerPing, JournalApi, MediaRef, NetConfig, Status, SyncReport } from './types'
+import type { AgentKey, AudioKind, BackgroundStatus, Entry, ExportReport, FeedPage, PeerPing, JournalApi, MediaRef, NetConfig, PttConfig, PttStatus, Status, SyncReport } from './types'
 
 /**
  * Media goes over as a raw request body, never as a JSON array of numbers: a
@@ -108,5 +108,16 @@ export const tauriApi: JournalApi = {
 
   async resetDevice() {
     await invoke('reset_device')
+  },
+
+  background: {
+    status: () => invoke<BackgroundStatus>('background_status'),
+    enable: () => invoke('enable_background'),
+    disable: () => invoke('disable_background'),
+    reclaim: () => invoke('reclaim_background'),
+  },
+  ptt: {
+    status: () => invoke<PttStatus>('ptt_status'),
+    configure: (config: PttConfig) => invoke('set_ptt_config', config),
   },
 }

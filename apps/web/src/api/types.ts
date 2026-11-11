@@ -184,6 +184,34 @@ export interface ExportReport {
   media: number
 }
 
+export interface BackgroundStatus {
+  mode: 'direct' | 'background' | 'stopped'
+  error?: string
+}
+
+/** Optional desktop PTT is deliberately daemon-only; secrets never come back
+ * to the webview. The worker field is its local, non-journal health report. */
+export interface PttStatus {
+  available: boolean
+  supported: boolean
+  enabled: boolean
+  key: string
+  stt_model: string
+  cleanup_model: string
+  api_key_configured: boolean
+  worker?: { state?: string; queued?: number; error?: string } | null
+  restart_required: boolean
+}
+
+export interface PttConfig {
+  enabled: boolean
+  key: string
+  /** Omit to preserve the existing key; empty clears it. */
+  api_key?: string
+  stt_model: string
+  cleanup_model: string
+}
+
 /** First-run choices on hosts that own their journal (desktop, iOS). */
 export interface SetupApi {
   /** 'locked': a journal exists but needs the master password this launch. */
@@ -245,6 +273,17 @@ export interface JournalApi {
    * this also ends the server process — it takes longer to come back than
    * on desktop, where the app just returns to first-run setup in place. */
   resetDevice?(): Promise<void>
+  /** Desktop-only process handoff; browsers never own a local journal. */
+  background?: {
+    status(): Promise<BackgroundStatus>
+    enable(): Promise<void>
+    disable(): Promise<void>
+    reclaim(): Promise<void>
+  }
+  ptt?: {
+    status(): Promise<PttStatus>
+    configure(config: PttConfig): Promise<void>
+  }
   /** Forget the cached passcode and return to the passcode screen — doesn't
    * touch the server or the journal at all (browser only; a host with its
    * own core has no passcode to forget). */

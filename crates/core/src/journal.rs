@@ -310,6 +310,16 @@ impl Journal {
     // on a reserved target (replicates like device names, older peers ignore
     // it). Anyone holding the right password unwraps it; nobody else can.
 
+    /// Validate a candidate against this peer's active database key, without
+    /// opening another connection or changing the journal password.
+    pub fn check_master_password(&self, password: &str) -> Result<()> {
+        let candidate = KeySet::derive(password, &self.salt, &self.params)?;
+        let candidate = zeroize::Zeroizing::new(candidate.db_key_hex());
+        let active = zeroize::Zeroizing::new(self.keys.read().unwrap().db_key_hex());
+        if candidate != active { bail!("wrong master password"); }
+        Ok(())
+    }
+
     /// Publish the password proof (creator, or a device that has proven the
     /// password some other way), under whichever keys are currently active —
     /// so re-publishing after a master-password rotation moves the proof
@@ -647,11 +657,22 @@ impl Journal {
     // ---- capture ----
 
     pub fn capture_text(&self, text: &str) -> Result<Event> {
-        self.store.append_local(
+        self.capture_text_at(text, crate::store::now_ms())
+    }
+
+    /// Append text captured at a known wall-clock time.  Capture clients which
+    /// can be offline (for example push-to-talk) use this so their entries
+    /// remain ordered by when they were spoken, not when a relay came back.
+    pub fn capture_text_at(&self, text: &str, recorded_at: i64) -> Result<Event> {
+        if text.trim().is_empty() {
+            anyhow::bail!("empty text");
+        }
+        self.store.append_local_at(
             &self.device_id,
             EventKind::Capture,
             Payload::Text { text: text.into() },
             false,
+            recorded_at,
         )
     }
 
@@ -934,6 +955,16 @@ mod tests {
         assert_eq!(j.secret(), &secret);
         assert!(root.join("blobs").is_dir());
         assert!(root.join("keys.json").is_file());
+    }
+
+    #[test]
+    fn checking_password_does_not_rotate_or_reopen_the_journal() {
+        let dir = tempfile::tempdir().unwrap();
+        let journal = Journal::init(dir.path(), PW).unwrap();
+        assert!(journal.check_master_password("wrong").is_err());
+        journal.check_master_password(PW).unwrap();
+        journal.capture_text("still open").unwrap();
+        assert_eq!(journal.list().unwrap().len(), 1);
     }
 
     #[test]

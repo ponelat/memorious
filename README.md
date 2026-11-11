@@ -2,7 +2,7 @@
 
 A brutally minimalist, append-only, local-first capture device for text, audio, and
 photos. One Rust core (event log, SQLite+FTS5, custom sync over iroh, iroh-blobs media),
-four faces: an always-on server peer (axum + React web client), a Tauri 2 desktop app,
+four faces: an always-on server peer (axum + React web client), a native Linux desktop app (GTK 4/libadwaita; Tauri on macOS/Windows),
 a SwiftUI iPhone app (UniFFI), and a CLI. Peers sync directly — union of append-only
 logs, no conflicts, no accounts. Everything is encrypted at rest under a single master
 password: SQLCipher for the event log, per-blob XChaCha20-Poly1305 for media (sealed
@@ -19,7 +19,8 @@ crates/core/       the engine — all logic lives here
 crates/mobile/     UniFFI face of core for iOS
 apps/server/       axum HTTP peer; serves apps/web build; enrichment sweeper
 apps/web/          React + Vite UI (browser client and Tauri shell share it)
-apps/desktop/      Tauri 2 shell
+apps/desktop/linux/ Native GTK 4/libadwaita Linux shell
+apps/desktop/src-tauri/ Existing macOS/Windows shell
 ```
 
 The native iOS app lives in a separate private repo (`memorious-ios`); it builds
@@ -28,7 +29,7 @@ against this repo's `crates/mobile` via UniFFI.
 ## Quick start
 
 ```bash
-cargo test                                     # whole engine, incl. 2-peer convergence
+cargo test -p memorious-core                    # engine, incl. 2-peer convergence
 cargo run -p memorious-core --bin memorious -- --data /tmp/j init   # prompts for a master password
 (cd apps/web && bun install && bun run build)  # web bundle
 MEMORIOUS_DATA=./data MEMORIOUS_PASSWORD=… PORT=4600 WEB_DIST=apps/web/dist cargo run -p memorious-server
@@ -65,7 +66,7 @@ nix build 'github:ponelat/memorious#memorious-server'
 ```
 
 Or from a checkout: `nix build .#journal-cli|memorious-server|memorious-desktop`.
-The desktop links system webkitgtk 4.1/GTK on Linux, so there is deliberately no
+The desktop links GTK 4 and libadwaita on Linux, so there is deliberately no
 portable Linux desktop binary — the flake (or the static CLI) is the path.
 Pin note: nixpkgs-unstable, because iroh needs rustc ≥ 1.91.
 

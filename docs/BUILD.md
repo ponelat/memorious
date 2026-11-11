@@ -48,18 +48,37 @@ The release binary is what devhost runs — after any `cargo clean`, rebuild it 
 `devhost restart memorious` (the running process survives on a deleted inode; a restart
 without the binary present fails).
 
-## Desktop (`apps/desktop`)
+## Native Linux desktop (`apps/desktop/linux`)
 
 ```bash
-cd apps/desktop && cargo tauri build            # → target/release/bundle/macos/Memorious.app
+nix develop
+cargo run -p memorious-linux --bin memorious-desktop
+cargo test -p memorious-linux --no-default-features --test journal
+cargo test -p memorious-linux --test native_ui -- --ignored  # needs a display
 ```
 
-- Tests use tauri's mock runtime: invoke origin must be `tauri://localhost` on macOS and all
-  commands are generic over `tauri::Runtime` — keep new commands that way.
-- The desktop is **its own peer** (embeds core, own data dir under
-  `~/Library/Application Support/app.memorious/journal`), never a client of the
-  server. `MEMORIOUS_DATA_DIR` env overrides the data dir (used by tests).
-- Unsigned/un-notarized: first launch needs right-click → Open.
+System dependencies: GTK ≥ 4.10, libadwaita ≥ 1.5, pkg-config, Perl and a C
+toolchain. Debian/Ubuntu: `libgtk-4-dev libadwaita-1-dev pkg-config perl build-essential`.
+The Linux flake desktop target builds this native Rust application without WebKit,
+Tauri, Bun, or the web bundle. GTK media playback needs the platform’s GTK media
+backend and GStreamer codecs for AAC/MP4.
+
+The desktop embeds its own Rust node and opens the same encrypted journal as the
+previous Linux desktop: `$XDG_DATA_HOME/app.memorious/journal` (normally
+`~/.local/share/app.memorious/journal`). `MEMORIOUS_DATA_DIR` overrides it.
+Passwords may be cached in the Linux keyring; a missing keyring leaves manual unlock
+available. Override directories never share the default keyring credential.
+The journal lock prevents a second desktop or daemon from opening the same data.
+
+## Existing macOS/Windows desktop (`apps/desktop/src-tauri`)
+
+```bash
+cd apps/desktop && cargo tauri build
+```
+
+The Tauri shell remains for these platforms during the native transition. Tests use
+Tauri’s mock runtime. The macOS journal lives under
+`~/Library/Application Support/app.memorious/journal`.
 
 ## iOS (private repo `memorious-mobile`)
 
@@ -88,17 +107,12 @@ xcodebuild -project Memorious.xcodeproj -scheme Memorious \
 ```bash
 nix build .#memorious-cli          # verified on aarch64-darwin
 nix build .#memorious-server
-nix build .#memorious-desktop      # Linux build NOT yet verified on a real box
+nix build .#memorious-desktop      # native Linux GTK 4/libadwaita desktop
 ```
 
 - Pinned to **nixpkgs-unstable** — iroh needs rustc ≥ 1.91, 25.05 ships 1.86.
-- The desktop derivation overrides `installPhase`: the cargo-tauri hook's own install only
-  handles bundles, and we build `--no-bundle`. It also installs a `.desktop` entry and
-  hicolor icons on Linux (`--no-bundle` gives a bare binary, so launchers would otherwise
-  never see the app).
-- **Pasting images into the capture bar needs webkitgtk ≥ 2.50.2** (WebKit bug 218519:
-  before that fix, clipboard images never reach `clipboardData` on GTK). Check a build
-  with `nix eval --raw .#packages.x86_64-linux.memorious-desktop.buildInputs`.
+- The desktop derivation selects GTK 4/libadwaita on Linux and Tauri on macOS.
+  It installs a desktop entry whose app id matches `app.memorious`, plus hicolor icons.
 - `.app`-domain whois lies about registration; check `dig NS` and the registrar.
 
 ## Hosted downloads
@@ -129,3 +143,73 @@ immediately — a `target/x86_64-unknown-linux-musl` or `target/aarch64-apple-io
 sitting around after a deploy is exactly what has filled this machine's disk before.
 `make-downloads.sh`'s Linux CLI builds already go through it; do the same for one-off
 deploys (e.g. the EC2 peers in the owner's private ops runbook).
+
+## Linux background capture
+
+The native toolbar’s settings button configures **Run in the background** and
+**Enable push-to-talk**. Background mode hands the same directory and identity to
+this executable’s no-window daemon personality. Reopening the app attaches to the
+owner-only socket. Closing the window keeps that daemon and its PTT worker running;
+turning background mode off validates the master password before transferring ownership
+back. A background process also exports a StatusNotifierItem/DBusMenu indicator
+(Open Memorious, start/stop recording, stop background). GNOME needs AppIndicator
+support to display standard tray icons.
+
+The Python worker remains `apps/desktop/ptt/memorious-ptt.py`, installed alongside the
+native binary as `memorious-ptt`. Runtime dependencies are Python with `evdev` and
+`requests`, plus PipeWire’s `pw-record`. The flake bundles these. The global key
+(default `KEY_RIGHTCTRL`) requires access to the relevant `/dev/input` devices;
+the toolbar and tray controls use an owner-only socket and work without that access.
+The worker’s local settings retain the previous desktop’s filename and schema, and
+API keys are never returned in status. Recording and pending WAVs are owner-only;
+failed transcription/delivery retains the queue for retry. No microphone is opened
+until a recording control or the configured key is used.
+
+```bash
+python3 apps/desktop/ptt/test_worker.py
+cargo test -p memorious-linux --test background --test tray
+cargo test -p memorious-linux --test native_ui -- --ignored --test-threads=1
+```
+
+### Local or remote transcription
+
+The native settings dialog selects local multilingual **Whisper Small** or remote
+API transcription. The bundled worker and desktop voice-file importer use the same
+provider and language setting (`auto`, or a code such as `af`, `en`, `es`). Local
+mode uses `whisper-cli` and never invokes remote transcript cleanup or falls back
+to the API. New configurations default to local; existing configurations without
+these fields keep remote transcription and automatic language detection.
+
+**Download local model** fetches the complete 487,601,967-byte full-precision GGML
+model from the upstream whisper.cpp model repository. The URL is pinned to a
+revision and the file is checked against SHA-256 before an atomic rename. The
+shared device cache is `$XDG_CACHE_HOME/memorious/transcription/whisper-small`;
+`MEMORIOUS_MODEL_DIR` overrides the cache root in tests. Interrupted downloads can
+resume; partial files never count as installed. The model is outside the journal
+and is never synced. This size is the model download; inference RAM is separate.
+
+Voice files are captured and synced first, then transcribed off the GUI thread.
+Their text becomes an annotation. Music is never passed through this pipeline.
+The runtime needs `whisper-cpp` and `ffmpeg`, both bundled by the Linux flake.
+No model weights are included in the application package or downloaded implicitly
+by inference.
+
+```bash
+python3 apps/desktop/ptt/test_models.py
+# Model-management commands supported by the bundled helper:
+memorious-ptt --model-status
+memorious-ptt --download-model
+```
+
+### Native peer troubleshooting
+
+In **Peers and pairing**, leave the ticket blank to sync all known peers. A new
+address can be supplied with a fresh ticket from the other device. **Check
+connections** runs bounded per-peer probes; sync results report partial failures
+and update the displayed holdings. A device cannot sync with its own ticket.
+
+The same dialog exposes relay mode, custom relay URLs and public address lookup.
+Changes are local to this peer and apply after its journal restarts. When running
+in the background, closing the window alone does not restart the journal: use
+**Stop background journal** from the tray, then reopen the app. Direct-only mode
+may prevent connections across networks even while a remote peer is online.

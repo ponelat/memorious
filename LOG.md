@@ -635,4 +635,31 @@
 - 2026-11-03: MCP over QUIC (ALPN `memorious/mcp/1`) on every node + `memorious mcp-bridge` stdio bridge, revocable per-bridge agent keys (not the journal secret); tool logic moved to `crates/core/src/mcp.rs`, shared with HTTP `/mcp`. See UNDERSTANDING §"MCP over QUIC".
 - 2026-11-03: iroh 1.0.3 → 1.4.1 (lockfile only, no code change; core/server/mobile suites + relay-only MCP test green; a 1.4.1 client talks to a 1.0.3 peer). `memorious` CLI logs to stderr — stdout is the MCP stdio channel for `mcp-bridge`. Agent tickets wait briefly for the home relay so they work off-LAN.
 - 2026-11-03: Bumped `crates/core` 0.2.2→0.3.0 (`flake.nix` to match) for release v0.3.0 — MCP over QUIC (agent keys + `mcp-bridge`), iroh 1.4.1, hybrid search, browser re-pair, build-info. Deployed 0.2.2 peers will show "behind" until redeployed (the version_seen mechanism, as intended).
+- 2026-11-10: Push-to-talk is an optional desktop feature, not an independent journal client. It is available only in background-daemon mode; a bundled platform worker records/spools/transcribes and submits text with its original capture time over the owner-only local socket. It has no journal password, pairing ticket, journal token, or read access. Embedded mode deliberately does not expose it.
 
+
+## 2026-11-11 — Native Linux desktop
+
+- Linux desktop moves to GTK 4/libadwaita in Rust, with its own embedded core node
+  and the existing encrypted journal path. Blocking engine work runs off the GTK thread.
+- Linux Nix packaging selects the native shell; macOS/Windows keep the Tauri shell
+  during the native transition. The browser UI and core protocol remain shared as before.
+- Native Linux background handoff reuses the core’s local request dispatcher; PTT
+  adds owner-only toolbar control, status feedback and a StatusNotifier tray menu.
+  Worker changes preserve the existing configuration schema and queued captures.
+- Local feed requests gain offset pagination so native reading can pass the first
+  page without skipping captures sharing a timestamp. Background handback validates
+  the password before stopping a healthy owner.
+- Local multilingual dictation uses the official full-precision Whisper Small
+  GGML model (487,601,967 bytes), pinned by revision and SHA-256. Downloads are
+  explicit, resumable, size-bounded and atomically installed in the device cache.
+  PTT and voice-file transcription share the same bundled whisper.cpp runtime.
+  Local mode never calls remote cleanup or silently falls back to the API.
+- Manual native sync now tries all remembered peers, including inbound contacts,
+  and reports partial failures instead of only retrying one stale ticket. The
+  peers dialog exposes relay/public-lookup settings and connection checks,
+  refreshes holdings after sync, and rejects this device’s own pairing ticket.
+- The native peers dialog keeps its header and close button above the scrollable
+  content so the panel can be dismissed from any scroll position.
+- The local journal daemon now syncs known peers at startup and repeats every
+  minute after each round, so remote captures are pulled without a local write.

@@ -595,6 +595,76 @@ function ResetRow() {
   )
 }
 
+function BackgroundRow() {
+  const [state, setState] = useState<'direct' | 'background' | 'stopped' | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const refresh = () => api.background!.status().then((s) => {
+    setState(s.mode)
+    setError(s.error ?? null)
+  }).catch((e) => {
+    setState('stopped')
+    setError(String(e))
+  })
+  useEffect(() => { refresh() }, [])
+  async function act(action: () => Promise<void>) {
+    setBusy(true); setError(null)
+    try { await action(); await refresh() } catch (e) { setError(e instanceof Error ? e.message : String(e)) }
+    finally { setBusy(false) }
+  }
+  if (state === null) return <span className="hint">checking…</span>
+  if (state === 'background') return <>
+    <span>running in the background</span>{' '}
+    <button className="ghost" disabled={busy} onClick={() => act(() => api.background!.disable())}>stop background mode</button>
+    {error && <p className="error">{error}</p>}
+  </>
+  if (state === 'stopped') return <>
+    <span className="behind">background daemon stopped</span>{' '}
+    <button className="ghost" disabled={busy} onClick={() => act(() => api.background!.reclaim())}>take ownership back</button>
+    {error && <p className="hint">{error}</p>}
+  </>
+  return <>
+    <span>this app owns the journal</span>{' '}
+    <button className="ghost" disabled={busy} onClick={() => act(() => api.background!.enable())}>run in the background</button>
+    {error && <p className="error">{error}</p>}
+  </>
+}
+
+function PttRow() {
+  const [status, setStatus] = useState<import('../api').PttStatus | null>(null)
+  const [enabled, setEnabled] = useState(false)
+  const [key, setKey] = useState('KEY_RIGHTCTRL')
+  const [apiKey, setApiKey] = useState('')
+  const [message, setMessage] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+  const refresh = () => api.ptt!.status().then((next) => {
+    setStatus(next); setEnabled(next.enabled); setKey(next.key)
+  }).catch((e) => setMessage(e instanceof Error ? e.message : String(e)))
+  useEffect(() => { refresh() }, [])
+  async function save() {
+    setBusy(true); setMessage(null)
+    try {
+      await api.ptt!.configure({ enabled, key, api_key: apiKey || undefined, stt_model: status!.stt_model, cleanup_model: status!.cleanup_model })
+      setApiKey(''); await refresh()
+      setMessage('saved — restart background mode to apply the worker change')
+    } catch (e) { setMessage(e instanceof Error ? e.message : String(e)) }
+    finally { setBusy(false) }
+  }
+  if (!status) return <span className="hint">checking…</span>
+  if (!status.available) return <span className="hint">available when background mode is running</span>
+  if (!status.supported) return <span className="hint">not bundled for this desktop platform</span>
+  const worker = status.worker
+  return <div className="ptt-settings">
+    <label><input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} /> enable push-to-talk</label>
+    <label>key <input value={key} onChange={(e) => setKey(e.target.value)} placeholder="KEY_RIGHTCTRL" /></label>
+    <label>transcription API key <input type="password" value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder={status.api_key_configured ? 'stored (leave blank to keep)' : 'required to enable'} /></label>
+    <button className="ghost" disabled={busy} onClick={save}>{busy ? 'saving…' : 'save PTT settings'}</button>
+    {worker && <p className="hint">worker: {worker.state ?? 'unknown'}{worker.queued ? ` · ${worker.queued} queued` : ''}{worker.error ? ` · ${worker.error}` : ''}</p>}
+    {status.restart_required && <p className="hint">worker starts with background mode</p>}
+    {message && <p className="hint">{message}</p>}
+  </div>
+}
+
 export function StatusView() {
   const [status, setStatus] = useState<Status | null>(null)
   const [error, setError] = useState(false)
@@ -837,6 +907,18 @@ export function StatusView() {
             <dd>
               <ExportRow />
             </dd>
+          </>
+        )}
+        {api.background && (
+          <>
+            <dt>background</dt>
+            <dd><BackgroundRow /></dd>
+          </>
+        )}
+        {api.ptt && (
+          <>
+            <dt>push-to-talk</dt>
+            <dd><PttRow /></dd>
           </>
         )}
         {api.logout && (

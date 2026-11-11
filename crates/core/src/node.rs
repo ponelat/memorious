@@ -113,11 +113,22 @@ enum Msg {
     Done,
 }
 
-#[derive(Debug, Default, Clone, Copy)]
+#[derive(Debug, Default, Clone, Copy, Serialize)]
 pub struct SyncReport {
     pub sent: usize,
     pub received: usize,
     pub blobs_fetched: usize,
+}
+
+/// Outcome of syncing one remembered peer. A failure never hides other outcomes.
+#[derive(Debug, Serialize)]
+pub struct PeerSync {
+    pub endpoint_id: String,
+    pub ok: bool,
+    pub sent: usize,
+    pub received: usize,
+    pub blobs: usize,
+    pub error: Option<String>,
 }
 
 /// Per-device network configuration, stored in journal meta (local, never
@@ -1305,6 +1316,38 @@ impl Node {
             }
             None => Ok(None),
         }
+    }
+
+    /// Push captures to known peers without holding up the capturing face.
+    /// Offline peers keep their missing events until the next ordinary sync.
+    pub async fn sync_known_peers(&self) -> Result<()> {
+        for outcome in self.sync_saved_peers().await? {
+            if let Some(error) = outcome.error {
+                tracing::debug!("capture sync deferred: {error}");
+            }
+        }
+        Ok(())
+    }
+
+    /// Sync every known peer concurrently, including peers first met inbound.
+    /// An offline peer must not prevent the remaining peers from converging.
+    pub async fn sync_saved_peers(&self) -> Result<Vec<PeerSync>> {
+        let peers = self.peers().await?;
+        Ok(n0_future::join_all(peers.into_iter().map(|peer| async move {
+            let result: Result<SyncReport> = async {
+                let addr = match self.stored_peer_addr(&peer.endpoint_id)? {
+                    Some(addr) => addr,
+                    None => EndpointAddr::new(peer.endpoint_id.parse()?),
+                };
+                self.sync_with(&addr).await
+            }.await;
+            match result {
+                Ok(report) => PeerSync { endpoint_id: peer.endpoint_id, ok: true,
+                    sent: report.sent, received: report.received, blobs: report.blobs_fetched, error: None },
+                Err(error) => PeerSync { endpoint_id: peer.endpoint_id, ok: false,
+                    sent: 0, received: 0, blobs: 0, error: Some(format!("{error:#}")) },
+            }
+        })).await)
     }
 
     /// Probe one known peer: the ordinary event sync with a stopwatch and a

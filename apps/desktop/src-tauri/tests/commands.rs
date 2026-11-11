@@ -9,6 +9,10 @@ use tauri::test::{mock_builder, mock_context, noop_assets, INVOKE_KEY};
 use tauri::webview::InvokeRequest;
 use tauri::WebviewWindow;
 
+/// Tauri setup reads process-wide environment variables for the journal path,
+/// so these integration tests must not run their independent journals at once.
+static TEST_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 fn invoke_request(cmd: &str, args: Value) -> InvokeRequest {
     request(cmd, InvokeBody::Json(args), Default::default())
 }
@@ -75,6 +79,7 @@ fn body_to_json(body: tauri::ipc::InvokeResponseBody) -> Value {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn desktop_command_layer_end_to_end() {
+    let _env = TEST_ENV_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     let dir = tempfile::tempdir().unwrap();
     let desktop_dir = dir.path().join("desktop-journal");
     std::env::set_var("MEMORIOUS_DATA_DIR", &desktop_dir);
@@ -82,6 +87,9 @@ async fn desktop_command_layer_end_to_end() {
 
     let app = mock_builder()
         .manage(memorious_desktop_lib::NodeState::default())
+        .manage(memorious_desktop_lib::DaemonState::default())
+        .manage(memorious_desktop_lib::PingTask::default())
+        .manage(memorious_desktop_lib::MasterPassword::default())
         .invoke_handler(memorious_desktop_lib::handlers())
         .build(mock_context(noop_assets()))
         .unwrap();
@@ -154,14 +162,22 @@ async fn desktop_command_layer_end_to_end() {
     let ticket = peer.ticket().unwrap();
 
     // Desktop dials out via the sync_now command; both sides converge.
-    // (sent = 3 captures + this device's default-name annotation, which is
-    // an event and syncs like everything else)
+    // Alongside the captures, device name, peer-join and version-seen events
+    // sync too; the flat feed deliberately derives only capture entries.
     let report = invoke(&webview, "sync_now", json!({"ticket": ticket})).await.unwrap();
     assert_eq!(report["received"], 1);
-    assert_eq!(report["sent"], 4);
+    assert_eq!(report["sent"], 7);
     let feed = invoke(&webview, "feed", json!({})).await.unwrap();
     assert_eq!(feed["entries"].as_array().unwrap().len(), 4);
-    assert_eq!(peer.journal().list().unwrap().len(), 4);
+    assert_eq!(
+        peer.journal()
+            .list()
+            .unwrap()
+            .iter()
+            .filter(|e| e.kind == memorious_core::EventKind::Capture)
+            .count(),
+        4
+    );
 
     // Third peer (the "CLI peer"): joins from the first peer's ticket, captures,
     // then the desktop syncs with it — all three converge.
@@ -184,7 +200,13 @@ async fn desktop_command_layer_end_to_end() {
         .map(|e| e["event_id"].as_str().unwrap().to_string())
         .collect();
     let ids = |j: &Journal| -> Vec<String> {
-        let mut v: Vec<String> = j.list().unwrap().iter().map(|e| e.event_id.clone()).collect();
+        let mut v: Vec<String> = j
+            .list()
+            .unwrap()
+            .iter()
+            .filter(|e| e.kind == memorious_core::EventKind::Capture)
+            .map(|e| e.event_id.clone())
+            .collect();
         v.reverse(); // feed is newest-first
         v
     };
@@ -287,6 +309,66 @@ async fn desktop_command_layer_end_to_end() {
     peer.shutdown().await;
     cli_peer.shutdown().await;
     stranger.shutdown().await;
+}
+
+/// Once ownership has moved to the local daemon, commands which used to open
+/// the embedded peer must all use the socket. In particular, setup state
+/// cannot try to unlock SQLite a second time.
+#[tokio::test(flavor = "multi_thread")]
+async fn desktop_routes_settings_and_lifecycle_commands_to_daemon() {
+    let _env = TEST_ENV_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let dir = tempfile::tempdir().unwrap();
+    let desktop_dir = dir.path().join("desktop-journal");
+    std::env::set_var("MEMORIOUS_DATA_DIR", &desktop_dir);
+    std::env::set_var("MEMORIOUS_NO_KEYRING", "1");
+    let journal = Journal::init(&desktop_dir, "pw").unwrap();
+    let device_id = journal.device_id().to_owned();
+    drop(journal);
+    let socket = dir.path().join("daemon.sock");
+    let daemon = memorious_core::local::Daemon::open(&desktop_dir, "pw").await.unwrap();
+    let daemon_task = tokio::spawn(daemon.serve(socket.clone()));
+    for _ in 0..40 {
+        if socket.exists() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(socket.exists(), "daemon did not create its socket");
+
+    let app = mock_builder()
+        .manage(memorious_desktop_lib::NodeState::default())
+        .manage(memorious_desktop_lib::DaemonState::connect(socket.clone()))
+        .manage(memorious_desktop_lib::PingTask::default())
+        .manage(memorious_desktop_lib::MasterPassword::default())
+        .invoke_handler(memorious_desktop_lib::handlers())
+        .build(mock_context(noop_assets()))
+        .unwrap();
+    let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+        .build()
+        .unwrap();
+
+    assert_eq!(invoke(&webview, "setup_state", json!({})).await.unwrap(), json!("ready"));
+    invoke(&webview, "set_device_name", json!({"deviceId": device_id, "name": "background desktop"})).await.unwrap();
+    invoke(&webview, "set_net_config", json!({"net": {"relay_mode": "disabled", "relay_urls": [], "public_lookup": false}})).await.unwrap();
+    let status = invoke(&webview, "status", json!({})).await.unwrap();
+    assert_eq!(status["names"][&device_id], "background desktop");
+    assert_eq!(status["net"]["relay_mode"], "disabled");
+
+    let ticket = invoke(&webview, "mint_agent", json!({"name": "desktop test"})).await.unwrap();
+    assert!(ticket.as_str().unwrap().starts_with("memorious-mcp-"));
+    let agents = invoke(&webview, "list_agents", json!({})).await.unwrap();
+    let agent_id = agents[0]["id"].as_str().unwrap().to_owned();
+    invoke(&webview, "revoke_agent", json!({"id": agent_id})).await.unwrap();
+    assert!(invoke(&webview, "sync_now", json!({})).await.unwrap_err().as_str().unwrap().contains("no known peer"));
+
+    let export_dir = dir.path().join("export");
+    std::env::set_var("MEMORIOUS_EXPORT_DIR", &export_dir);
+    let exported = invoke(&webview, "export_journal", json!({})).await.unwrap();
+    assert_eq!(exported["path"], export_dir.to_string_lossy().as_ref());
+
+    invoke(&webview, "reset_device", json!({})).await.unwrap();
+    daemon_task.await.unwrap().unwrap();
+    assert!(!desktop_dir.exists());
 }
 
 /// Every file under `dir`, as paths relative to it (slash-separated).

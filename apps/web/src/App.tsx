@@ -116,8 +116,9 @@ export function App() {
         <button
           className={view === 'status' ? 'tab active' : 'tab'}
           onClick={() => setView(view === 'status' ? 'stream' : 'status')}
+          title="peers, background daemon, and push-to-talk"
         >
-          peers
+          status
         </button>
       </header>
       {view === 'stream' && <StreamView />}

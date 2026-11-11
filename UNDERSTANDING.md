@@ -21,13 +21,14 @@ happens to be always on.
 - **iPhone app** — native SwiftUI, calling the core via UniFFI-generated Swift bindings.
   Chosen over Tauri-iOS because capture ergonomics (camera, mic, share sheet) matter most on
   the phone.
-- **Desktop app** — Tauri 2 wrapping the core, using the shared web UI.
+- **Desktop app** — native OS shells embedding the Rust core: GTK 4/libadwaita on Linux.
+  macOS and Windows retain the Tauri shell until their native replacements are built.
 - **Server peer** — the core running headless behind a small **axum** HTTP server. Always on:
   acts as backup, rendezvous point, browser gateway, and enrichment sweeper. No PocketBase.
 - **Web client** — browsers can't speak Iroh, so the browser is a thin client of the server
   peer over plain HTTP/JSON.
-- **Shared UI** — one React + Vite codebase used by both the Tauri shell and the browser
-  client; a thin adapter layer switches between Tauri commands and HTTP calls.
+- **Web UI** — one React + Vite codebase used by the browser and the remaining Tauri
+  shells; a thin adapter layer switches between Tauri commands and HTTP calls.
 
 Monorepo layout: Rust workspace (`crates/core`, `apps/server`, `apps/desktop`) plus `apps/web`
 (React) and `apps/ios` (Xcode project + generated bindings).
@@ -129,6 +130,27 @@ cuts off live sessions. It opens the three tools and nothing else — no sync, n
 `/api`. Minting and revoking is a peer-local act (server: authed `/api/agents`). Keys are
 per node: a ticket reaches the node that minted it. A phone answers only while its app is
 running.
+
+## Local daemon mode (decided 2026-11-04)
+
+A desktop may offer **Run in the background**. This is a process handoff, not a
+second local peer: the desktop first closes its embedded node, then the bundled
+`memorious daemon` takes exclusive ownership of the exact same journal directory,
+device identity, and sync endpoint. The desktop becomes a local client over an
+owner-only Unix socket. Turning the option off stops the daemon before the desktop
+reopens that same directory directly. The lock makes both owners impossible at once.
+
+The CLI can either own a journal directly or be a local daemon client. **Push-to-talk
+is an optional desktop feature, available only while Run in the background is on.**
+The desktop configures and bundles its platform capture worker; the background daemon
+starts it and owns its lifetime. The worker is a daemon client only: it submits text
+plus the canonical `recorded_at` time and never receives the journal password, pairing
+ticket, journal token, or read API. Recording, local spooling, transcription, and
+cleanup remain in that worker; neither the CLI nor the daemon captures audio. It is
+not offered in embedded mode: a closed desktop must not silently lose a held-to-talk
+capture, and keeping the journal owner singular is the point of the handoff. The local
+protocol is versioned, deliberately narrow, and a convenience boundary between the
+owner's own processes—not a new account or authorization model.
 
 ## Media
 
@@ -353,3 +375,33 @@ media re-encrypted under fresh CKs (new blob hashes, payloads rewritten) — lea
 directory beside it as a backup. Peers re-pair fresh, exactly like the protocol rename.
 Sync ALPN bumps to `memorious/sync/1`; media payloads carry the crypto fields, so old and
 new builds don't interoperate (deliberate, all peers are owner-controlled).
+
+## Native desktop shells (decided 2026-11-11)
+
+Desktop UI follows each operating system’s native toolkit. Linux is implemented first,
+with GTK 4 and libadwaita in `apps/desktop/linux`; the Rust engine remains the shared
+source of storage, encryption, sync, search, and media normalization. The Linux shell
+embeds its own node, uses the existing `app.memorious/journal` data directory, and
+keeps blocking work off the GTK main thread. The web client remains a browser client.
+The existing Tauri shell remains available for macOS and Windows during the transition.
+
+## Desktop transcription providers (decided 2026-11-11)
+
+Desktop dictation and voice-file enrichment can run locally or through a remote
+transcription API. Local is multilingual Whisper Small, full precision, with its
+complete model below 500 MB. Model downloads are explicit and integrity checked;
+weights are a per-device cache, never journal events or synced media. The selected
+provider and optional language hint are local settings. Existing configurations
+retain remote transcription; new configurations default to local. Local mode must
+never send speech or transcripts to a remote cleanup service, or fall back to one
+when a model is missing. Pending PTT captures remain queued after a failure.
+Voice-file captures sync before transcription; their results are annotation events.
+Music remains excluded by the core retention/enrichment policy.
+
+
+## Background peer sync (decided 2026-11-11)
+
+The local journal daemon syncs all remembered peers at startup and then starts
+another round one minute after each round finishes. Local captures also trigger
+an immediate best-effort push. Periodic rounds pull changes even when this device
+has no new captures; unreachable peers are retried on the next round.
