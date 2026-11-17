@@ -21,7 +21,14 @@ Where: `apps/web/src/canvas/` (`CanvasView.tsx` chrome, `controller.ts` input/re
 Mouse / Apple Pencil draw; one or two fingers pan and pinch. Wheel pans, ctrl+wheel (trackpad pinch) zooms,
 space or middle-drag pans. Right-click opens the tool menu (pencil / pen / eraser / image, size, opacity,
 undo / redo). Image: pick, paste or drop one, drag to move, drag the corner dot to scale, then **place**.
-Cmd/Ctrl+Z undoes, with shift redoes. iPad: touchstart/touchmove are `preventDefault`ed on the canvas —
+Cmd/Ctrl+Z undoes, with shift (or Ctrl+Y) redoes; the toolbar has undo / redo icons and a light / dark switch
+(it drives the app-wide appearance setting).
+
+**Selection** (`lasso` freehand, `rect` rectangle): the polygon cuts strokes at its boundary, so only the part
+inside is selected; images are selected whole when the polygon holds their centre; hidden layers can't be
+selected. Drag inside to move, drag the corner dot to scale; duplicate / delete icons sit at the selection's
+top-right (Delete, Esc and Cmd+D work too). Edits are events — `move {poly, xf, copy}` and `delete {poly}` —
+folded in order over the strokes (`select.ts`), so they undo like anything else. No rotation yet. iPad: touchstart/touchmove are `preventDefault`ed on the canvas —
 without that iPadOS swallowed a pencil touch landing within ~0.4 s of the previous one.
 
 ## Storage — NOT in the journal yet
@@ -33,5 +40,5 @@ The open design question is the payload: an `Ink` capture carrying a month key +
 versus one capture per stroke. Decide before touching `crates/core`.
 
 ## Not done
-Moving/selecting existing ink (the prototype's lasso), tilt shading, finger-draw toggle, month rollover while
+Rotating a selection, tilt shading, finger-draw toggle, month rollover while
 the tab stays open, journal sync, desktop/iOS faces.

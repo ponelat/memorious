@@ -28,7 +28,46 @@ export interface ImageEv {
   rect: [number, number, number, number] // x, y, w, h in world units
   active?: boolean
 }
-export type Ev = StrokeEv | ImageEv
+export type Poly = [number, number][]
+/** Move/scale about (cx, cy): p' = c + d + s·(p − c). No rotation. */
+export interface Xf {
+  dx: number
+  dy: number
+  s: number
+  cx: number
+  cy: number
+}
+/** Everything inside `poly` is cut out at the boundary and transformed by `xf` (originals stay if `copy`).
+ *  `only` = the layers the edit was made with visible; other layers are left alone. */
+export interface MoveEv {
+  type: 'move'
+  poly: Poly
+  xf: Xf
+  copy?: boolean
+  only?: string[]
+  active?: boolean
+}
+export interface DeleteEv {
+  type: 'delete'
+  poly: Poly
+  only?: string[]
+  active?: boolean
+}
+export type Ev = StrokeEv | ImageEv | MoveEv | DeleteEv
+/** What a month canvas looks like after folding its events: what actually gets drawn, in order. */
+export interface StrokeItem {
+  tool: Tool
+  seed: number
+  size: number
+  op?: number
+  pts: Pt[]
+}
+export interface ImageItem {
+  tool: 'image'
+  hash: string
+  rect: [number, number, number, number]
+}
+export type Item = StrokeItem | ImageItem
 export interface View {
   x: number
   y: number
@@ -189,7 +228,7 @@ export class InkBuffers {
   }
 
   /** Stamp a whole stored stroke. */
-  stampStroke(st: StrokeEv) {
+  stampStroke(st: StrokeItem) {
     const s = new Stamper(this, st)
     for (const p of st.pts) s.push(p)
     s.end()
