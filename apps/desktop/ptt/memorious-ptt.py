@@ -7,6 +7,10 @@ socket as ordinary `capture_text` RPCs, preserving the WAV's capture time.
 """
 
 import argparse
+import io
+import math
+import struct
+import wave
 import json
 import os
 import selectors
@@ -32,6 +36,23 @@ CLEANUP_PROMPT = (
     "filler and false starts, but do not summarize or add wording. Keep the original "
     "language; never translate. Return only text."
 )
+
+
+def play_start_beep():
+    """A short local tone; output failure must never stop a valid capture."""
+    def play():
+        buffer = io.BytesIO()
+        rate, count = 24000, 2400
+        with wave.open(buffer, "wb") as wav:
+            wav.setparams((1, 2, rate, 0, "NONE", "not compressed"))
+            wav.writeframes(b"".join(struct.pack("<h", int(6500 * math.sin(2 * math.pi * 880 * i / rate)
+                * min(1, i / 120, (count - 1 - i) / 120))) for i in range(count)))
+        try:
+            subprocess.run(["pw-play", "--latency", "20ms", "-"], input=buffer.getvalue(),
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=3)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    threading.Thread(target=play, daemon=True).start()
 
 
 def load(path):
@@ -83,7 +104,27 @@ class Worker:
                 ["pw-record", "--rate", "16000", "--channels", "1", "--format", "s16", str(self.recording_path)],
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             )
+            try:
+                self.wait_for_recording()
+            except Exception:
+                self.recording.kill()
+                self.recording.wait()
+                self.recording = None
+                self.recording_path.unlink(missing_ok=True)
+                raise
             self.status("recording")
+            play_start_beep()
+
+    def wait_for_recording(self):
+        # A launched process is not proof that PipeWire opened the microphone.
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            if self.recording.poll() is not None:
+                raise RuntimeError("Could not start microphone recording")
+            if self.recording_path.exists() and self.recording_path.stat().st_size > 44:
+                return
+            time.sleep(.01)
+        raise RuntimeError("Microphone did not supply audio; check the input device")
 
     def stop(self):
         with self.lock:

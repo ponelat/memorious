@@ -663,3 +663,36 @@
   content so the panel can be dismissed from any scroll position.
 - The local journal daemon now syncs known peers at startup and repeats every
   minute after each round, so remote captures are pulled without a local write.
+
+## 2026-11-12 — Native stream typography
+
+- The Linux feed uses a plain monospaced reading column with a timestamp gutter,
+  smaller muted annotations below media, and subtle copy controls. Entry cards
+  give way to whitespace; day headings remain visible.
+- Timestamps and entry rules appear during scroll motion, wait 900 ms after the
+  last movement, then fade out over 450 ms without shifting the text.
+- Long entries and annotations collapse to seven visual lines with more/less.
+  Pango derives the display excerpt at the current width, including paragraph
+  breaks; copying keeps the complete source text.
+
+## 2026-11-13 — Native capture and appearance
+
+- The Linux composer offers foreground microphone recording in both embedded and
+  background mode, with a timer, stop/save, cancellation and retry after a failed
+  save. PCM and encoded AAC/m4a stay in anonymous memory files until encrypted
+  ingest; capture syncs before optional transcription runs.
+- The composer gains a rounded, palette-aware input and an empty-state prompt.
+  A header dark-mode toggle persists the local appearance choice; the initial
+  appearance follows the system.
+- PTT plays a short local start tone after microphone samples arrive. Failed
+  microphone starts never signal success, and repeated starts do not repeat it.
+
+
+## 2026-11-17 — Unified native settings
+
+- One Settings icon opens Appearance, Background & PTT, and Peers & sync in a
+  shared Adwaita navigation split view. Narrow windows use native Back navigation.
+- Both pane headers sit outside scrolling content, keeping the close control
+  visible. This also corrects the background settings header scrolling away.
+- Appearance keeps the existing per-device preference; background and peer
+  controls retain their existing actions and persistence.

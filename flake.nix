@@ -68,6 +68,7 @@
             pname = "memorious-desktop";
             buildAndTestSubdir = if pkgs.stdenv.isLinux then "apps/desktop/linux" else "apps/desktop/src-tauri";
             cargoBuildFlags = lib.optionals pkgs.stdenv.isLinux [ "-p" "memorious-linux" ];
+            nativeCheckInputs = lib.optionals pkgs.stdenv.isLinux [ pkgs.python3 pkgs.ffmpeg-headless ];
             # Overrides common's nativeBuildInputs — keep perl (openssl-src).
             nativeBuildInputs = [
               pkgs.pkg-config
@@ -109,6 +110,9 @@
                 -exec install -Dm755 {} $out/bin/memorious-desktop \; -quit
               test -x "$out/bin/memorious-desktop"
               runHook postInstall
+            '';
+            preFixup = lib.optionalString pkgs.stdenv.isLinux ''
+              gappsWrapperArgs+=(--prefix PATH : ${lib.makeBinPath [ pkgs.pipewire pkgs.ffmpeg-headless ]})
             '';
             postInstall = lib.optionalString pkgs.stdenv.isLinux ''
               install -Dm755 ${memorious-ptt}/bin/memorious-ptt $out/bin/memorious-ptt

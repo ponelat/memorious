@@ -1,8 +1,13 @@
+#[path = "settings.rs"]
+mod settings;
+#[path = "stream.rs"]
+mod stream;
 use adw::prelude::*;
 use anyhow::Context;
 use gtk::{gio, glib};
 use memorious_linux::{
     background::{self, Session},
+    recording::{self, Recording},
     DesktopJournal,
 };
 use serde_json::{json, Value};
@@ -63,7 +68,14 @@ pub fn run() -> glib::ExitCode {
         .application_id("app.memorious")
         .build();
     app.connect_activate(|app| {
+        let manager = adw::StyleManager::default();
+        match std::fs::read_to_string(appearance_path()).as_deref() {
+            Ok("dark") => manager.set_color_scheme(adw::ColorScheme::ForceDark),
+            Ok("light") => manager.set_color_scheme(adw::ColorScheme::ForceLight),
+            _ => {}
+        }
         gtk::Window::set_default_icon_name("memorious");
+        stream::install_style(&gtk::gdk::Display::default().expect("display"));
         if let Some(window) = app.active_window() {
             window.present();
             return;
@@ -82,20 +94,35 @@ pub fn run() -> glib::ExitCode {
             window,
             stack: gtk::Stack::new(),
             toast: adw::ToastOverlay::new(),
-            list: gtk::Box::new(gtk::Orientation::Vertical, 12),
+            list: gtk::Box::new(gtk::Orientation::Vertical, 0),
             search: gtk::SearchEntry::new(),
             trash: gtk::ToggleButton::with_label("Trash"),
             composer: gtk::TextView::new(),
+            record: gtk::Button::from_icon_name("audio-input-microphone-symbolic"),
+            cancel_recording: gtk::Button::with_label("Cancel recording"),
+            recording_status: gtk::Label::new(None),
+            recording: RefCell::new(None),
+            pending_audio: RefCell::new(None),
+            recording_busy: Cell::new(false),
+            recording_started: Cell::new(None),
             limit: Cell::new(50),
             generation: Cell::new(0),
             loading: Cell::new(false),
             last_entries: RefCell::new(Value::Null),
             photo_cache: RefCell::new(HashMap::new()),
+            settings_panel: RefCell::new(None),
         });
         ui.build();
         let closing = Rc::new(Cell::new(false));
         let ui_close = ui.clone();
         ui.window.connect_close_request(move |window| {
+            if ui_close.recording_busy.get()
+                || ui_close.recording.borrow().is_some()
+                || ui_close.pending_audio.borrow().is_some()
+            {
+                ui_close.error("Save or cancel the recording before closing.");
+                return glib::Propagation::Stop;
+            }
             if closing.replace(true) {
                 return glib::Propagation::Stop;
             }
@@ -113,15 +140,25 @@ pub fn run() -> glib::ExitCode {
             glib::Propagation::Stop
         });
         ui.window.present();
-        if std::env::var_os("MEMORIOUS_UI_SMOKE").is_some() {
+        if matches!(
+            std::env::var("MEMORIOUS_UI_SMOKE").as_deref(),
+            Ok("composer" | "appearance")
+        ) {
+            smoke_composer(ui.clone());
+        } else if std::env::var("MEMORIOUS_UI_SMOKE").as_deref() == Ok("stream") {
+            smoke_stream(ui.clone());
+        } else if std::env::var_os("MEMORIOUS_UI_SMOKE").is_some() {
             assert_eq!(ui.stack.visible_child_name().as_deref(), Some("setup"));
             if matches!(
                 std::env::var("MEMORIOUS_UI_SMOKE").as_deref(),
-                Ok("capture" | "verify" | "settings" | "peers")
+                Ok("capture" | "verify" | "settings" | "peers" | "recording" | "audio-verify")
             ) {
                 smoke_capture(
                     ui.clone(),
-                    std::env::var("MEMORIOUS_UI_SMOKE").as_deref() == Ok("verify"),
+                    matches!(
+                        std::env::var("MEMORIOUS_UI_SMOKE").as_deref(),
+                        Ok("verify" | "audio-verify")
+                    ),
                 );
             } else {
                 let app = app.clone();
@@ -134,6 +171,9 @@ pub fn run() -> glib::ExitCode {
     app.run()
 }
 
+fn appearance_path() -> PathBuf {
+    glib::user_config_dir().join("memorious").join("appearance")
+}
 fn data_dir() -> PathBuf {
     std::env::var_os("MEMORIOUS_DATA_DIR")
         .map(PathBuf::from)
@@ -173,11 +213,19 @@ struct Ui {
     search: gtk::SearchEntry,
     trash: gtk::ToggleButton,
     composer: gtk::TextView,
+    record: gtk::Button,
+    cancel_recording: gtk::Button,
+    recording_status: gtk::Label,
+    recording: RefCell<Option<Recording>>,
+    pending_audio: RefCell<Option<std::fs::File>>,
+    recording_busy: Cell<bool>,
+    recording_started: Cell<Option<std::time::Instant>>,
     limit: Cell<usize>,
     generation: Cell<u64>,
     loading: Cell<bool>,
     last_entries: RefCell<Value>,
     photo_cache: RefCell<HashMap<String, gtk::gdk::Texture>>,
+    settings_panel: RefCell<Option<settings::WeakPanel>>,
 }
 impl Ui {
     fn error(&self, error: &str) {
@@ -352,17 +400,14 @@ impl Ui {
         let body = gtk::Box::new(gtk::Orientation::Vertical, 0);
         let header = adw::HeaderBar::new();
         header.set_title_widget(Some(&adw::WindowTitle::new("Memorious", "")));
-        let peers = gtk::Button::from_icon_name("network-workgroup-symbolic");
-        peers.set_tooltip_text(Some("Peers and pairing"));
-        header.pack_end(&peers);
         header.pack_end(&self.ptt);
         self.ptt
             .set_tooltip_text(Some("Start or stop push-to-talk recording"));
         let settings = gtk::Button::from_icon_name("preferences-system-symbolic");
-        settings.set_tooltip_text(Some("Background and push-to-talk settings"));
+        settings.set_tooltip_text(Some("Settings"));
         header.pack_end(&settings);
         let ui = self.clone();
-        settings.connect_clicked(move |_| ui.background_settings());
+        settings.connect_clicked(move |_| ui.settings("appearance"));
         let ui = self.clone();
         self.ptt.connect_clicked(move |_| {
             let dir = data_dir();
@@ -372,7 +417,7 @@ impl Ui {
                 move |result| {
                     if let Err(error) = result {
                         ui2.error(&error);
-                        ui2.background_settings();
+                        ui2.settings("background");
                     }
                 },
             );
@@ -388,7 +433,10 @@ impl Ui {
             .vexpand(true)
             .hscrollbar_policy(gtk::PolicyType::Never)
             .build();
+        scroll.add_css_class("stream-surface");
         padded(&self.list);
+        self.list.add_css_class("journal-stream");
+        stream::watch_scroll(&self.list, &scroll.vadjustment());
         let clamp = adw::Clamp::builder()
             .maximum_size(720)
             .child(&self.list)
@@ -421,8 +469,50 @@ impl Ui {
             .propagate_natural_height(true)
             .child(&self.composer)
             .build();
-        editor.add_css_class("card");
-        capture.append(&editor);
+        editor.set_hexpand(true);
+        let hint = gtk::Label::builder()
+            .label("What’s happening?")
+            .halign(gtk::Align::Start)
+            .valign(gtk::Align::Start)
+            .margin_start(14)
+            .margin_top(12)
+            .can_target(false)
+            .build();
+        hint.add_css_class("composer-hint");
+        let overlay = gtk::Overlay::new();
+        overlay.set_child(Some(&editor));
+        overlay.add_overlay(&hint);
+        overlay.set_hexpand(true);
+        self.composer
+            .buffer()
+            .connect_changed(move |buffer| hint.set_visible(buffer.char_count() == 0));
+        self.composer.add_css_class("composer-text");
+        let field = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        field.add_css_class("capture-field");
+        field.append(&overlay);
+        self.record.set_tooltip_text(Some("Record audio"));
+        self.record.add_css_class("flat");
+        self.record.add_css_class("circular");
+        self.record.set_valign(gtk::Align::Center);
+        self.record.set_margin_end(8);
+        self.record.set_size_request(44, 44);
+        field.append(&self.record);
+        capture.append(&field);
+        let ui = self.clone();
+        self.record.connect_clicked(move |_| ui.toggle_recording());
+        let ui = self.clone();
+        self.cancel_recording.connect_clicked(move |_| {
+            let recording = ui.recording.borrow_mut().take();
+            ui.pending_audio.borrow_mut().take();
+            ui.controls.call(
+                move |_, _| {
+                    drop(recording);
+                    Ok(())
+                },
+                |_| {},
+            );
+            ui.reset_recording();
+        });
         let actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         let photo = gtk::Button::with_label("Photo");
         let voice = gtk::Button::with_label("Voice file");
@@ -437,6 +527,15 @@ impl Ui {
         send.add_css_class("suggested-action");
         actions.append(&send);
         capture.append(&actions);
+        let feedback = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        self.recording_status.set_hexpand(true);
+        self.recording_status.set_xalign(0.0);
+        self.recording_status.add_css_class("dim-label");
+        self.cancel_recording.add_css_class("flat");
+        self.cancel_recording.set_visible(false);
+        feedback.append(&self.recording_status);
+        feedback.append(&self.cancel_recording);
+        capture.append(&feedback);
         body.append(&capture);
         self.stack.add_named(&body, Some("journal"));
         let keys = gtk::EventControllerKey::new();
@@ -498,10 +597,16 @@ impl Ui {
             ui.limit.set(50);
             ui.refresh();
         });
-        let ui = self.clone();
-        peers.connect_clicked(move |_| ui.peers());
     }
     fn refresh(self: &Rc<Self>) {
+        // The presentation fixture deliberately has no journal. Search signals
+        // can arrive after it is mounted or resized.
+        if matches!(
+            std::env::var("MEMORIOUS_UI_SMOKE").as_deref(),
+            Ok("stream" | "composer" | "appearance")
+        ) {
+            return;
+        }
         let generation = self.generation.get() + 1;
         self.generation.set(generation);
         self.loading.set(true);
@@ -552,7 +657,7 @@ impl Ui {
                                 .unwrap_or_default();
                             if day != date {
                                 let heading = label(&date);
-                                heading.add_css_class("heading");
+                                heading.add_css_class("stream-day");
                                 ui.list.append(&heading);
                                 day = date;
                             }
@@ -580,16 +685,35 @@ impl Ui {
         );
     }
     fn entry(self: &Rc<Self>, entry: &Value, trash: bool, time: String) {
-        let card = gtk::Box::new(gtk::Orientation::Vertical, 10);
-        card.add_css_class("card");
-        let content = gtk::Box::new(gtk::Orientation::Vertical, 8);
-        padded(&content);
-        card.append(&content);
-        let meta = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        let row = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        let line = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+        line.add_css_class("stream-row");
+        row.append(&line);
         let timestamp = label(&time);
-        timestamp.add_css_class("dim-label");
-        timestamp.set_hexpand(true);
-        meta.append(&timestamp);
+        timestamp.add_css_class("stream-time");
+        timestamp.set_width_chars(5);
+        timestamp.set_valign(gtk::Align::Start);
+        timestamp.set_margin_top(2);
+        stream::fading(&timestamp, &self.list);
+        line.append(&timestamp);
+        let content = gtk::Box::new(gtk::Orientation::Vertical, 4);
+        content.set_hexpand(true);
+        line.append(&content);
+        let meta = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+        meta.add_css_class("stream-actions");
+        meta.set_valign(gtk::Align::Start);
+        let copyable = entry["text"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .or_else(|| entry["annotation"].as_str().filter(|s| !s.is_empty()));
+        if let Some(text) = copyable {
+            let copy = gtk::Button::from_icon_name("edit-copy-symbolic");
+            copy.add_css_class("flat");
+            copy.set_tooltip_text(Some("Copy text"));
+            let text = text.to_owned();
+            copy.connect_clicked(move |button| button.clipboard().set_text(&text));
+            meta.append(&copy);
+        }
         if !trash {
             let redact = gtk::Button::from_icon_name("user-trash-symbolic");
             redact.add_css_class("flat");
@@ -609,12 +733,9 @@ impl Ui {
             });
             meta.append(&redact);
         }
-        content.append(&meta);
-        if let Some(text) = entry["text"].as_str() {
-            content.append(&label(text));
-        }
-        if let Some(text) = entry["annotation"].as_str() {
-            content.append(&label(text));
+        line.append(&meta);
+        if let Some(text) = entry["text"].as_str().filter(|s| !s.is_empty()) {
+            content.append(&stream::CollapsibleText::new(text, false));
         }
         if let Some(hash) = entry["media"]["hash"].as_str() {
             let kind = entry["kind"].as_str().unwrap_or("audio");
@@ -654,7 +775,12 @@ impl Ui {
                 }
             } else if kind == "audio" {
                 let controls = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-                let play = gtk::Button::with_label("Play");
+                let play = gtk::Button::with_label(if entry["audio_kind"] == "music" {
+                    "play music"
+                } else {
+                    "play audio"
+                });
+                play.add_css_class("stream-audio");
                 play.add_css_class("flat");
                 let pause = gtk::Button::with_label("Pause");
                 pause.add_css_class("flat");
@@ -752,7 +878,162 @@ impl Ui {
                 content.append(&open);
             }
         }
-        self.list.append(&card);
+        if entry["audio_kind"] != "music" {
+            if let Some(text) = entry["annotation"].as_str().filter(|s| !s.is_empty()) {
+                content.append(&stream::CollapsibleText::new(text, true));
+            }
+        }
+        let rule = gtk::Separator::new(gtk::Orientation::Horizontal);
+        rule.add_css_class("stream-rule");
+        stream::fading(&rule, &self.list);
+        row.append(&rule);
+        self.list.append(&row);
+    }
+    fn reset_recording(&self) {
+        self.recording_started.set(None);
+        self.recording_busy.set(false);
+        self.record.set_sensitive(true);
+        self.record.set_icon_name("audio-input-microphone-symbolic");
+        self.record.set_tooltip_text(Some("Record audio"));
+        self.record.remove_css_class("destructive-action");
+        self.recording_status.set_text("");
+        self.cancel_recording.set_visible(false);
+        self.cancel_recording.set_sensitive(true);
+    }
+    fn recording_work(&self, message: &str) {
+        self.recording_busy.set(true);
+        self.record.set_sensitive(false);
+        self.cancel_recording.set_sensitive(false);
+        self.recording_status.set_text(message);
+    }
+    fn toggle_recording(self: &Rc<Self>) {
+        if self.recording_busy.get() {
+            return;
+        }
+        if self.pending_audio.borrow().is_some() {
+            self.save_recording();
+            return;
+        }
+        let current = self.recording.borrow_mut().take();
+        if let Some(recording) = current {
+            self.recording_work("Saving audio…");
+            let ui = self.clone();
+            self.controls.call(
+                move |_, _| recording.finish(),
+                move |result| match result {
+                    Ok(file) => {
+                        *ui.pending_audio.borrow_mut() = Some(file);
+                        ui.save_recording();
+                    }
+                    Err(error) => {
+                        ui.reset_recording();
+                        ui.error(&error);
+                    }
+                },
+            );
+            return;
+        }
+        self.recording_work("Starting microphone…");
+        let ui = self.clone();
+        self.controls.call(
+            move |_, _| Recording::start(),
+            move |result| match result {
+                Ok(recording) => {
+                    *ui.recording.borrow_mut() = Some(recording);
+                    ui.recording_started.set(Some(std::time::Instant::now()));
+                    ui.recording_busy.set(false);
+                    ui.record.set_sensitive(true);
+                    ui.record.set_icon_name("media-playback-stop-symbolic");
+                    ui.record.set_tooltip_text(Some("Stop and save audio"));
+                    ui.record.add_css_class("destructive-action");
+                    ui.cancel_recording.set_visible(true);
+                    ui.cancel_recording.set_sensitive(true);
+                    ui.recording_status
+                        .set_text("● Recording 0:00 — click stop to save");
+                    let weak = Rc::downgrade(&ui);
+                    glib::timeout_add_local(std::time::Duration::from_millis(250), move || {
+                        let Some(ui) = weak.upgrade() else {
+                            return glib::ControlFlow::Break;
+                        };
+                        let Some(started) = ui.recording_started.get() else {
+                            return glib::ControlFlow::Break;
+                        };
+                        if ui.recording_busy.get() {
+                            return glib::ControlFlow::Break;
+                        }
+                        let running = ui
+                            .recording
+                            .borrow_mut()
+                            .as_mut()
+                            .is_some_and(|r| r.is_running().unwrap_or(false));
+                        if !running {
+                            ui.recording_status
+                                .set_text("Microphone stopped — click stop to save recorded audio");
+                            return glib::ControlFlow::Break;
+                        }
+                        let elapsed = started.elapsed().as_secs();
+                        ui.recording_status.set_text(&format!(
+                            "● Recording {}:{:02} — click stop to save",
+                            elapsed / 60,
+                            elapsed % 60
+                        ));
+                        glib::ControlFlow::Continue
+                    });
+                }
+                Err(error) => {
+                    ui.reset_recording();
+                    ui.error(&error);
+                }
+            },
+        );
+    }
+    fn save_recording(self: &Rc<Self>) {
+        let file = match self.pending_audio.borrow().as_ref().unwrap().try_clone() {
+            Ok(file) => file,
+            Err(error) => {
+                self.recording_busy.set(false);
+                self.record.set_sensitive(true);
+                self.cancel_recording.set_sensitive(true);
+                self.error(&error.to_string());
+                return;
+            }
+        };
+        self.recording_work("Saving audio…");
+        let ui = self.clone();
+        self.worker.call(
+            move |rt, state| {
+                let bytes = std::fs::read(recording::file_path(&file))?;
+                rt.block_on(
+                    state
+                        .as_ref()
+                        .context("Journal is locked")?
+                        .capture_media("voice", bytes),
+                )
+            },
+            move |result| match result {
+                Ok(entry) => {
+                    let file = ui.pending_audio.borrow_mut().take().unwrap();
+                    let path = PathBuf::from(recording::file_path(&file));
+                    ui.reset_recording();
+                    ui.refresh();
+                    ui.transcribe_voice_source(
+                        entry["event_id"].as_str().unwrap_or("").to_owned(),
+                        path,
+                        Some(file),
+                    );
+                }
+                Err(error) => {
+                    ui.recording_busy.set(false);
+                    ui.record.set_sensitive(true);
+                    ui.record.set_icon_name("document-save-symbolic");
+                    ui.record.set_tooltip_text(Some("Retry saving audio"));
+                    ui.cancel_recording.set_sensitive(true);
+                    ui.recording_status
+                        .set_text("Audio is still held in memory — click save to retry");
+                    ui.error(&error);
+                }
+            },
+        );
     }
     fn import(self: &Rc<Self>, kind: &'static str) {
         let dialog = gtk::FileDialog::builder().title("Capture a file").build();
@@ -787,12 +1068,24 @@ impl Ui {
         });
     }
     fn transcribe_voice(self: &Rc<Self>, event_id: String, path: PathBuf) {
+        self.transcribe_voice_source(event_id, path, None);
+    }
+    fn transcribe_voice_source(
+        self: &Rc<Self>,
+        event_id: String,
+        path: PathBuf,
+        keep_alive: Option<std::fs::File>,
+    ) {
         let dir = data_dir();
         let ui = self.clone();
         self.toast
             .add_toast(adw::Toast::new("Voice captured. Transcribing…"));
         self.enrichment.call(
-            move |_, _| background::transcribe_file(&dir, &path),
+            move |_, _| {
+                let result = background::transcribe_file(&dir, &path);
+                drop(keep_alive);
+                result
+            },
             move |result| match result {
                 Ok(text) => {
                     let ui2 = ui.clone();
@@ -863,15 +1156,72 @@ impl Ui {
         window.set_content(Some(&body));
         window.present();
     }
-    fn background_settings(self: &Rc<Self>) {
+    fn settings(self: &Rc<Self>, section: &str) {
+        if let Some(panel) = self
+            .settings_panel
+            .borrow()
+            .as_ref()
+            .and_then(settings::WeakPanel::upgrade)
+        {
+            if panel.dialog.is_visible() {
+                panel.show_section(section);
+                panel.dialog.present(Some(&self.window));
+                return;
+            }
+        }
         let dialog = adw::Dialog::builder()
-            .title("Background and push-to-talk")
-            .content_width(500)
-            .content_height(590)
+            .title("Settings")
+            .content_width(820)
+            .content_height(620)
             .build();
+        let appearance = self.appearance_page();
+        let background = self.background_settings_page(&dialog);
+        let peers = self.peers_page();
+        let panel = settings::Panel::new(dialog, [appearance, background, peers]);
+        panel.show_section(section);
+        *self.settings_panel.borrow_mut() = Some(panel.downgrade());
+        panel.dialog.present(Some(&self.window));
+    }
+    fn appearance_page(self: &Rc<Self>) -> gtk::Widget {
+        let page = adw::PreferencesPage::new();
+        let group = adw::PreferencesGroup::builder()
+            .title("Appearance")
+            .description("Choose how Memorious looks on this device.")
+            .build();
+        let theme = adw::SwitchRow::builder()
+            .title("Dark mode")
+            .subtitle("Use a dark appearance")
+            .active(adw::StyleManager::default().is_dark())
+            .build();
+        let ui = self.clone();
+        theme.connect_active_notify(move |row| {
+            let dark = row.is_active();
+            adw::StyleManager::default().set_color_scheme(if dark {
+                adw::ColorScheme::ForceDark
+            } else {
+                adw::ColorScheme::ForceLight
+            });
+            let path = appearance_path();
+            let save = || -> anyhow::Result<()> {
+                std::fs::create_dir_all(path.parent().unwrap())?;
+                std::fs::write(
+                    path.with_extension("tmp"),
+                    if dark { "dark" } else { "light" },
+                )?;
+                std::fs::rename(path.with_extension("tmp"), &path)?;
+                Ok(())
+            };
+            if let Err(error) = save() {
+                ui.error(&format!("Could not save appearance: {error}"));
+            }
+        });
+        group.add(&theme);
+        page.add(&group);
+        page.upcast()
+    }
+    fn background_settings_page(self: &Rc<Self>, dialog: &adw::Dialog) -> gtk::Widget {
         let body = gtk::Box::new(gtk::Orientation::Vertical, 12);
         padded(&body);
-        body.append(&adw::HeaderBar::new());
         body.append(&label("Background mode keeps this journal syncing and push-to-talk available when the window closes."));
         let background_toggle = gtk::CheckButton::with_label("Run in the background");
         body.append(&background_toggle);
@@ -983,12 +1333,7 @@ impl Ui {
         let save = gtk::Button::with_label("Apply");
         save.add_css_class("suggested-action");
         body.append(&save);
-        let scroll = gtk::ScrolledWindow::builder()
-            .hscrollbar_policy(gtk::PolicyType::Never)
-            .child(&body)
-            .build();
-        dialog.set_child(Some(&scroll));
-        dialog.present(Some(&self.window));
+        let page = settings::page(&body);
         let dir = data_dir();
         let toggle = background_toggle.clone();
         let enabled2 = enabled.clone();
@@ -1079,6 +1424,7 @@ impl Ui {
                 },
             );
         });
+        page
     }
     fn refresh_peer_status(
         self: &Rc<Self>,
@@ -1095,12 +1441,7 @@ impl Ui {
             },
         );
     }
-    fn peers(self: &Rc<Self>) {
-        let dialog = adw::Dialog::builder()
-            .title("Peers and pairing")
-            .content_width(600)
-            .content_height(720)
-            .build();
+    fn peers_page(self: &Rc<Self>) -> gtk::Widget {
         let body = gtk::Box::new(gtk::Orientation::Vertical, 12);
         padded(&body);
         let summary = label("Loading peer status…");
@@ -1155,15 +1496,7 @@ impl Ui {
         let save = gtk::Button::with_label("Save network settings");
         save.set_sensitive(false);
         body.append(&save);
-        let scroll = gtk::ScrolledWindow::builder()
-            .hscrollbar_policy(gtk::PolicyType::Never)
-            .child(&body)
-            .build();
-        let layout = adw::ToolbarView::new();
-        layout.add_top_bar(&adw::HeaderBar::new());
-        layout.set_content(Some(&scroll));
-        dialog.set_child(Some(&layout));
-        dialog.present(Some(&self.window));
+        let page = settings::page(&body);
 
         let ui = self.clone();
         let summary2 = summary.clone();
@@ -1298,6 +1631,7 @@ impl Ui {
                 },
             );
         });
+        page
     }
 }
 
@@ -1388,6 +1722,21 @@ fn smoke_capture(ui: Rc<Ui>, verify: bool) {
         if ui.stack.visible_child_name().as_deref() != Some("journal") {
             return glib::ControlFlow::Continue;
         }
+        if std::env::var("MEMORIOUS_UI_SMOKE").as_deref() == Ok("recording") {
+            smoke_recording(ui.clone());
+            return glib::ControlFlow::Break;
+        }
+        if std::env::var("MEMORIOUS_UI_SMOKE").as_deref() == Ok("audio-verify") {
+            let entries = ui.last_entries.borrow();
+            let Some(entries) = entries["entries"].as_array() else {
+                return glib::ControlFlow::Continue;
+            };
+            assert_eq!(entries.len(), 1, "cancel must not append an audio entry");
+            assert_eq!(entries[0]["kind"], "audio");
+            assert_eq!(entries[0]["audio_kind"], "voice");
+            ui.window.close();
+            return glib::ControlFlow::Break;
+        }
         if !captured {
             captured = true;
             ui.composer.buffer().set_text("Captured through GTK");
@@ -1404,7 +1753,7 @@ fn smoke_capture(ui: Rc<Ui>, verify: bool) {
                 .emit_clicked();
         } else if ui.last_entries.borrow()["entries"][0]["text"] == "Captured through GTK" {
             if std::env::var("MEMORIOUS_UI_SMOKE").as_deref() == Ok("peers") {
-                ui.peers();
+                ui.settings("peers");
                 ui.window.visible_dialog().unwrap().set_content_height(360);
                 let ui = ui.clone();
                 glib::timeout_add_local_once(std::time::Duration::from_secs(3), move || {
@@ -1421,64 +1770,11 @@ fn smoke_capture(ui: Rc<Ui>, verify: bool) {
                             .any(|button| button.label().as_deref() == Some("Check connections")),
                         "peer diagnostics control is missing"
                     );
-                    let dialog = ui.window.visible_dialog().unwrap();
-                    let children = descendants(dialog.upcast_ref());
-                    let header = children
-                        .iter()
-                        .find_map(|w| w.downcast_ref::<adw::HeaderBar>())
-                        .unwrap()
-                        .clone();
-                    let scroll = children
-                        .iter()
-                        .filter_map(|w| w.downcast_ref::<gtk::ScrolledWindow>())
-                        .filter(|scroll| relay.is_ancestor(*scroll))
-                        .last()
-                        .unwrap();
-                    let initial_y = header.compute_bounds(&dialog).unwrap().y();
-                    let adjustment = scroll.vadjustment();
-                    assert!(
-                        adjustment.upper() - adjustment.page_size() > 50.0,
-                        "fixture must scroll"
-                    );
-                    adjustment.set_value(adjustment.upper() - adjustment.page_size());
-                    glib::timeout_add_local_once(
-                        std::time::Duration::from_millis(250),
-                        move || {
-                            assert!(
-                                (header.compute_bounds(&dialog).unwrap().y() - initial_y).abs()
-                                    < 1.0,
-                                "peer close controls moved when the panel scrolled"
-                            );
-                            let close = descendants(header.upcast_ref())
-                                .into_iter()
-                                .find_map(|widget| {
-                                    widget
-                                        .downcast::<gtk::Button>()
-                                        .ok()
-                                        .filter(|button| button.has_css_class("close"))
-                                })
-                                .expect("peer close button");
-                            close.emit_clicked();
-                            glib::timeout_add_local_once(
-                                std::time::Duration::from_millis(300),
-                                move || {
-                                    assert!(
-                                        ui.window.visible_dialog().is_none(),
-                                        "close must work at the bottom of the panel"
-                                    );
-                                    std::fs::write(
-                                        data_dir().join(".native-peers-tested"),
-                                        b"passed",
-                                    )
-                                    .unwrap();
-                                    ui.window.close();
-                                },
-                            );
-                        },
-                    );
+                    smoke_close_settings(ui, ".native-peers-tested");
                 });
             } else if std::env::var("MEMORIOUS_UI_SMOKE").as_deref() == Ok("settings") {
-                ui.background_settings();
+                ui.settings("background");
+                ui.window.visible_dialog().unwrap().set_content_height(360);
                 let ui = ui.clone();
                 glib::timeout_add_local_once(std::time::Duration::from_secs(3), move || {
                     let widgets = descendants(ui.window.upcast_ref());
@@ -1514,16 +1810,7 @@ fn smoke_capture(ui: Rc<Ui>, verify: bool) {
                             "installed model readiness did not reach the UI"
                         );
                     }
-                    std::fs::write(data_dir().join(".native-settings-tested"), b"passed").unwrap();
-                    if let Some(dialog) = ui.window.visible_dialog() {
-                        dialog.force_close();
-                    }
-                    glib::timeout_add_local_once(
-                        std::time::Duration::from_millis(300),
-                        move || {
-                            ui.window.close();
-                        },
-                    );
+                    smoke_close_settings(ui, ".native-settings-tested");
                 });
             } else {
                 ui.window.close();
@@ -1532,4 +1819,455 @@ fn smoke_capture(ui: Rc<Ui>, verify: bool) {
         }
         glib::ControlFlow::Continue
     });
+}
+
+// A rendered feed fixture: no owner data, media fetching, or journal mutation.
+fn smoke_stream(ui: Rc<Ui>) {
+    fn descendants(widget: &gtk::Widget) -> Vec<gtk::Widget> {
+        let mut out = vec![widget.clone()];
+        let mut child = widget.first_child();
+        while let Some(widget) = child {
+            out.extend(descendants(&widget));
+            child = widget.next_sibling();
+        }
+        out
+    }
+    fn resize_fixture(ui2: Rc<Ui>, wrapped: gtk::Label) {
+        let wide_width = wrapped.width();
+        ui2.window.set_default_size(520, 760);
+        glib::timeout_add_local_once(std::time::Duration::from_millis(250), move || {
+            assert!(
+                wrapped.width() < wide_width,
+                "fixture must exercise window resizing"
+            );
+            assert!(
+                wrapped.layout().line_count() <= 7,
+                "narrow text must stay capped"
+            );
+            ui2.window.set_default_size(1000, 760);
+            glib::timeout_add_local_once(std::time::Duration::from_millis(250), move || {
+                assert!(wrapped.width() >= wide_width);
+                assert!(wrapped.layout().line_count() <= 7);
+                ui2.window.application().unwrap().quit();
+            });
+        });
+    }
+    ui.stack.set_visible_child_name("journal");
+    ui.loading.set(true); // This fixture has no journal worker to refresh.
+    ui.entry(
+        &json!({"text": "A short thought", "event_id": "fixture"}),
+        false,
+        "15:58".into(),
+    );
+    let row = ui.list.first_child().unwrap();
+    assert!(
+        !row.has_css_class("card"),
+        "entries must be bare text, without card borders or shadows"
+    );
+    ui.entry(
+        &json!({"text": "A long thought\n".repeat(15), "event_id": "long"}),
+        false,
+        "15:57".into(),
+    );
+    ui.entry(&json!({"kind": "audio", "media": {"hash": "fixture"}, "annotation": "A quiet transcript", "event_id": "audio"}), false, "15:56".into());
+    ui.entry(&json!({"text": "A wrapped paragraph with Unicode café, 日本語, and https://example.org/a-long-link ".repeat(8), "event_id": "wrapped"}), false, "15:55".into());
+    for _ in 0..12 {
+        ui.entry(
+            &json!({"text": "Another thought", "event_id": "filler"}),
+            false,
+            "15:55".into(),
+        );
+    }
+    glib::timeout_add_local_once(std::time::Duration::from_millis(250), move || {
+        smoke_snapshot(&ui);
+        let widgets = descendants(ui.list.upcast_ref());
+        let labels: Vec<gtk::Label> = widgets
+            .iter()
+            .filter_map(|w| w.clone().downcast().ok())
+            .collect();
+        let text = labels
+            .iter()
+            .find(|l| l.text() == "A short thought")
+            .unwrap();
+        assert!(text.is_selectable());
+        assert!(
+            !text.next_sibling().unwrap().is_visible(),
+            "short entries need no more control"
+        );
+        assert!(text
+            .pango_context()
+            .font_description()
+            .unwrap()
+            .family()
+            .unwrap()
+            .to_lowercase()
+            .contains("mono"));
+        let long = labels
+            .iter()
+            .find(|l| l.text().starts_with("A long thought"))
+            .unwrap();
+        assert_eq!(long.lines(), 7);
+        assert!(
+            long.layout().line_count() <= 7,
+            "the rendered text must cap paragraphs as well as wrapped lines"
+        );
+        let more = widgets
+            .iter()
+            .filter_map(|w| w.clone().downcast::<gtk::Button>().ok())
+            .find(|b| b.is_visible() && b.label().as_deref() == Some("more"))
+            .expect("long entries need more/less");
+        more.emit_clicked();
+        assert_eq!(long.lines(), -1);
+        assert_eq!(long.text(), "A long thought\n".repeat(15));
+        assert_eq!(more.label().as_deref(), Some("less"));
+        more.emit_clicked();
+        assert_eq!(long.lines(), 7);
+        assert!(long.layout().line_count() <= 7);
+        let transcript = labels
+            .iter()
+            .find(|l| l.text() == "A quiet transcript")
+            .unwrap();
+        assert!(transcript.has_css_class("stream-annotation"));
+        let wrapped = labels
+            .iter()
+            .find(|l| l.text().starts_with("A wrapped paragraph"))
+            .unwrap()
+            .clone();
+        assert!(wrapped.layout().line_count() <= 7);
+        let timestamp = labels.iter().find(|l| l.text() == "15:58").unwrap();
+        assert!(
+            timestamp.opacity() < 0.01,
+            "timestamps are hidden while idle"
+        );
+        let rule = widgets
+            .iter()
+            .find(|w| w.has_css_class("stream-rule"))
+            .expect("entry rule");
+        assert!(rule.opacity() < 0.01, "rules are hidden while idle");
+        let scroll = descendants(ui.window.upcast_ref())
+            .into_iter()
+            .filter_map(|w| w.downcast::<gtk::ScrolledWindow>().ok())
+            .find(|w| ui.list.is_ancestor(w))
+            .unwrap();
+        let adjustment = scroll.vadjustment();
+        assert!(adjustment.upper() > adjustment.page_size());
+        adjustment.set_value(80.0);
+        let ui2 = ui.clone();
+        let timestamp = timestamp.clone();
+        let rule = rule.clone();
+        glib::timeout_add_local_once(std::time::Duration::from_millis(250), move || {
+            assert!(timestamp.opacity() > 0.99, "scrolling reveals timestamps");
+            assert!(rule.opacity() > 0.99, "scrolling reveals rules");
+            // More motion restarts the idle delay (including scrollbar/keyboard scrolling).
+            adjustment.set_value(120.0);
+            glib::timeout_add_local_once(std::time::Duration::from_millis(700), move || {
+                assert!(
+                    ui2.list.has_css_class("scrolling"),
+                    "scroll idle timer must reset"
+                );
+                glib::timeout_add_local_once(std::time::Duration::from_millis(800), move || {
+                    assert!(!ui2.list.has_css_class("scrolling"));
+                    let started = std::time::Instant::now();
+                    glib::timeout_add_local(std::time::Duration::from_millis(50), move || {
+                        if timestamp.opacity() >= 0.01 || rule.opacity() >= 0.01 {
+                            assert!(
+                                started.elapsed() < std::time::Duration::from_secs(3),
+                                "scroll fade must finish"
+                            );
+                            return glib::ControlFlow::Continue;
+                        }
+                        resize_fixture(ui2.clone(), wrapped.clone());
+                        glib::ControlFlow::Break
+                    });
+                });
+            });
+        });
+    });
+}
+
+fn smoke_composer(ui: Rc<Ui>) {
+    fn descendants(w: &gtk::Widget) -> Vec<gtk::Widget> {
+        let mut out = vec![w.clone()];
+        let mut child = w.first_child();
+        while let Some(w) = child {
+            out.extend(descendants(&w));
+            child = w.next_sibling();
+        }
+        out
+    }
+    ui.stack.set_visible_child_name("journal");
+    let widgets = descendants(ui.window.upcast_ref());
+    let record = widgets
+        .iter()
+        .find_map(|w| {
+            w.downcast_ref::<gtk::Button>()
+                .filter(|b| b.tooltip_text().as_deref() == Some("Record audio"))
+        })
+        .expect("composer needs a microphone button independent of PTT");
+    assert!(record.is_sensitive());
+    let hint = widgets
+        .iter()
+        .find_map(|w| {
+            w.downcast_ref::<gtk::Label>()
+                .filter(|l| l.text() == "What’s happening?")
+        })
+        .expect("empty composer needs a visible prompt")
+        .clone();
+    assert!(hint.is_visible());
+    ui.composer.buffer().set_text("A thought");
+    assert!(!hint.is_visible());
+    ui.composer.buffer().set_text("");
+    assert!(hint.is_visible());
+    let settings = widgets
+        .iter()
+        .filter_map(|w| w.downcast_ref::<gtk::Button>())
+        .filter(|b| b.tooltip_text().as_deref() == Some("Settings"))
+        .collect::<Vec<_>>();
+    assert_eq!(settings.len(), 1, "journal needs one settings entry point");
+    assert!(
+        !widgets.iter().any(|w| matches!(
+            w.tooltip_text().as_deref(),
+            Some("Dark mode" | "Peers and pairing" | "Background and push-to-talk settings")
+        )),
+        "settings must be consolidated behind the settings icon"
+    );
+    settings[0].emit_clicked();
+    let dialog = ui.window.visible_dialog().expect("settings panel");
+    assert_eq!(dialog.title(), "Settings");
+    let widgets = descendants(dialog.upcast_ref());
+    let split = widgets
+        .iter()
+        .find_map(|w| w.downcast_ref::<adw::NavigationSplitView>())
+        .expect("settings needs an adaptive Adwaita sidebar")
+        .clone();
+    let sidebar = descendants(split.sidebar().unwrap().upcast_ref())
+        .into_iter()
+        .find_map(|w| w.downcast::<gtk::ListBox>().ok())
+        .unwrap();
+    let pages = widgets
+        .iter()
+        .find_map(|w| {
+            w.downcast_ref::<gtk::Stack>()
+                .filter(|s| s.widget_name() == "settings-sections")
+        })
+        .expect("settings sections")
+        .clone();
+    for (i, name) in ["appearance", "background", "peers"]
+        .into_iter()
+        .enumerate()
+    {
+        let row = sidebar.row_at_index(i as i32).expect("settings section");
+        sidebar.select_row(Some(&row));
+        sidebar.emit_by_name::<()>("row-activated", &[&row]);
+        assert_eq!(pages.visible_child_name().as_deref(), Some(name));
+        assert_eq!(
+            ui.window.visible_dialog().as_ref(),
+            Some(&dialog),
+            "sections must share a single panel"
+        );
+    }
+    assert!(sidebar.row_at_index(3).is_none());
+    let row = sidebar.row_at_index(0).unwrap();
+    sidebar.select_row(Some(&row));
+    sidebar.emit_by_name::<()>("row-activated", &[&row]);
+    let theme = widgets
+        .iter()
+        .find_map(|w| w.downcast_ref::<adw::SwitchRow>())
+        .expect("appearance dark-mode switch");
+    let manager = adw::StyleManager::default();
+    if std::env::var("MEMORIOUS_UI_SMOKE").as_deref() == Ok("appearance") {
+        assert_eq!(
+            manager.color_scheme(),
+            adw::ColorScheme::ForceLight,
+            "appearance must survive restart"
+        );
+        assert!(!theme.is_active());
+    } else {
+        theme.set_active(true);
+        assert_eq!(manager.color_scheme(), adw::ColorScheme::ForceDark);
+        theme.set_active(false);
+        assert_eq!(manager.color_scheme(), adw::ColorScheme::ForceLight);
+    }
+    ui.window.set_default_size(480, 760);
+    dialog.set_content_width(420);
+    glib::timeout_add_local_once(std::time::Duration::from_millis(400), move || {
+        assert!(
+            split.is_collapsed(),
+            "settings sidebar must adapt at narrow widths"
+        );
+        split
+            .content()
+            .unwrap()
+            .child()
+            .unwrap()
+            .activate_action("navigation.pop", None)
+            .unwrap();
+        assert!(
+            !split.shows_content(),
+            "back must return to the settings sidebar"
+        );
+        let row = sidebar.row_at_index(1).unwrap();
+        sidebar.select_row(Some(&row));
+        sidebar.emit_by_name::<()>("row-activated", &[&row]);
+        assert!(
+            split.shows_content(),
+            "selecting a section must open it at narrow widths"
+        );
+        assert_eq!(pages.visible_child_name().as_deref(), Some("background"));
+        assert!(descendants(split.content().unwrap().upcast_ref())
+            .iter()
+            .any(|w| w.is::<adw::HeaderBar>()));
+        ui.window.application().unwrap().quit();
+    });
+}
+
+fn smoke_recording(ui: Rc<Ui>) {
+    let started = std::time::Instant::now();
+    let mut stage = 0;
+    glib::timeout_add_local(std::time::Duration::from_millis(50), move || {
+        assert!(
+            started.elapsed().as_secs() < 20,
+            "recording controls timed out at stage {stage}"
+        );
+        match stage {
+            0 => {
+                ui.record.emit_clicked();
+                stage = 1;
+            }
+            1 if ui.recording.borrow().is_some() => {
+                assert!(ui.cancel_recording.is_visible());
+                assert_eq!(
+                    ui.record.tooltip_text().as_deref(),
+                    Some("Stop and save audio")
+                );
+                assert!(ui.recording_status.text().contains("Recording"));
+                ui.window.close();
+                assert!(
+                    ui.window.is_sensitive(),
+                    "closing must not silently discard audio"
+                );
+                ui.cancel_recording.emit_clicked();
+                assert!(ui.recording.borrow().is_none());
+                ui.record.emit_clicked();
+                stage = 2;
+            }
+            2 if ui.recording.borrow().is_some() => {
+                ui.record.emit_clicked();
+                stage = 3;
+            }
+            3 if ui.last_entries.borrow()["entries"][0]["kind"] == "audio" => {
+                assert!(!ui.recording_busy.get());
+                assert!(ui.pending_audio.borrow().is_none());
+                assert!(!ui.cancel_recording.is_visible());
+                ui.window.close();
+                return glib::ControlFlow::Break;
+            }
+            _ => {}
+        }
+        glib::ControlFlow::Continue
+    });
+}
+
+// Check the rendered header position and use its actual close button after scrolling.
+fn smoke_close_settings(ui: Rc<Ui>, marker: &'static str) {
+    fn descendants(w: &gtk::Widget) -> Vec<gtk::Widget> {
+        let mut out = vec![w.clone()];
+        let mut child = w.first_child();
+        while let Some(w) = child {
+            out.extend(descendants(&w));
+            child = w.next_sibling();
+        }
+        out
+    }
+    let dialog = ui.window.visible_dialog().unwrap();
+    let widgets = descendants(dialog.upcast_ref());
+    let pane = widgets
+        .iter()
+        .find_map(|w| w.downcast_ref::<adw::NavigationSplitView>())
+        .and_then(|split| split.content())
+        .and_then(|content| content.child())
+        .unwrap_or_else(|| dialog.clone().upcast());
+    let pane_widgets = descendants(&pane);
+    let header = pane_widgets
+        .iter()
+        .find_map(|w| w.downcast_ref::<adw::HeaderBar>())
+        .unwrap()
+        .clone();
+    let page = pane_widgets
+        .iter()
+        .find_map(|w| {
+            w.downcast_ref::<gtk::Stack>()
+                .filter(|s| s.widget_name() == "settings-sections")
+        })
+        .and_then(|pages| pages.visible_child())
+        .unwrap_or(pane);
+    let page_widgets = descendants(&page);
+    let scroll = page_widgets
+        .iter()
+        .find_map(|w| w.downcast_ref::<gtk::ScrolledWindow>())
+        .unwrap();
+    assert!(
+        !widgets
+            .iter()
+            .filter_map(|w| w.downcast_ref::<adw::HeaderBar>())
+            .any(|h| widgets
+                .iter()
+                .filter_map(|w| w.downcast_ref::<gtk::ScrolledWindow>())
+                .any(|s| h.is_ancestor(s))),
+        "settings header must be outside the scrolling content"
+    );
+    smoke_snapshot(&ui);
+    let initial_y = header.compute_bounds(&dialog).unwrap().y();
+    let adjustment = scroll.vadjustment();
+    assert!(
+        adjustment.upper() - adjustment.page_size() > 50.0,
+        "settings fixture must scroll"
+    );
+    adjustment.set_value(adjustment.upper() - adjustment.page_size());
+    glib::timeout_add_local_once(std::time::Duration::from_millis(250), move || {
+        assert!(
+            (header.compute_bounds(&dialog).unwrap().y() - initial_y).abs() < 1.0,
+            "settings close controls moved when the panel scrolled"
+        );
+        let close = descendants(dialog.upcast_ref())
+            .into_iter()
+            .find_map(|w| {
+                w.downcast::<gtk::Button>()
+                    .ok()
+                    .filter(|b| b.has_css_class("close") && b.is_mapped())
+            })
+            .expect("settings close button");
+        let bounds = close.compute_bounds(&dialog).unwrap();
+        assert!(
+            bounds.y() >= 0.0 && bounds.y() + bounds.height() <= dialog.height() as f32,
+            "close button must stay on screen"
+        );
+        close.emit_clicked();
+        glib::timeout_add_local_once(std::time::Duration::from_millis(300), move || {
+            assert!(
+                ui.window.visible_dialog().is_none(),
+                "close must work at the bottom of settings"
+            );
+            std::fs::write(data_dir().join(marker), b"passed").unwrap();
+            ui.window.close();
+        });
+    });
+}
+
+fn smoke_snapshot(ui: &Ui) {
+    if let Some(path) = std::env::var_os("MEMORIOUS_UI_SCREENSHOT") {
+        let snapshot = gtk::Snapshot::new();
+        gtk::WidgetPaintable::new(Some(&ui.window)).snapshot(
+            &snapshot,
+            ui.window.width() as f64,
+            ui.window.height() as f64,
+        );
+        let node = snapshot.to_node().unwrap();
+        ui.window
+            .renderer()
+            .unwrap()
+            .render_texture(&node, None)
+            .save_to_png(path)
+            .unwrap();
+    }
 }

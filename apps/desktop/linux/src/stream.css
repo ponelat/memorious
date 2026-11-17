@@ -1,0 +1,25 @@
+.stream-surface { background-color: @view_bg_color; }
+.journal-stream { font-family: monospace; }
+.journal-stream .stream-row { padding: 16px 0; }
+.journal-stream .stream-text { font-size: 17px; font-weight: normal; }
+.journal-stream .stream-annotation { font-size: 13px; color: alpha(currentColor, 0.55); }
+.journal-stream .stream-time { font-size: 11px; color: alpha(currentColor, 0.55); }
+.journal-stream .stream-day { font-size: 13px; font-weight: normal; margin: 18px 0 8px; }
+.journal-stream .stream-rule { min-height: 1px; background: alpha(currentColor, 0.3); }
+.journal-stream .stream-more { font-size: 13px; color: alpha(currentColor, 0.35); padding: 0; min-height: 0; min-width: 0; }
+.journal-stream .stream-actions button { padding: 2px; min-width: 20px; min-height: 20px; color: alpha(currentColor, 0.3); }
+.journal-stream .stream-actions button:hover { color: currentColor; }
+.journal-stream .stream-audio { font-size: 13px; font-weight: normal; padding: 0; min-height: 0; }
+/* Keep the editor on the same palette as the reading surface in both modes. */
+.capture-field {
+  background-color: @view_bg_color;
+  color: @view_fg_color;
+  border: 1px solid @borders;
+  border-radius: 22px;
+  box-shadow: 0 2px 8px alpha(black, 0.05);
+  padding: 3px;
+}
+.capture-field:focus-within { border-color: @accent_color; }
+.capture-field textview, .capture-field textview text { background-color: transparent; color: @view_fg_color; }
+.composer-text { font-family: monospace; font-size: 16px; }
+.composer-hint { color: alpha(@view_fg_color, 0.5); font-size: 16px; }

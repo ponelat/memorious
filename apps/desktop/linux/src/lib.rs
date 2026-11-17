@@ -1,5 +1,6 @@
 //! Thin native desktop adapter. Storage, sync, encryption and search stay in core.
 pub mod background;
+pub mod recording;
 #[cfg(feature = "gui")]
 pub mod tray;
 use anyhow::{bail, Result};

@@ -8,7 +8,7 @@ import time
 import types
 import unittest
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 sys.modules.setdefault("evdev", types.SimpleNamespace(ecodes=types.SimpleNamespace()))
 sys.modules.setdefault("requests", types.SimpleNamespace())
@@ -45,6 +45,53 @@ class ToolbarControl(unittest.TestCase):
                 thread.join(3)
             self.assertFalse(thread.is_alive())
             self.assertFalse(path.exists())
+
+class RecordingFeedback(unittest.TestCase):
+    def test_beep_follows_microphone_readiness_and_only_once_per_recording(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            worker = module.Worker(Path(temporary), Path(temporary) / "daemon.sock")
+            recorder = Mock()
+            recorder.poll.return_value = None
+            events = []
+            def ready():
+                self.assertIs(worker.recording, recorder)
+                events.append("ready")
+            worker.wait_for_recording = Mock(side_effect=ready)
+            with patch.object(module.subprocess, "Popen", return_value=recorder), \
+                 patch.object(module, "play_start_beep", create=True, side_effect=lambda: events.append("beep")):
+                worker.start()
+                worker.start()
+            self.assertEqual(events, ["ready", "beep"])
+            self.assertEqual(json.loads(worker.status_path.read_text())["state"], "recording")
+
+    def test_start_tone_is_audible_audio_and_output_failure_does_not_escape(self):
+        finished = threading.Event()
+        def unavailable_output(command, **kwargs):
+            import io, wave, struct
+            self.assertEqual(command[0], "pw-play")
+            with wave.open(io.BytesIO(kwargs["input"]), "rb") as wav:
+                self.assertGreaterEqual(wav.getnframes() / wav.getframerate(), .08)
+                samples = struct.unpack("<" + "h" * wav.getnframes(), wav.readframes(wav.getnframes()))
+                self.assertGreater(max(samples), 3000)
+                self.assertLess(min(samples), -3000)
+            finished.set()
+            raise OSError("Output device unavailable")
+        with patch.object(module.subprocess, "run", side_effect=unavailable_output):
+            module.play_start_beep()
+            self.assertTrue(finished.wait(2), "beep was not sent to the audio output")
+
+    def test_failed_microphone_does_not_beep_or_leave_a_recorder(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            worker = module.Worker(Path(temporary), Path(temporary) / "daemon.sock")
+            recorder = Mock()
+            worker.wait_for_recording = Mock(side_effect=RuntimeError("Microphone unavailable"))
+            with patch.object(module.subprocess, "Popen", return_value=recorder), \
+                 patch.object(module, "play_start_beep", create=True) as beep:
+                with self.assertRaisesRegex(RuntimeError, "Microphone unavailable"):
+                    worker.start()
+                beep.assert_not_called()
+            self.assertIsNone(worker.recording)
+            recorder.wait.assert_called()
 
 class TranscriptionProviders(unittest.TestCase):
     def worker(self, directory, provider):

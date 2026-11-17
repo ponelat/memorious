@@ -146,8 +146,8 @@ deploys (e.g. the EC2 peers in the owner's private ops runbook).
 
 ## Linux background capture
 
-The native toolbar’s settings button configures **Run in the background** and
-**Enable push-to-talk**. Background mode hands the same directory and identity to
+The native toolbar’s Settings button opens **Background & PTT**, which configures
+**Run in the background** and **Enable push-to-talk**. Background mode hands the same directory and identity to
 this executable’s no-window daemon personality. Reopening the app attaches to the
 owner-only socket. Closing the window keeps that daemon and its PTT worker running;
 turning background mode off validates the master password before transferring ownership
@@ -203,7 +203,7 @@ memorious-ptt --download-model
 
 ### Native peer troubleshooting
 
-In **Peers and pairing**, leave the ticket blank to sync all known peers. A new
+In **Settings → Peers & sync**, leave the ticket blank to sync all known peers. A new
 address can be supplied with a fresh ticket from the other device. **Check
 connections** runs bounded per-peer probes; sync results report partial failures
 and update the displayed holdings. A device cannot sync with its own ticket.
@@ -213,3 +213,59 @@ Changes are local to this peer and apply after its journal restarts. When runnin
 in the background, closing the window alone does not restart the journal: use
 **Stop background journal** from the tray, then reopen the app. Direct-only mode
 may prevent connections across networks even while a remote peer is online.
+
+### Native stream presentation checks
+
+The native UI suite includes a throwaway text/audio feed that checks selectable
+monospaced text, seven-line expansion (including paragraphs and Unicode wrapping),
+window resizing, and the scroll-only timestamps/rules with their idle delay.
+Set `MEMORIOUS_UI_SCREENSHOT=/tmp/memorious-stream.png` when running `native_ui`
+to save that fixture's rendered window. The fixture creates no journal and opens
+no media. Run display checks serially as shown above.
+
+### Native audio capture and appearance
+
+The composer microphone records a voice audio entry without requiring background
+mode or PTT. Click again to stop and save; **Cancel recording** discards it.
+The timer appears only after PipeWire supplies audio. A failed save keeps the
+encoded recording in memory for retry, and closing the window requires saving or
+cancelling first. PCM and AAC/m4a use anonymous memory files rather than plaintext
+recording paths. Audio is encrypted, captured and synced before transcription.
+The foreground recorder needs `pw-record` and `ffmpeg`; the Linux package adds
+both to the app's runtime PATH.
+
+PTT remains dictation. Its worker uses `pw-play` (from the existing PipeWire
+runtime) for a short start beep after the microphone supplies samples. A failed
+microphone start does not beep. Playback failure does not interrupt capture.
+
+**Settings → Appearance → Dark mode** selects dark/light appearance and saves it under
+`$XDG_CONFIG_HOME/memorious/appearance` (normally `~/.config/memorious/appearance`).
+Before an explicit choice the app follows the system. Appearance is device-local.
+
+The native UI checks include isolated start/cancel/save/encrypted-reopen flows
+with simulated microphone input, plus composer and appearance persistence checks.
+The recorder unit tests encode real AAC with ffmpeg and check process cleanup.
+
+```bash
+cargo test -p memorious-linux --lib
+cargo test -p memorious-linux --test native_ui -- --ignored --test-threads=1
+python3 apps/desktop/ptt/test_worker.py
+```
+
+### Unified native settings
+
+One Settings icon opens Appearance, Background & PTT, and Peers & sync in the same
+panel. A native `AdwNavigationSplitView` shows a sidebar at desktop widths and
+page navigation with a Back button below 600sp. Each pane's `AdwToolbarView`
+keeps its header and close button outside the scrolling section content.
+
+Graphical checks cover section navigation, persisted appearance, narrow layouts
+and Back navigation, plus scrolling both long sections and clicking the visible
+close button. `MEMORIOUS_UI_SCREENSHOT` can also save these panel fixtures.
+
+For repeatable checks independent of the live desktop, use an isolated display:
+
+```bash
+GDK_BACKEND=x11 GSK_RENDERER=cairo xvfb-run -a \
+  cargo test -p memorious-linux --test native_ui -- --ignored --test-threads=1
+```
