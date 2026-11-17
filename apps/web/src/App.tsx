@@ -6,10 +6,11 @@ import { Unlock } from './views/Unlock'
 import { StreamView } from './views/StreamView'
 import { TrashView } from './views/TrashView'
 import { StatusView } from './views/StatusView'
+import { CanvasView } from './canvas/CanvasView'
 import { Wordmark } from './components/Wordmark'
 import { useAppearance } from './appearance'
 
-export type View = 'stream' | 'trash' | 'status'
+export type View = 'stream' | 'trash' | 'status' | 'canvas'
 
 /** Marks the frame `scrolling` while the page moves and for a beat after it stops.
  *  The stream's timestamps and row rules only show in that state — at rest the
@@ -108,6 +109,12 @@ export function App() {
         </button>
         <span className="spacer" />
         <button
+          className={view === 'canvas' ? 'tab active' : 'tab'}
+          onClick={() => setView(view === 'canvas' ? 'stream' : 'canvas')}
+        >
+          canvas
+        </button>
+        <button
           className={view === 'trash' ? 'tab active' : 'tab'}
           onClick={() => setView(view === 'trash' ? 'stream' : 'trash')}
         >
@@ -123,6 +130,7 @@ export function App() {
       {view === 'stream' && <StreamView />}
       {view === 'trash' && <TrashView />}
       {view === 'status' && <StatusView />}
+      {view === 'canvas' && <CanvasView />}
     </div>
   )
 }

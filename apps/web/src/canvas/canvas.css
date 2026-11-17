@@ -1,0 +1,139 @@
+/* Infinite month canvas. Same rule as the rest of the app: Georgia, brand orange, labels only. */
+.canvas-view {
+  position: fixed;
+  inset: var(--topbar-h) 0 0 0;
+  background: var(--paper);
+  overflow: hidden;
+  z-index: 1;
+}
+.canvas-host {
+  position: absolute;
+  inset: 0;
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+  cursor: crosshair;
+}
+.canvas-stage {
+  position: absolute;
+  inset: 0;
+  transform-origin: 0 0;
+  pointer-events: none;
+}
+.canvas-layer {
+  position: absolute;
+  left: 0;
+  top: 0;
+}
+.canvas-ring {
+  position: absolute;
+  left: 0;
+  top: 0;
+  display: none;
+  pointer-events: none;
+  border: 1.5px solid var(--brand);
+  border-radius: 50%;
+}
+
+.canvas-toolbar,
+.canvas-menu,
+.canvas-layers {
+  background: var(--paper);
+  color: var(--brand);
+  border: 1px solid var(--line-strong);
+  border-radius: 12px;
+  font-family: inherit;
+  font-size: var(--small);
+}
+.canvas-toolbar {
+  position: absolute;
+  left: 50%;
+  bottom: max(14px, env(safe-area-inset-bottom));
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 8px 12px;
+  max-width: calc(100vw - 24px);
+  flex-wrap: wrap;
+  justify-content: center;
+}
+.canvas-menu {
+  position: fixed;
+  z-index: 20;
+  width: 232px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  box-shadow: 0 6px 24px rgb(0 0 0 / 0.18);
+}
+.canvas-layers {
+  position: absolute;
+  right: 12px;
+  top: 12px;
+  padding: 8px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: calc(100% - 100px);
+  overflow-y: auto;
+}
+.canvas-layers hr {
+  width: 100%;
+  border: none;
+  border-top: 1px solid var(--line);
+  margin: 4px 0;
+}
+.canvas-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  white-space: nowrap;
+}
+.canvas-month-pick {
+  margin-top: 4px;
+  font: inherit;
+  color: var(--brand);
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 2px 4px;
+  width: 132px;
+}
+.canvas-row {
+  display: flex;
+  gap: 6px;
+}
+.canvas-btn {
+  font: inherit;
+  color: var(--brand);
+  background: var(--paper);
+  border: 1px solid var(--line-strong);
+  border-radius: 9px;
+  padding: 5px 11px;
+}
+.canvas-btn.on {
+  background: var(--brand);
+  color: var(--paper);
+}
+.canvas-btn:disabled {
+  opacity: 0.4;
+}
+.canvas-slider {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.canvas-slider span {
+  min-width: 52px;
+}
+.canvas-slider input {
+  width: 110px;
+}
+.canvas-slider b {
+  min-width: 34px;
+  text-align: right;
+  font-weight: normal;
+}
