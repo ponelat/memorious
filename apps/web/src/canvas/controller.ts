@@ -10,8 +10,6 @@ import { getBlob, ingest, loadMonth, monthKey, saveMonth } from './store'
 export interface ToolSetting {
   size: number
   op: number
-  /** Finger input moves the tool by drag offset from a mark instead of drawing under the finger (so you can see what you're doing). */
-  offset?: boolean
 }
 export type Settings = Record<Tool, ToolSetting>
 /** The toolbar's tools: three that draw, two that select. */
@@ -22,7 +20,7 @@ const isDraw = (t: UiTool): t is Tool => !isSelect(t)
 export const DEFAULT_SETTINGS: Settings = {
   pencil: { size: 4.5, op: 0.7 },
   pen: { size: 5, op: 1 },
-  eraser: { size: 5, op: 0.4, offset: true },
+  eraser: { size: 5, op: 0.4 },
 }
 const SIMPLIFY: Record<Tool, number> = { pencil: 0, pen: 0.4, eraser: 0.4 }
 const DIM = 0.3 // other months show through at this opacity
@@ -54,8 +52,6 @@ export interface ControllerHooks {
   onChange(): void
   /** An image is being placed (true) or was placed / cancelled (false). */
   onFloating(on: boolean): void
-  /** The offset-mode mark appeared (true) or was cleared (false). */
-  onMark(on: boolean): void
   /** Finger drawing switched itself off (a pen showed up). */
   onTouchDraws(on: boolean): void
   /** Where the selection's top-right corner is (host px), or null when nothing is selected. */
@@ -97,7 +93,8 @@ export class CanvasController {
   private dragXf: Xf | null = null
   /** Offset mode (finger): the tool's position (world) — a tap sets it, a drag moves it relatively. */
   private mark: [number, number] | null = null
-  private off: { pid: number; qx: number; qy: number; started: boolean } | null = null
+  private off: { qx: number; qy: number; started: boolean } | null = null // active offset-mode drag
+  private pend: { qx: number; qy: number; e0: PointerEvent; done: boolean; timer: number } | null = null // finger down, not yet drawing
   private selActive = false // a lasso path or a selection drag is in progress
   private others = new Map<string, Item[]>()
   private bitmaps = new Map<string, ImageBitmap | 'loading'>()
@@ -155,7 +152,7 @@ export class CanvasController {
     on('pointercancel', (e) => this.pointerUp(e))
     on('lostpointercapture', (e) => this.live?.pid === e.pointerId && this.pointerUp(e))
     on('pointerleave', () => {
-      if (!(this.offsetOn() && this.mark)) this.ring.style.display = 'none' // the mark stays where the tool is
+      if (!this.mark) this.ring.style.display = 'none' // the mark stays where the tool is
     })
     on('wheel', (e) => this.wheel(e), { passive: false })
     on('contextmenu', (e) => {
@@ -189,7 +186,7 @@ export class CanvasController {
 
   // ── public controls ────────────────────────────────────────────────────
   setTool(t: UiTool) {
-    if (t !== this.tool) this.setMark(null) // a new tool starts without a placed mark (whether offset is allowed is unchanged)
+    if (t !== this.tool) this.setMark(null) // changing tool leaves offset mode (the mark goes)
     this.tool = t
     this.host.style.cursor = t === 'eraser' ? 'none' : 'crosshair'
     if (t !== 'eraser') this.ring.style.display = 'none'
@@ -583,29 +580,23 @@ export class CanvasController {
   }
 
   private moveRing(e: PointerEvent) {
-    if (e.pointerType === 'touch' && this.offsetOn()) return // the mark ring shows where the tool is
+    if (e.pointerType === 'touch' && this.mark) return // the mark ring shows where the tool is
     if (this.tool !== 'eraser' || this.floating) return void (this.ring.style.display = 'none')
     const d = 2 * 1.2 * this.settings.eraser.size * this.view.z
     const r = this.host.getBoundingClientRect()
     this.ring.style.cssText = `display:block;width:${d}px;height:${d}px;transform:translate(${e.clientX - r.left - d / 2}px,${e.clientY - r.top - d / 2}px);background:rgb(255 82 0 / ${0.06 + 0.3 * this.settings.eraser.op})`
   }
 
+  /** Offset mode is "a mark exists": long press the canvas to enter (mark = where you pressed), tap to move the mark, drag to
+   *  move the tool by the drag's offset from it, long press again to leave (clears the mark). Finger only. */
   private setMark(m: [number, number] | null) {
-    const had = !!this.mark
     this.mark = m
-    if (had !== !!m) this.hooks.onMark(!!m)
     this.updateMarkRing()
-  }
-  clearMark() {
-    this.setMark(null)
-  }
-  private offsetOn() {
-    return isDraw(this.tool) && !!this.settings[this.tool].offset
   }
   /** The mark: a ring at the tool's offset position (eraser radius / pen width), persistent between touches. */
   private updateMarkRing() {
     const t = this.tool
-    if (!isDraw(t) || !this.offsetOn() || !this.mark || this.floating) return void (this.ring.style.display = 'none')
+    if (!isDraw(t) || !this.mark || this.floating) return void (this.ring.style.display = 'none')
     const z = this.view.z
     const d = t === 'eraser' ? 2 * 1.2 * this.settings.eraser.size * z : Math.max(12, this.settings[t].size * z)
     const x = (this.mark[0] - this.view.x) * z
@@ -623,6 +614,8 @@ export class CanvasController {
       /* already cancelled */
     }
     if (e.pointerType === 'pen') {
+      if (this.pend) window.clearTimeout(this.pend.timer)
+      this.pend = null
       this.penSeen = true
       this.lastPenT = now
       for (const [id, q] of this.ptrs) if (q.pan) this.ptrs.delete(id)
@@ -652,7 +645,7 @@ export class CanvasController {
     if (draws && !this.live) {
       if (this.floating) this.floatDown(e)
       else if (isSelect(this.tool)) this.selDown(e)
-      else if (e.pointerType === 'touch' && this.offsetOn()) this.off = { pid: e.pointerId, qx: lx, qy: ly, started: false } // wait: a tap sets the mark, a drag moves the tool
+      else if (e.pointerType === 'touch' && isDraw(this.tool)) this.pendDown(e, lx, ly) // finger: wait to tell a drag, a tap and a long press apart
       else this.startStroke(e)
     } else {
       this.prevG = null
@@ -662,21 +655,50 @@ export class CanvasController {
     e.preventDefault()
   }
 
-  /** First movement past a small threshold turns the touch into a drag: the stroke starts at the mark (or under the finger if there is none). */
-  private offMove(e: PointerEvent) {
-    const o = this.off!
+  /** A finger touched down with a drawing tool. Not drawn yet: a drag starts the stroke (at the mark in offset mode, else where the
+   *  finger landed), a tap moves the mark (offset mode) or leaves a dot, a long press enters / leaves offset mode. */
+  private pendDown(e: PointerEvent, lx: number, ly: number) {
+    this.pend = { qx: lx, qy: ly, e0: e, done: false, timer: window.setTimeout(() => this.longPress(), 500) }
+  }
+  private longPress() {
+    const p = this.pend
+    if (!p || p.done) return
+    p.done = true
+    this.setMark(this.mark ? null : this.toWorld(p.qx, p.qy))
+    navigator.vibrate?.(15)
+  }
+  private pendMove(e: PointerEvent) {
+    const p = this.pend!
+    if (p.done) return
     const [lx, ly] = this.local(e)
-    if (Math.hypot(lx - o.qx, ly - o.qy) < 6) return
-    if (!this.mark) this.setMark(this.toWorld(o.qx, o.qy))
-    o.qx = lx
-    o.qy = ly
-    o.started = true
-    this.startStroke(e)
-    this.updateMarkRing()
+    if (Math.hypot(lx - p.qx, ly - p.qy) < 6) return
+    window.clearTimeout(p.timer)
+    this.pend = null
+    if (this.mark) {
+      this.off = { qx: lx, qy: ly, started: true }
+      this.startStroke(e) // first point = the mark itself
+      this.updateMarkRing()
+    } else {
+      this.startStroke(p.e0) // from where the finger landed, then on to here
+      this.addPoints(e)
+    }
+  }
+  private pendUp() {
+    const p = this.pend!
+    window.clearTimeout(p.timer)
+    this.pend = null
+    if (p.done) return
+    if (this.mark) this.setMark(this.toWorld(p.qx, p.qy)) // tap: move the mark, draw nothing
+    else {
+      this.startStroke(p.e0) // plain tap: a dot
+      this.endStroke()
+    }
   }
 
   /** Throw away an unfinished stroke / lasso / selection drag (nothing was committed, so a rebuild restores the canvas). */
   private abortInput() {
+    if (this.pend) window.clearTimeout(this.pend.timer)
+    this.pend = null
     this.off = null
     if (this.live) {
       this.live = null
@@ -706,7 +728,7 @@ export class CanvasController {
     p.y = ly
     if (e.pointerType === 'pen') this.lastPenT = performance.now()
     if (p.pan) this.applyGesture()
-    else if (this.off && !this.off.started) this.offMove(e)
+    else if (this.pend) this.pendMove(e)
     else if (this.live) {
       this.addPoints(e)
       if (this.off) this.updateMarkRing()
@@ -721,17 +743,14 @@ export class CanvasController {
     if (!p) return
     this.ptrs.delete(e.pointerId)
     if (p.pan) this.prevG = null
-    else if (this.off && !this.off.started) {
-      const q = this.toWorld(this.off.qx, this.off.qy)
-      this.off = null
-      this.setMark(q) // tap: put the mark here, draw nothing
-    } else if (this.live) this.endStroke()
+    else if (this.pend) this.pendUp()
+    else if (this.live) this.endStroke()
     else if (this.floatDrag) {
       this.floatDrag = null
       this.rebuild()
     } else if (this.selActive) this.selUp()
     if (e.pointerType === 'touch') {
-      if (this.offsetOn()) this.updateMarkRing()
+      if (this.mark) this.updateMarkRing()
       else this.ring.style.display = 'none'
     }
   }

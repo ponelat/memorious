@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { CanvasController, DEFAULT_SETTINGS, type Settings, type UiTool } from './controller'
 import { onAppearanceChange, readAppearance, setAppearance } from '../appearance'
-import type { Layers, Tool, View } from './ink'
+import { renderSample, type Layers, type Tool, type View } from './ink'
 import { isMonthKey, loadJSON, monthKey, monthLabel, monthsWithContent, prevMonth, saveJSON } from './store'
 import './canvas.css'
 
@@ -49,14 +49,23 @@ const toolIcon = (t: UiTool) => <Icon d={ICONS[t]} dash={t === 'rect' || t === '
 interface SettingsProps {
   tool: UiTool
   settings: Settings
-  onSetting(t: Tool, s: { size?: number; op?: number; offset?: boolean }): void
+  onSetting(t: Tool, s: { size?: number; op?: number }): void
+  zoom: number
 }
 /** Size + opacity of the current drawing tool (selection tools have none). */
-function Sliders({ tool, settings, onSetting }: SettingsProps) {
+function Sliders({ tool, settings, onSetting, zoom }: SettingsProps) {
+  const sample = useRef<HTMLCanvasElement>(null)
+  const drawing = isDraw(tool)
+  const size = drawing ? settings[tool].size : 0
+  const op = drawing ? settings[tool].op : 0
+  useEffect(() => {
+    if (sample.current && drawing) renderSample(sample.current, tool as Tool, size, op, zoom)
+  }, [tool, drawing, size, op, zoom])
   if (!isDraw(tool)) return null
   const s = settings[tool]
   return (
     <>
+      <canvas ref={sample} className="canvas-sample" />
       <label className="canvas-slider">
         <span>size</span>
         <input type="range" min={1} max={24} step={0.5} value={s.size} onChange={(e) => onSetting(tool, { size: +e.target.value })} />
@@ -106,7 +115,6 @@ export function CanvasView() {
     const v = localStorage.getItem(K_TOUCH)
     return v ? v === 'on' : window.matchMedia('(pointer: coarse)').matches // phones draw with a finger by default
   })
-  const [hasMark, setHasMark] = useState(false)
   const [panel, setPanel] = useState<'tools' | 'options' | null>(null)
   const [corner, setCorner] = useState<{ x: number; y: number } | null>(null)
   const [settings, setSettings] = useState<Settings>(() => {
@@ -131,7 +139,6 @@ export function CanvasView() {
         onFloating: setFloating,
         onSelection: setCorner,
         onTouchDraws: (on) => setTouch(on),
-        onMark: setHasMark,
         onContext: (x, y) => setMenu({ x, y }),
       },
       { settings, view: loadJSON<View>(K_VIEW, { x: 0, y: 0, z: 1 }), touchDraws: touch },
@@ -170,7 +177,7 @@ export function CanvasView() {
     setToolState(t)
     ctl.current?.setTool(t)
   }, [])
-  const onSetting = useCallback((t: Tool, s: { size?: number; op?: number; offset?: boolean }) => {
+  const onSetting = useCallback((t: Tool, s: { size?: number; op?: number }) => {
     ctl.current?.setSetting(t, s)
     setSettings((cur) => {
       const next = { ...cur, [t]: { ...cur[t], ...s } }
@@ -287,7 +294,7 @@ export function CanvasView() {
 
       {panel === 'options' && (
         <div className="canvas-pop options">
-          <Sliders tool={tool} settings={settings} onSetting={onSetting} />
+          <Sliders tool={tool} settings={settings} onSetting={onSetting} zoom={ctl.current?.view.z ?? 1} />
           <div className="canvas-row">
             <button
               className="canvas-btn icon"
@@ -300,11 +307,7 @@ export function CanvasView() {
             <button className={'canvas-btn' + (touch ? ' on' : '')} onClick={toggleTouch}>
               finger
             </button>
-            {isDraw(tool) && (
-              <button className={'canvas-btn' + (settings[tool].offset ? ' on' : '')} onClick={() => onSetting(tool, { offset: !settings[tool].offset })}>
-                offset
-              </button>
-            )}
+
           </div>
           <hr />
           <div className="canvas-checks">
@@ -340,12 +343,6 @@ export function CanvasView() {
         </div>
       )}
 
-      {hasMark && (
-        <button className="canvas-fab canvas-clear-mark" title="clear mark" aria-label="clear mark" onClick={() => ctl.current?.clearMark()}>
-          <Icon d="M6 6l12 12M18 6L6 18" />
-        </button>
-      )}
-
       {floating && (
         <div className="canvas-placebar">
           <button className="canvas-btn on" onClick={() => ctl.current?.placeImage()}>
@@ -371,7 +368,7 @@ export function CanvasView() {
       {menu && (
         <div className="canvas-menu" style={{ left: Math.min(menu.x, window.innerWidth - 240), top: Math.min(menu.y, window.innerHeight - 330) }}>
           <ToolList tool={tool} onTool={chooseTool} onImage={chooseImage} />
-          <Sliders tool={tool} settings={settings} onSetting={onSetting} />
+          <Sliders tool={tool} settings={settings} onSetting={onSetting} zoom={ctl.current?.view.z ?? 1} />
           {undoRedo}
         </div>
       )}

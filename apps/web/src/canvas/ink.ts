@@ -452,3 +452,36 @@ export function rdp(pts: Pt[], tol: number, pw = 3): Pt[] {
   }
   return pts.filter((_, i) => keep[i])
 }
+
+/** A little demo of the current tool at its current size / opacity / zoom, for the options panel: two crossing strokes
+ *  (so stacking shows) — or, for the eraser, two pen lines and a pencil line with an erasing pass across them. */
+export function renderSample(c: HTMLCanvasElement, tool: Tool, size: number, op: number, zoom: number) {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2)
+  const cw = c.clientWidth || 240
+  const ch = c.clientHeight || 64
+  c.width = Math.round(cw * dpr)
+  c.height = Math.round(ch * dpr)
+  const z = clamp(zoom, 0.25, 6)
+  const buf = new InkBuffers()
+  buf.resize(c.width, c.height, dpr)
+  buf.clear({ x: 0, y: 0, z })
+  const line = (x0: number, y0: number, x1: number, y1: number, amp: number, n = 40): Pt[] =>
+    Array.from({ length: n + 1 }, (_, i) => {
+      const t = i / n
+      return [(x0 + (x1 - x0) * t) / z, (y0 + (y1 - y0) * t + Math.sin(t * 6.28 * 1.25) * amp) / z, 0.6, 0] as Pt
+    })
+  const stamp = (t: Tool, sz: number, o: number | undefined, pts: Pt[]) => buf.stampStroke({ tool: t, seed: 7, size: sz, op: o, pts })
+  const o = op < 1 ? op : undefined
+  if (tool === 'eraser') {
+    for (const y of [16, 32]) stamp('pen', 6, undefined, line(14, y, cw - 14, y, 0))
+    stamp('pencil', 8, undefined, line(14, 48, cw - 14, 48, 0))
+    stamp('eraser', size, o, line(cw / 2, 4, cw / 2, ch - 4, 0, 20))
+  } else {
+    stamp(tool, size, o, line(14, ch * 0.5, cw - 14, ch * 0.5, ch * 0.22))
+    stamp(tool, size, o, line(cw * 0.35, 6, cw * 0.65, ch - 6, 0, 20))
+  }
+  const ctx = c.getContext('2d')!
+  ctx.clearRect(0, 0, c.width, c.height)
+  buf.dirty = [0, 0, c.width, c.height]
+  buf.flush(ctx, { pencil: true, pen: true, image: true })
+}

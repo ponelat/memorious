@@ -5,7 +5,7 @@ canvas; earlier months (the previous one by default, any other on request) show 
 30% opacity and are read-only. Layers: pencil, pen, images — each a view toggle, like the month toggles.
 
 Chrome: floating buttons, bottom-left — a quick **tool picker** (shows the current tool), **options**, and **undo** / **redo** (first-class, always visible)
-(size, opacity, one light↔dark button, finger, layer toggles, month list with an **other…** picker).
+(size + opacity with a live sample of the tool, one light↔dark button, finger, layer toggles, month list with an **other…** picker).
 
 Where: `apps/web/src/canvas/` (`CanvasView.tsx` chrome, `controller.ts` input/replay, `ink.ts` engine,
 `store.ts` persistence, `paper.ts` paper tile). Reached from the **canvas** tab in the top bar.
@@ -36,12 +36,11 @@ folded in order over the strokes (`select.ts`), so they undo like anything else.
 without that iPadOS swallowed a pencil touch landing within ~0.4 s of the previous one.
 
 ## Offset mode (finger)
-Per drawing tool (pencil / pen / eraser; the **offset** button in options; on by default for the eraser). With a finger,
-a **tap** puts a ring (the "mark") where the tool is and draws nothing; a **drag** starting anywhere moves the tool
-by the drag's offset from the mark — so the finger isn't on top of what's being drawn or erased. The mark stays put
-between touches and follows pan/zoom; switching tool clears it, and an **x** button (bottom right, only while a mark
-exists) clears it too. Mouse and pencil are unaffected (they draw directly). Two fingers still
-pan/pinch and discard the stroke.
+A mode, entered and left with a **long press** (hold a finger still ~0.5 s on the canvas, with pencil / pen / eraser).
+Entering drops a ring — the "mark" — where you pressed. While it exists, a **tap** moves the mark (draws nothing) and a
+**drag** starting anywhere moves the tool by the drag's offset from the mark, so the finger isn't covering what's being
+drawn or erased. A second long press leaves the mode and clears the mark; so does switching tool. The mark follows
+pan/zoom. Mouse and pencil are unaffected. Outside the mode a finger tap leaves a dot and a drag draws under the finger.
 
 ## Storage — NOT in the journal yet
 First cut is browser-local: strokes/images per month in `localStorage` (`memorious.canvas.events.YYYY-MM`),
