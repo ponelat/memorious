@@ -248,7 +248,7 @@ export function CanvasView() {
     <div className="canvas-view">
       <div className="canvas-host" ref={host} />
 
-      {/* two floating buttons: quick tool picker, and options */}
+      {/* floating buttons: quick tool picker, options, undo, redo */}
       <div className="canvas-fabs">
         <button
           className={'canvas-fab' + (panel === 'tools' ? ' on' : '')}
@@ -266,6 +266,12 @@ export function CanvasView() {
         >
           <Icon d={ICONS.options} />
         </button>
+        <button className="canvas-fab" title="undo" aria-label="undo" disabled={!ctl.current?.canUndo} onClick={() => ctl.current?.undo()}>
+          <Icon d={ICONS.undo} />
+        </button>
+        <button className="canvas-fab" title="redo" aria-label="redo" disabled={!ctl.current?.canRedo} onClick={() => ctl.current?.redo()}>
+          <Icon d={ICONS.redo} />
+        </button>
       </div>
 
       {panel === 'tools' && (
@@ -278,7 +284,6 @@ export function CanvasView() {
         <div className="canvas-pop options">
           <Sliders tool={tool} settings={settings} onSetting={onSetting} />
           <div className="canvas-row">
-            {undoRedo}
             <button
               className="canvas-btn icon"
               title={dark ? 'light' : 'dark'}

@@ -4,8 +4,8 @@ One infinite pannable/zoomable canvas per **calendar month**. You only ever draw
 canvas; earlier months (the previous one by default, any other on request) show through underneath at
 30% opacity and are read-only. Layers: pencil, pen, images — each a view toggle, like the month toggles.
 
-Chrome: two floating buttons, bottom-left — a quick **tool picker** (shows the current tool) and **options**
-(size, opacity, undo / redo, one light↔dark button, finger, layer toggles, month list with an **other…** picker).
+Chrome: floating buttons, bottom-left — a quick **tool picker** (shows the current tool), **options**, and **undo** / **redo** (first-class, always visible)
+(size, opacity, one light↔dark button, finger, layer toggles, month list with an **other…** picker).
 
 Where: `apps/web/src/canvas/` (`CanvasView.tsx` chrome, `controller.ts` input/replay, `ink.ts` engine,
 `store.ts` persistence, `paper.ts` paper tile). Reached from the **canvas** tab in the top bar.
