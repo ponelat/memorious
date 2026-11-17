@@ -4,6 +4,9 @@ One infinite pannable/zoomable canvas per **calendar month**. You only ever draw
 canvas; earlier months (the previous one by default, any other on request) show through underneath at
 30% opacity and are read-only. Layers: pencil, pen, images — each a view toggle, like the month toggles.
 
+Chrome: two floating buttons, bottom-left — a quick **tool picker** (shows the current tool) and **options**
+(size, opacity, undo / redo, one light↔dark button, finger, layer toggles, month list with an **other…** picker).
+
 Where: `apps/web/src/canvas/` (`CanvasView.tsx` chrome, `controller.ts` input/replay, `ink.ts` engine,
 `store.ts` persistence, `paper.ts` paper tile). Reached from the **canvas** tab in the top bar.
 
@@ -20,11 +23,9 @@ Where: `apps/web/src/canvas/` (`CanvasView.tsx` chrome, `controller.ts` input/re
 ## Input
 Mouse / Apple Pencil draw. Fingers: on a phone (coarse pointer) one finger draws and two pan/pinch (a second finger
 discards the stroke the first one started); the first time a pencil is seen, finger drawing switches itself off so on an
-iPad fingers pan. The **finger** button overrides it. The toolbar (and the layers panel) fold into the dot at the
-bottom-left. Wheel pans, ctrl+wheel (trackpad pinch) zooms,
-space or middle-drag pans. Right-click opens the tool menu (pencil / pen / eraser / image, size, opacity,
-undo / redo). Image: pick, paste or drop one, drag to move, drag the corner dot to scale, then **place**.
-Cmd/Ctrl+Z undoes, with shift (or Ctrl+Y) redoes; the toolbar has undo / redo icons and a light / dark switch
+iPad fingers pan. The **finger** button overrides it. Wheel pans, ctrl+wheel (trackpad pinch) zooms,
+space or middle-drag pans. Right-click opens the tool menu (tools, size, opacity, undo / redo). Image: pick, paste or drop one, drag to move, drag the corner dot to scale, then **place**.
+Cmd/Ctrl+Z undoes, with shift (or Ctrl+Y) redoes; options has undo / redo icons and one light/dark button
 (it drives the app-wide appearance setting).
 
 **Selection** (`lasso` freehand, `rect` rectangle): the polygon cuts strokes at its boundary, so only the part

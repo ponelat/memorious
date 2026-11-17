@@ -37,28 +37,15 @@
   border-radius: 50%;
 }
 
-.canvas-toolbar,
+.canvas-pop,
 .canvas-menu,
-.canvas-layers {
+.canvas-placebar {
   background: var(--paper);
   color: var(--brand);
   border: 1px solid var(--line-strong);
   border-radius: 12px;
   font-family: inherit;
   font-size: var(--small);
-}
-.canvas-toolbar {
-  position: absolute;
-  left: 50%;
-  bottom: max(14px, env(safe-area-inset-bottom));
-  transform: translateX(-50%);
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  padding: 8px 12px;
-  max-width: calc(100vw - 24px);
-  flex-wrap: wrap;
-  justify-content: center;
 }
 .canvas-menu {
   position: fixed;
@@ -70,38 +57,11 @@
   gap: 10px;
   box-shadow: 0 6px 24px rgb(0 0 0 / 0.18);
 }
-.canvas-layers {
-  position: absolute;
-  right: 12px;
-  top: 12px;
-  padding: 8px 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  max-height: calc(100% - 100px);
-  overflow-y: auto;
-}
-.canvas-layers hr {
-  width: 100%;
-  border: none;
-  border-top: 1px solid var(--line);
-  margin: 4px 0;
-}
 .canvas-check {
   display: flex;
   align-items: center;
   gap: 8px;
   white-space: nowrap;
-}
-.canvas-month-pick {
-  margin-top: 4px;
-  font: inherit;
-  color: var(--brand);
-  background: var(--paper);
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  padding: 2px 4px;
-  width: 132px;
 }
 .canvas-row {
   display: flex;
@@ -160,25 +120,92 @@
   z-index: 3;
 }
 
-/* the toolbar folds into this one dot, bottom left */
-.canvas-dot {
+
+/* two floating buttons, bottom left: quick tool picker, options */
+.canvas-fabs {
   position: absolute;
   left: max(14px, env(safe-area-inset-left));
   bottom: max(14px, env(safe-area-inset-bottom));
-  width: 42px;
-  height: 42px;
-  padding: 0;
-  border-radius: 50%;
-  background: var(--brand);
-  border: 3px solid var(--paper);
-  box-shadow: 0 0 0 1.5px var(--brand);
+  display: flex;
+  gap: 10px;
   z-index: 4;
 }
-.canvas-dot.open {
+.canvas-fab {
+  width: 46px;
+  height: 46px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  color: var(--brand);
   background: var(--paper);
+  border: 1.5px solid var(--brand);
+  box-shadow: 0 2px 10px rgb(0 0 0 / 0.12);
 }
-@media (max-width: 700px) {
-  .canvas-toolbar {
-    bottom: 70px;
-  }
+.canvas-fab.on {
+  background: var(--brand);
+  color: var(--paper);
+}
+.canvas-pop {
+  position: absolute;
+  left: max(14px, env(safe-area-inset-left));
+  bottom: calc(max(14px, env(safe-area-inset-bottom)) + 58px);
+  z-index: 4;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: calc(100% - 140px);
+  overflow-y: auto;
+  box-shadow: 0 6px 24px rgb(0 0 0 / 0.18);
+}
+.canvas-pop.options {
+  width: min(280px, calc(100vw - 28px));
+}
+.canvas-pop hr {
+  width: 100%;
+  border: none;
+  border-top: 1px solid var(--line);
+  margin: 0;
+}
+.canvas-tools {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.canvas-btn.wide {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  text-align: left;
+  min-width: 132px;
+}
+.canvas-checks {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.canvas-other {
+  position: relative;
+  align-self: flex-start;
+  overflow: hidden;
+}
+.canvas-other input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  cursor: pointer;
+}
+.canvas-placebar {
+  position: absolute;
+  left: 50%;
+  bottom: max(14px, env(safe-area-inset-bottom));
+  transform: translateX(-50%);
+  display: flex;
+  gap: 8px;
+  padding: 8px 10px;
+  z-index: 4;
 }
