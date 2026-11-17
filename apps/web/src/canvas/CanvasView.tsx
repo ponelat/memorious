@@ -49,7 +49,7 @@ const toolIcon = (t: UiTool) => <Icon d={ICONS[t]} dash={t === 'rect' || t === '
 interface SettingsProps {
   tool: UiTool
   settings: Settings
-  onSetting(t: Tool, s: { size?: number; op?: number }): void
+  onSetting(t: Tool, s: { size?: number; op?: number; offset?: boolean }): void
 }
 /** Size + opacity of the current drawing tool (selection tools have none). */
 function Sliders({ tool, settings, onSetting }: SettingsProps) {
@@ -108,7 +108,10 @@ export function CanvasView() {
   })
   const [panel, setPanel] = useState<'tools' | 'options' | null>(null)
   const [corner, setCorner] = useState<{ x: number; y: number } | null>(null)
-  const [settings, setSettings] = useState<Settings>(() => ({ ...DEFAULT_SETTINGS, ...loadJSON<Partial<Settings>>(K_TOOLS, {}) }))
+  const [settings, setSettings] = useState<Settings>(() => {
+    const saved = loadJSON<Partial<Settings>>(K_TOOLS, {})
+    return Object.fromEntries((Object.keys(DEFAULT_SETTINGS) as Tool[]).map((t) => [t, { ...DEFAULT_SETTINGS[t], ...saved[t] }])) as Settings
+  })
   const [layers, setLayers] = useState<Layers>(() => loadJSON(K_LAYERS, { pencil: true, pen: true, image: true }))
   const [prefs, setPrefs] = useState<MonthPrefs>(() => loadJSON(K_MONTHS, { visible: [prev], extra: [] }))
   const [floating, setFloating] = useState(false)
@@ -165,7 +168,7 @@ export function CanvasView() {
     setToolState(t)
     ctl.current?.setTool(t)
   }, [])
-  const onSetting = useCallback((t: Tool, s: { size?: number; op?: number }) => {
+  const onSetting = useCallback((t: Tool, s: { size?: number; op?: number; offset?: boolean }) => {
     ctl.current?.setSetting(t, s)
     setSettings((cur) => {
       const next = { ...cur, [t]: { ...cur[t], ...s } }
@@ -295,6 +298,11 @@ export function CanvasView() {
             <button className={'canvas-btn' + (touch ? ' on' : '')} onClick={toggleTouch}>
               finger
             </button>
+            {isDraw(tool) && (
+              <button className={'canvas-btn' + (settings[tool].offset ? ' on' : '')} onClick={() => onSetting(tool, { offset: !settings[tool].offset })}>
+                offset
+              </button>
+            )}
           </div>
           <hr />
           <div className="canvas-checks">

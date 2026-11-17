@@ -35,6 +35,13 @@ top-right (Delete, Esc and Cmd+D work too). Edits are events — `move {poly, xf
 folded in order over the strokes (`select.ts`), so they undo like anything else. No rotation yet. iPad: touchstart/touchmove are `preventDefault`ed on the canvas —
 without that iPadOS swallowed a pencil touch landing within ~0.4 s of the previous one.
 
+## Offset mode (finger)
+Per drawing tool (pencil / pen / eraser; the **offset** button in options; on by default for the eraser). With a finger,
+a **tap** puts a ring (the "mark") where the tool is and draws nothing; a **drag** starting anywhere moves the tool
+by the drag's offset from the mark — so the finger isn't on top of what's being drawn or erased. The mark stays put
+between touches and follows pan/zoom. Mouse and pencil are unaffected (they draw directly). Two fingers still
+pan/pinch and discard the stroke.
+
 ## Storage — NOT in the journal yet
 First cut is browser-local: strokes/images per month in `localStorage` (`memorious.canvas.events.YYYY-MM`),
 image pixels (lossy WebP ≤1024 px) content-addressed in IndexedDB. Nothing syncs and the engine is untouched.
