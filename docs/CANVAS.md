@@ -18,7 +18,10 @@ Where: `apps/web/src/canvas/` (`CanvasView.tsx` chrome, `controller.ts` input/re
 - Ink is the brand orange; the controls are labels only (no helper text).
 
 ## Input
-Mouse / Apple Pencil draw; one or two fingers pan and pinch. Wheel pans, ctrl+wheel (trackpad pinch) zooms,
+Mouse / Apple Pencil draw. Fingers: on a phone (coarse pointer) one finger draws and two pan/pinch (a second finger
+discards the stroke the first one started); the first time a pencil is seen, finger drawing switches itself off so on an
+iPad fingers pan. The **finger** button overrides it. The toolbar (and the layers panel) fold into the dot at the
+bottom-left. Wheel pans, ctrl+wheel (trackpad pinch) zooms,
 space or middle-drag pans. Right-click opens the tool menu (pencil / pen / eraser / image, size, opacity,
 undo / redo). Image: pick, paste or drop one, drag to move, drag the corner dot to scale, then **place**.
 Cmd/Ctrl+Z undoes, with shift (or Ctrl+Y) redoes; the toolbar has undo / redo icons and a light / dark switch

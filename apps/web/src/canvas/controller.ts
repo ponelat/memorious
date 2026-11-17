@@ -51,6 +51,8 @@ export interface ControllerHooks {
   onChange(): void
   /** An image is being placed (true) or was placed / cancelled (false). */
   onFloating(on: boolean): void
+  /** Finger drawing switched itself off (a pen showed up). */
+  onTouchDraws(on: boolean): void
   /** Where the selection's top-right corner is (host px), or null when nothing is selected. */
   onSelection(corner: { x: number; y: number } | null): void
   /** Right-click at client coordinates. */
@@ -63,6 +65,7 @@ export class CanvasController {
   settings: Settings = structuredClone(DEFAULT_SETTINGS)
   layers: Layers = { pencil: true, pen: true, image: true }
   visibleMonths: string[] = []
+  /** One finger draws (phones). Turns itself off the first time a pen is seen, so on an iPad fingers go back to panning. */
   touchDraws = false
   view: View = { x: 0, y: 0, z: 1 }
 
@@ -93,7 +96,7 @@ export class CanvasController {
   private live: Live | null = null
   private floating: Floating | null = null
   private floatDrag: { mode: 'move' | 'scale'; sx: number; sy: number; rect: Floating['rect'] } | null = null
-  private ptrs = new Map<number, { x: number; y: number; pan: boolean }>()
+  private ptrs = new Map<number, { x: number; y: number; pan: boolean; touch: boolean }>()
   private penSeen = false
   private lastPenT = 0
   private spaceDown = false
@@ -102,10 +105,11 @@ export class CanvasController {
   private ro: ResizeObserver
   private off: (() => void)[] = []
 
-  constructor(host: HTMLElement, private hooks: ControllerHooks, saved?: Partial<{ settings: Settings; view: View }>) {
+  constructor(host: HTMLElement, private hooks: ControllerHooks, saved?: Partial<{ settings: Settings; view: View; touchDraws: boolean }>) {
     this.host = host
     if (saved?.settings) this.settings = { ...this.settings, ...saved.settings }
     if (saved?.view) this.view = { ...saved.view }
+    this.touchDraws = saved?.touchDraws ?? false
     this.events = loadMonth(this.month)
     this.stage = document.createElement('div')
     this.stage.className = 'canvas-stage'
@@ -584,15 +588,28 @@ export class CanvasController {
       this.lastPenT = now
       for (const [id, q] of this.ptrs) if (q.pan) this.ptrs.delete(id)
       this.prevG = null
+      if (this.touchDraws) {
+        this.touchDraws = false
+        this.hooks.onTouchDraws(false)
+      }
     }
-    const draws = !(e.button === 1 || this.spaceDown) && (e.pointerType !== 'touch' || (this.touchDraws && !this.penSeen))
     const [lx, ly] = this.local(e)
+    // a second finger means pan / pinch: drop whatever the first one had started, and navigate with both
+    if (e.pointerType === 'touch' && [...this.ptrs.values()].some((p) => p.touch)) {
+      this.abortInput()
+      for (const p of this.ptrs.values()) if (p.touch) p.pan = true
+      this.ptrs.set(e.pointerId, { x: lx, y: ly, pan: true, touch: true })
+      this.prevG = null
+      this.applyGesture()
+      return e.preventDefault()
+    }
+    const draws = !(e.button === 1 || this.spaceDown) && (e.pointerType !== 'touch' || this.touchDraws)
     // lift-and-return: the previous stroke's pointerup hasn't arrived — finish it, never swallow the new one
     if (draws && this.live && (e.pointerType !== 'touch' || this.live.pid === e.pointerId)) {
       this.ptrs.delete(this.live.pid)
       this.endStroke()
     }
-    this.ptrs.set(e.pointerId, { x: lx, y: ly, pan: !draws })
+    this.ptrs.set(e.pointerId, { x: lx, y: ly, pan: !draws, touch: e.pointerType === 'touch' })
     if (draws && !this.live) {
       if (this.floating) this.floatDown(e)
       else if (isSelect(this.tool)) this.selDown(e)
@@ -603,6 +620,27 @@ export class CanvasController {
     }
     this.moveRing(e)
     e.preventDefault()
+  }
+
+  /** Throw away an unfinished stroke / lasso / selection drag (nothing was committed, so a rebuild restores the canvas). */
+  private abortInput() {
+    if (this.live) {
+      this.live = null
+      this.rebuild()
+    }
+    if (this.selActive) {
+      this.selActive = false
+      this.lassoPath = null
+      this.rectStart = null
+      if (this.drag) {
+        this.drag = null
+        this.dragXf = null
+        this.lift = null
+        this.rebuild()
+      }
+      this.drawOverlay()
+    }
+    this.floatDrag = null
   }
 
   private pointerMove(e: PointerEvent) {
@@ -650,7 +688,7 @@ export class CanvasController {
     const [wx, wy] = this.toWorld(lx, ly)
     let p = e.pressure
     let tilt = 0
-    if (e.pointerType === 'mouse' || (e.pointerType === 'touch' && !p)) {
+    if (e.pointerType !== 'pen') {
       // no pressure: fake it from speed
       const dt = Math.max(1, e.timeStamp - live.lastT)
       const v = first ? 0 : Math.hypot(wx - live.lastX, wy - live.lastY) / dt

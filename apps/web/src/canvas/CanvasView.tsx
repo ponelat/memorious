@@ -9,6 +9,8 @@ const K_TOOLS = 'memorious.canvas.tools'
 const K_LAYERS = 'memorious.canvas.layers'
 const K_MONTHS = 'memorious.canvas.months'
 const K_VIEW = 'memorious.canvas.view'
+const K_TOUCH = 'memorious.canvas.touch'
+const K_BAR = 'memorious.canvas.toolbar'
 
 interface MonthPrefs {
   visible: string[]
@@ -48,6 +50,8 @@ interface ControlsProps {
   onUndo(): void
   onRedo(): void
   dark: boolean
+  touch: boolean
+  onTouch(): void
 }
 
 /** The toolbar and the right-click menu are the same controls in two containers. */
@@ -118,6 +122,9 @@ function ToolControls(p: ControlsProps) {
         <button className={'canvas-btn' + (p.dark ? ' on' : '')} onClick={() => setAppearance('dark')}>
           dark
         </button>
+        <button className={'canvas-btn' + (p.touch ? ' on' : '')} onClick={p.onTouch}>
+          finger
+        </button>
       </div>
     </>
   )
@@ -132,6 +139,11 @@ export function CanvasView() {
 
   const [tool, setToolState] = useState<UiTool>('pencil')
   const [dark, setDark] = useState(isDark)
+  const [touch, setTouch] = useState<boolean>(() => {
+    const v = localStorage.getItem(K_TOUCH)
+    return v ? v === 'on' : window.matchMedia('(pointer: coarse)').matches // phones draw with a finger by default
+  })
+  const [barOpen, setBarOpen] = useState(() => localStorage.getItem(K_BAR) !== 'closed')
   const [corner, setCorner] = useState<{ x: number; y: number } | null>(null)
   const [settings, setSettings] = useState<Settings>(() => ({ ...DEFAULT_SETTINGS, ...loadJSON<Partial<Settings>>(K_TOOLS, {}) }))
   const [layers, setLayers] = useState<Layers>(() => loadJSON(K_LAYERS, { pencil: true, pen: true, image: true }))
@@ -151,9 +163,10 @@ export function CanvasView() {
         },
         onFloating: setFloating,
         onSelection: setCorner,
+        onTouchDraws: (on) => setTouch(on),
         onContext: (x, y) => setMenu({ x, y }),
       },
-      { settings, view: loadJSON<View>(K_VIEW, { x: 0, y: 0, z: 1 }) },
+      { settings, view: loadJSON<View>(K_VIEW, { x: 0, y: 0, z: 1 }), touchDraws: touch },
     )
     ctl.current = c
     c.layers = layers
@@ -250,12 +263,20 @@ export function CanvasView() {
     onUndo: () => ctl.current?.undo(),
     onRedo: () => ctl.current?.redo(),
     dark,
+    touch,
+    onTouch: () => {
+      const next = !touch
+      setTouch(next)
+      localStorage.setItem(K_TOUCH, next ? 'on' : 'off')
+      if (ctl.current) ctl.current.touchDraws = next
+    },
   })
 
   return (
     <div className="canvas-view">
       <div className="canvas-host" ref={host} />
 
+      {barOpen && (
       <aside className="canvas-layers">
         {(['pencil', 'pen', 'image'] as (keyof Layers)[]).map((l) => (
           <label key={l} className="canvas-check">
@@ -286,10 +307,21 @@ export function CanvasView() {
           }}
         />
       </aside>
+      )}
 
-      <div className="canvas-toolbar">
-        <ToolControls {...controls()} />
-      </div>
+      {barOpen && (
+        <div className="canvas-toolbar">
+          <ToolControls {...controls()} />
+        </div>
+      )}
+      <button
+        className={'canvas-dot' + (barOpen ? ' open' : '')}
+        aria-label="toolbar"
+        onClick={() => {
+          setBarOpen(!barOpen)
+          localStorage.setItem(K_BAR, barOpen ? 'closed' : 'open')
+        }}
+      />
 
       {corner && (
         <div className="canvas-selbar" style={{ left: Math.max(corner.x, 100), top: Math.max(corner.y, 54) }}>
