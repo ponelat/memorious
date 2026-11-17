@@ -212,3 +212,11 @@
   padding: 8px 10px;
   z-index: 4;
 }
+
+/* clears the offset-mode mark, bottom right */
+.canvas-clear-mark {
+  position: absolute;
+  right: max(14px, env(safe-area-inset-right));
+  bottom: max(14px, env(safe-area-inset-bottom));
+  z-index: 4;
+}

@@ -54,6 +54,8 @@ export interface ControllerHooks {
   onChange(): void
   /** An image is being placed (true) or was placed / cancelled (false). */
   onFloating(on: boolean): void
+  /** The offset-mode mark appeared (true) or was cleared (false). */
+  onMark(on: boolean): void
   /** Finger drawing switched itself off (a pen showed up). */
   onTouchDraws(on: boolean): void
   /** Where the selection's top-right corner is (host px), or null when nothing is selected. */
@@ -187,6 +189,7 @@ export class CanvasController {
 
   // ── public controls ────────────────────────────────────────────────────
   setTool(t: UiTool) {
+    if (t !== this.tool) this.setMark(null) // a new tool starts without a placed mark (whether offset is allowed is unchanged)
     this.tool = t
     this.host.style.cursor = t === 'eraser' ? 'none' : 'crosshair'
     if (t !== 'eraser') this.ring.style.display = 'none'
@@ -587,6 +590,15 @@ export class CanvasController {
     this.ring.style.cssText = `display:block;width:${d}px;height:${d}px;transform:translate(${e.clientX - r.left - d / 2}px,${e.clientY - r.top - d / 2}px);background:rgb(255 82 0 / ${0.06 + 0.3 * this.settings.eraser.op})`
   }
 
+  private setMark(m: [number, number] | null) {
+    const had = !!this.mark
+    this.mark = m
+    if (had !== !!m) this.hooks.onMark(!!m)
+    this.updateMarkRing()
+  }
+  clearMark() {
+    this.setMark(null)
+  }
   private offsetOn() {
     return isDraw(this.tool) && !!this.settings[this.tool].offset
   }
@@ -655,7 +667,7 @@ export class CanvasController {
     const o = this.off!
     const [lx, ly] = this.local(e)
     if (Math.hypot(lx - o.qx, ly - o.qy) < 6) return
-    if (!this.mark) this.mark = this.toWorld(o.qx, o.qy)
+    if (!this.mark) this.setMark(this.toWorld(o.qx, o.qy))
     o.qx = lx
     o.qy = ly
     o.started = true
@@ -710,8 +722,9 @@ export class CanvasController {
     this.ptrs.delete(e.pointerId)
     if (p.pan) this.prevG = null
     else if (this.off && !this.off.started) {
-      this.mark = this.toWorld(this.off.qx, this.off.qy) // tap: put the mark here, draw nothing
+      const q = this.toWorld(this.off.qx, this.off.qy)
       this.off = null
+      this.setMark(q) // tap: put the mark here, draw nothing
     } else if (this.live) this.endStroke()
     else if (this.floatDrag) {
       this.floatDrag = null

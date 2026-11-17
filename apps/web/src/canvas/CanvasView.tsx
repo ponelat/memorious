@@ -106,6 +106,7 @@ export function CanvasView() {
     const v = localStorage.getItem(K_TOUCH)
     return v ? v === 'on' : window.matchMedia('(pointer: coarse)').matches // phones draw with a finger by default
   })
+  const [hasMark, setHasMark] = useState(false)
   const [panel, setPanel] = useState<'tools' | 'options' | null>(null)
   const [corner, setCorner] = useState<{ x: number; y: number } | null>(null)
   const [settings, setSettings] = useState<Settings>(() => {
@@ -130,6 +131,7 @@ export function CanvasView() {
         onFloating: setFloating,
         onSelection: setCorner,
         onTouchDraws: (on) => setTouch(on),
+        onMark: setHasMark,
         onContext: (x, y) => setMenu({ x, y }),
       },
       { settings, view: loadJSON<View>(K_VIEW, { x: 0, y: 0, z: 1 }), touchDraws: touch },
@@ -336,6 +338,12 @@ export function CanvasView() {
             </label>
           </div>
         </div>
+      )}
+
+      {hasMark && (
+        <button className="canvas-fab canvas-clear-mark" title="clear mark" aria-label="clear mark" onClick={() => ctl.current?.clearMark()}>
+          <Icon d="M6 6l12 12M18 6L6 18" />
+        </button>
       )}
 
       {floating && (
