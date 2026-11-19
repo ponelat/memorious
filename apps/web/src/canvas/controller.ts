@@ -16,6 +16,20 @@ export interface ToolSetting {
 export type Settings = Record<Tool, ToolSetting>
 /** The toolbar's tools: three that draw, two that select. */
 export type UiTool = Tool | 'lasso' | 'rect'
+/** A 24 px cursor drawn from the tool's icon: a white halo under the orange line so it reads on light and dark, with the
+ *  hot spot at the working tip. */
+const cursorOf = (path: string, hx: number, hy: number, dash = '') => {
+  const p = `<path d='${path}' fill='none' stroke-linecap='round' stroke-linejoin='round' ${dash}`
+  const svg = `<svg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24'>${p} stroke='white' stroke-width='4.2'/>${p} stroke='#ff5200' stroke-width='1.8'/></svg>`
+  return `url("data:image/svg+xml,${encodeURIComponent(svg)}") ${hx} ${hy}, crosshair`
+}
+const CURSORS: Record<UiTool, string> = {
+  pencil: cursorOf('M4 20l1-4L16 5l3 3L8 19zM14 7l3 3', 4, 20),
+  pen: cursorOf('M12 3l5 9-5 9-5-9zM12 3v9', 12, 21),
+  eraser: 'none', // the ring is the cursor
+  lasso: cursorOf('M6 9c0-3 6-5 10-3s3 7-1 9-8 1-9-2M10 17c0 2 1 3 3 4', 13, 21, "stroke-dasharray='3 2.4'"),
+  rect: 'crosshair',
+}
 const isSelect = (t: UiTool) => t === 'lasso' || t === 'rect'
 const isDraw = (t: UiTool): t is Tool => !isSelect(t)
 // Josh-tuned defaults (ink-spike, 2026-11-17)
@@ -242,7 +256,7 @@ export class CanvasController {
     }
     this.tool = t
     this.hooks.onTool(t, this.prevTool)
-    this.host.style.cursor = t === 'eraser' ? 'none' : 'crosshair'
+    this.host.style.cursor = CURSORS[t]
     if (t !== 'eraser') this.ring.style.display = 'none'
     if (!isSelect(t)) this.clearSel()
     this.updateMarkRing()
@@ -938,7 +952,7 @@ export class CanvasController {
       if (!this.rightDown.moved && e.type === 'pointerup') this.hooks.onContext(e.clientX, e.clientY)
       this.rightDown = null
     }
-    if (p.pan && e.pointerType === 'mouse') this.host.style.cursor = this.tool === 'eraser' ? 'none' : 'crosshair'
+    if (p.pan && e.pointerType === 'mouse') this.host.style.cursor = this.spaceDown ? 'grab' : CURSORS[this.tool]
     if (e.pointerType === 'touch') {
       if (this.mark) this.updateMarkRing()
       else this.ring.style.display = 'none'
@@ -1251,7 +1265,10 @@ export class CanvasController {
 
   private key(e: KeyboardEvent, down: boolean) {
     if (/^(INPUT|TEXTAREA|SELECT)$/.test((e.target as HTMLElement)?.tagName)) return
-    if (e.code === 'Space') this.spaceDown = down
+    if (e.code === 'Space') {
+      this.spaceDown = down
+      if (!this.ptrs.size) this.host.style.cursor = down ? 'grab' : CURSORS[this.tool] // space + drag pans: show the hand
+    }
     if (!down) return
     const mod = e.metaKey || e.ctrlKey
     if (mod && e.key === 'z') {
