@@ -5,6 +5,7 @@ pub mod event;
 pub mod export_md;
 pub mod import_v1;
 pub mod infra;
+pub mod ink;
 pub mod journal;
 pub mod local;
 pub mod mcp;

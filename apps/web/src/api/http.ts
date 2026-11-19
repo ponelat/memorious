@@ -1,4 +1,4 @@
-import type { AgentKey, Entry, FeedPage, JournalApi, MediaRef, NetConfig, Status, SyncReport } from './types'
+import type { AgentKey, Entry, FeedPage, InkRecord, JournalApi, MediaRef, NetConfig, Status, SyncReport } from './types'
 
 const TOKEN_KEY = 'memorious.passcode'
 
@@ -119,6 +119,24 @@ export const httpApi: JournalApi = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ device_id: deviceId, name }),
     })
+  },
+
+  ink: {
+    async months() {
+      return (await json<{ months: string[] }>('/api/ink')).months
+    },
+    list(month: string, after?: number) {
+      return json<{ device_id: string; cursor: number; events: InkRecord[] }>(`/api/ink/${month}${after ? `?after=${after}` : ''}`)
+    },
+    async append(month: string, ops: Record<string, unknown>[]) {
+      const r = await json<{ events: { event_id: string; recorded_at: number }[] }>(`/api/ink/${month}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ops }),
+        keepalive: JSON.stringify(ops).length < 60_000, // a flush on page hide must survive the page
+      })
+      return r.events
+    },
   },
 
   agents: {

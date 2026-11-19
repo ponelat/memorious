@@ -274,6 +274,69 @@ impl Store {
         Ok(out)
     }
 
+    /// Ink ops (`infra_kind: "ink"`) for one canvas month that THIS peer stored after `after` (a cursor from an
+    /// earlier call; 0 = everything), each with its local cursor value, in arrival order.
+    ///
+    /// The cursor is the row id — arrival order on this peer — not `recorded_at`: an op drawn yesterday on a peer
+    /// that only synced today carries an old `recorded_at` but arrives *after* the reader's last poll, and must
+    /// still be delivered. Canvas order (the fold) is (recorded_at, event_id), which every peer shares; the
+    /// reader sorts for that, the cursor is only "what's new since I last asked".
+    pub fn ink_events(&self, month: &str, after: i64) -> Result<Vec<(i64, Event)>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT rowid, event_id, device_id, seq, recorded_at, kind, payload, will_enrich
+             FROM events
+             WHERE rowid > ?2
+               AND kind = 'infra'
+               AND json_extract(payload, '$.infra_kind') = 'ink'
+               AND json_extract(payload, '$.target') = ?1
+             ORDER BY rowid",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![month, after], |r| {
+            let rowid: i64 = r.get(0)?;
+            let kind_str: String = r.get(5)?;
+            let payload_str: String = r.get(6)?;
+            let kind: EventKind = serde_json::from_str(&format!("\"{kind_str}\""))
+                .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+            let payload: Payload = serde_json::from_str(&payload_str)
+                .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+            Ok((
+                rowid,
+                Event {
+                    event_id: r.get(1)?,
+                    device_id: r.get(2)?,
+                    seq: r.get(3)?,
+                    recorded_at: r.get(4)?,
+                    kind,
+                    payload,
+                    will_enrich: r.get(7)?,
+                },
+            ))
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
+
+    /// Canvas months that have any ink op, oldest first.
+    pub fn ink_months(&self) -> Result<Vec<String>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT DISTINCT json_extract(payload, '$.target') AS m
+             FROM events
+             WHERE kind = 'infra' AND json_extract(payload, '$.infra_kind') = 'ink' AND m IS NOT NULL
+             ORDER BY m",
+        )?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
+
     /// The latest token-set event by log order (recorded_at, then device_id,
     /// then seq) — the browser passcode in force. One indexed lookup; the
     /// server asks on every request, so this must never scan the log.
