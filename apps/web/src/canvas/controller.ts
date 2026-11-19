@@ -25,7 +25,7 @@ const cursorOf = (path: string, hx: number, hy: number, dash = '') => {
 }
 const CURSORS: Record<UiTool, string> = {
   pencil: cursorOf('M4 20l1-4L16 5l3 3L8 19zM14 7l3 3', 4, 20),
-  pen: cursorOf('M12 3l5 9-5 9-5-9zM12 3v9', 12, 21),
+  pen: cursorOf('M16 3.5l4.5 4.5L8 20.5 3 21.5l1-5z', 3, 21),
   eraser: 'none', // the ring is the cursor
   lasso: cursorOf('M6 9c0-3 6-5 10-3s3 7-1 9-8 1-9-2M10 17c0 2 1 3 3 4', 13, 21, "stroke-dasharray='3 2.4'"),
   rect: 'crosshair',
