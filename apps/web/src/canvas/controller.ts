@@ -18,14 +18,14 @@ export type Settings = Record<Tool, ToolSetting>
 export type UiTool = Tool | 'lasso' | 'rect'
 /** A 24 px cursor drawn from the tool's icon: a white halo under the orange line so it reads on light and dark, with the
  *  hot spot at the working tip. */
-const cursorOf = (path: string, hx: number, hy: number, dash = '') => {
-  const p = `<path d='${path}' fill='none' stroke-linecap='round' stroke-linejoin='round' ${dash}`
-  const svg = `<svg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24'>${p} stroke='white' stroke-width='4.2'/>${p} stroke='#ff5200' stroke-width='1.8'/></svg>`
+const cursorOf = (path: string, hx: number, hy: number, dash = '', fill = 'none') => {
+  const p = `<path d='${path}' stroke-linecap='round' stroke-linejoin='round' ${dash}`
+  const svg = `<svg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24'>${p} fill='${fill === 'none' ? 'none' : 'white'}' stroke='white' stroke-width='4.2'/>${p} fill='${fill}' stroke='#ff5200' stroke-width='1.8'/></svg>`
   return `url("data:image/svg+xml,${encodeURIComponent(svg)}") ${hx} ${hy}, crosshair`
 }
 const CURSORS: Record<UiTool, string> = {
   pencil: cursorOf('M4 20l1-4L16 5l3 3L8 19zM14 7l3 3', 4, 20),
-  pen: cursorOf('M16 3.5l4.5 4.5L8 20.5 3 21.5l1-5z', 3, 21),
+  pen: cursorOf('M16 3.5l4.5 4.5L8 20.5 3 21.5l1-5z', 3, 21, '', '#ff5200'),
   eraser: 'none', // the ring is the cursor
   lasso: cursorOf('M6 9c0-3 6-5 10-3s3 7-1 9-8 1-9-2M10 17c0 2 1 3 3 4', 13, 21, "stroke-dasharray='3 2.4'"),
   rect: 'crosshair',

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent } from 'react'
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type PointerEvent } from 'react'
 import { api } from '../api'
 import { CanvasController, DEFAULT_SETTINGS, type Settings, type UiTool } from './controller'
 import { CanvasData } from './sync'
@@ -39,7 +39,7 @@ const ICONS = {
   trash: 'M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3',
   copy: 'M9 9h11v11H9zM5 15V4h11',
   pencil: 'M4 20l1-4L16 5l3 3L8 19zM14 7l3 3',
-  pen: 'M16 3.5l4.5 4.5L8 20.5 3 21.5l1-5zM3.5 21l6-6', // a pen: the pencil's shape without the eraser band, with the nib's slit
+  pen: 'M16 3.5l4.5 4.5L8 20.5 3 21.5l1-5z', // a pen: the pencil's shape without the eraser band — drawn solid, with the nib's slit cut out (PenIcon)
   eraser: 'M7 21h12M5 15l9-9 5 5-7 7H8z',
   lasso: 'M6 9c0-3 6-5 10-3s3 7-1 9-8 1-9-2M10 17c0 2 1 3 3 4',
   rect: 'M5 5h14v14H5z',
@@ -48,12 +48,25 @@ const ICONS = {
   sun: 'M12 8a4 4 0 100 8 4 4 0 000-8zM12 2v2M12 20v2M2 12h2M20 12h2M5 5l1.5 1.5M17.5 17.5L19 19M5 19l1.5-1.5M17.5 6.5L19 5',
   moon: 'M20 14A8 8 0 1110 4a6.5 6.5 0 0010 10z',
 }
+/** The pen is the one solid icon: a filled body with the nib's slit knocked out (a mask, so it works on any button colour). */
+function PenIcon({ size = 20 }: { size?: number }) {
+  const id = useId()
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden>
+      <mask id={id}>
+        <rect width="24" height="24" fill="white" />
+        <path d="M5.2 19.2L10.2 14.2" stroke="black" strokeWidth="1.7" strokeLinecap="round" />
+      </mask>
+      <path d={ICONS.pen} fill="currentColor" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" mask={`url(#${id})`} />
+    </svg>
+  )
+}
 const TOOLS: UiTool[] = ['pencil', 'pen', 'eraser', 'lasso', 'rect']
 /** One key per tool (shown in the tool list and the tooltips). Undo/redo are the usual Cmd/Ctrl+Z / Shift+Z. With a selection: C duplicates, Q deletes. */
 const KEYS: Record<UiTool | 'image', string> = { pencil: 'D', pen: 'W', eraser: 'E', lasso: 'S', rect: 'R', image: 'G' } // all on the left of the keyboard: one hand on the keys, the other on the pencil
 const SWAP_KEY = 'X' // back to the previous tool
 const MOD = /Mac|iPhone|iPad/.test(navigator.platform) ? '⌘' : 'Ctrl+'
-const toolIcon = (t: UiTool) => <Icon d={ICONS[t]} dash={t === 'rect' || t === 'lasso'} />
+const toolIcon = (t: UiTool) => (t === 'pen' ? <PenIcon /> : <Icon d={ICONS[t]} dash={t === 'rect' || t === 'lasso'} />)
 
 const MARK_NUDGE: Record<string, [number, number]> = {
   ArrowLeft: [-10, 0],
