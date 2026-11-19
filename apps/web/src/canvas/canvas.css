@@ -150,6 +150,22 @@
   background: var(--brand);
   color: var(--paper);
 }
+.canvas-move-marker {
+  position: absolute;
+  right: max(14px, env(safe-area-inset-right));
+  bottom: max(14px, env(safe-area-inset-bottom));
+  z-index: 4;
+  width: 64px;
+  height: 56px;
+  border-radius: 12px;
+  touch-action: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+  cursor: grab;
+}
+.canvas-move-marker:active {
+  cursor: grabbing;
+}
 .canvas-pop {
   position: absolute;
   left: max(14px, env(safe-area-inset-left));

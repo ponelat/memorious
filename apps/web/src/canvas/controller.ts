@@ -54,6 +54,8 @@ export interface ControllerHooks {
   onFloating(on: boolean): void
   /** Finger drawing switched itself off (a pen showed up). */
   onTouchDraws(on: boolean): void
+  /** The offset marker was added or cleared. */
+  onMark(on: boolean): void
   /** Where the selection's top-right corner is (host px), or null when nothing is selected. */
   onSelection(corner: { x: number; y: number } | null): void
   /** Right-click at client coordinates. */
@@ -185,6 +187,12 @@ export class CanvasController {
   }
 
   // ── public controls ────────────────────────────────────────────────────
+  /** Move the offset marker by a screen-space drag without starting a stroke. */
+  moveMarkBy(dx: number, dy: number) {
+    if (!this.touchDraws || !this.mark || this.floating) return
+    this.mark = [this.mark[0] + dx / this.view.z, this.mark[1] + dy / this.view.z]
+    this.updateMarkRing()
+  }
   setTool(t: UiTool) {
     if (t !== this.tool) this.setMark(null) // changing tool leaves offset mode (the mark goes)
     this.tool = t
@@ -590,8 +598,10 @@ export class CanvasController {
   /** Offset mode is "a mark exists": long press the canvas to enter (mark = where you pressed), tap to move the mark, drag to
    *  move the tool by the drag's offset from it, long press again to leave (clears the mark). Finger only. */
   private setMark(m: [number, number] | null) {
+    const changed = Boolean(this.mark) !== Boolean(m)
     this.mark = m
     this.updateMarkRing()
+    if (changed) this.hooks.onMark(Boolean(m))
   }
   /** The mark: a ring at the tool's offset position (eraser radius / pen width), persistent between touches. */
   private updateMarkRing() {

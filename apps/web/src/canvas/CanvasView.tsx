@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent } from 'react'
 import { CanvasController, DEFAULT_SETTINGS, type Settings, type UiTool } from './controller'
 import { onAppearanceChange, readAppearance, setAppearance } from '../appearance'
 import { renderSample, type Layers, type Tool, type View } from './ink'
@@ -31,6 +31,7 @@ const Icon = ({ d, size = 20, dash }: { d: string; size?: number; dash?: boolean
 const ICONS = {
   undo: 'M9 14L4 9l5-5M4 9h10a6 6 0 010 12h-3',
   redo: 'M15 14l5-5-5-5M20 9H10a6 6 0 000 12h3',
+  move: 'M12 3v18M3 12h18M9 6l3-3 3 3M9 18l3 3 3-3M6 9l-3 3 3 3M18 9l3 3-3 3',
   trash: 'M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3',
   copy: 'M9 9h11v11H9zM5 15V4h11',
   pencil: 'M4 20l1-4L16 5l3 3L8 19zM14 7l3 3',
@@ -45,6 +46,51 @@ const ICONS = {
 }
 const TOOLS: UiTool[] = ['pencil', 'pen', 'eraser', 'lasso', 'rect']
 const toolIcon = (t: UiTool) => <Icon d={ICONS[t]} dash={t === 'rect' || t === 'lasso'} />
+
+const MARK_NUDGE: Record<string, [number, number]> = {
+  ArrowLeft: [-10, 0],
+  ArrowRight: [10, 0],
+  ArrowUp: [0, -10],
+  ArrowDown: [0, 10],
+}
+
+function MoveMarker({ onMove }: { onMove(dx: number, dy: number): void }) {
+  const drag = useRef<{ id: number; x: number; y: number } | null>(null)
+  const move = (e: PointerEvent<HTMLButtonElement>) => {
+    const d = drag.current
+    if (!d || d.id !== e.pointerId) return
+    onMove(e.clientX - d.x, e.clientY - d.y)
+    d.x = e.clientX
+    d.y = e.clientY
+  }
+  return (
+    <button
+      type="button"
+      className="canvas-fab canvas-move-marker"
+      aria-label="Move marker"
+      title="Drag to move marker"
+      onPointerDown={(e) => {
+        if (drag.current || e.button !== 0) return
+        e.currentTarget.setPointerCapture(e.pointerId)
+        drag.current = { id: e.pointerId, x: e.clientX, y: e.clientY }
+      }}
+      onPointerMove={move}
+      onPointerUp={move}
+      onLostPointerCapture={(e) => {
+        if (drag.current?.id === e.pointerId) drag.current = null
+      }}
+      onContextMenu={(e) => e.preventDefault()}
+      onKeyDown={(e) => {
+        const delta = MARK_NUDGE[e.key]
+        if (!delta) return
+        e.preventDefault()
+        onMove(...delta)
+      }}
+    >
+      <Icon d={ICONS.move} />
+    </button>
+  )
+}
 
 interface SettingsProps {
   tool: UiTool
@@ -115,6 +161,7 @@ export function CanvasView() {
     const v = localStorage.getItem(K_TOUCH)
     return v ? v === 'on' : window.matchMedia('(pointer: coarse)').matches // phones draw with a finger by default
   })
+  const [hasMark, setHasMark] = useState(false)
   const [panel, setPanel] = useState<'tools' | 'options' | null>(null)
   const [corner, setCorner] = useState<{ x: number; y: number } | null>(null)
   const [settings, setSettings] = useState<Settings>(() => {
@@ -139,6 +186,7 @@ export function CanvasView() {
         onFloating: setFloating,
         onSelection: setCorner,
         onTouchDraws: (on) => setTouch(on),
+        onMark: setHasMark,
         onContext: (x, y) => setMenu({ x, y }),
       },
       { settings, view: loadJSON<View>(K_VIEW, { x: 0, y: 0, z: 1 }), touchDraws: touch },
@@ -342,6 +390,8 @@ export function CanvasView() {
           </div>
         </div>
       )}
+
+      {touch && hasMark && !floating && <MoveMarker onMove={(dx, dy) => ctl.current?.moveMarkBy(dx, dy)} />}
 
       {floating && (
         <div className="canvas-placebar">
