@@ -67,14 +67,14 @@ export function legacyOps(month: string, me: string): Op[] {
   }
 }
 
-/** Months with any drawing cached here, newest first. */
+/** Months with a cached log here, newest first. */
 export function monthsWithContent(): string[] {
   const out: string[] = []
   for (let i = 0; i < localStorage.length; i++) {
     const k = localStorage.key(i)
     if (k?.startsWith(OPS_PREFIX)) {
       const m = k.slice(OPS_PREFIX.length)
-      if (isMonthKey(m) && loadOps(m)?.ops.some((o) => o.data.op !== 'undo' && o.data.op !== 'redo')) out.push(m)
+      if (isMonthKey(m)) out.push(m) // key scan only: parsing every month's log on each render was the expensive part
     }
   }
   return out.sort().reverse()

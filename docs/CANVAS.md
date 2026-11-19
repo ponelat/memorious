@@ -28,7 +28,8 @@ space, middle- or **right-button drag** pans; a right click that doesn't move op
 shortcuts, size, opacity, undo / redo).
 
 **Shortcuts** (also shown in the tool list and menu): `P` pencil, `N` pen, `E` eraser, `L` lasso, `R` rect, `I` image;
-`Space` + drag pan; Cmd/Ctrl+Z undo, +Shift+Z (or Ctrl+Y) redo; Delete, Esc and Cmd/Ctrl+D act on a selection. Image: pick, paste or drop one, drag to move, drag the corner dot to scale, then **place**.
+`X` back to the previous tool (also the swap button next to the tool picker, and a stylus barrel-button press — the
+Apple Pencil Pro's *squeeze* is not exposed to web pages by Safari, so it needs the native app); `Space` + drag pan; Cmd/Ctrl+Z undo, +Shift+Z (or Ctrl+Y) redo; Delete, Esc and Cmd/Ctrl+D act on a selection. Image: pick, paste or drop one, drag to move, drag the corner dot to scale, then **place**.
 Cmd/Ctrl+Z undoes, with shift (or Ctrl+Y) redoes; options has undo / redo icons and one light/dark button
 (it drives the app-wide appearance setting).
 
@@ -74,3 +75,12 @@ Image pixels do **not** sync yet (the `image` op does; other clients can't draw 
 ## Not done
 Rotating a selection, tilt shading, month rollover while the tab stays open, image pixels in sync, the freeze /
 snapshot / compaction phase, and the desktop (Tauri) and iOS faces of `/api/ink`.
+
+## Rendering cost
+Every pan / zoom settle replays the month's strokes into the ink buffers, so the work is kept to what changed:
+strokes whose bounds miss the view aren't stamped at all; the dimmed months underneath are redrawn only when the view,
+layers or one of their logs changed; only the part of the screen the strokes reached is painted; a peer's new strokes
+that land at the end of the order are stamped onto what's drawn instead of rebuilding (`stampAppended`); our own push
+being confirmed no longer triggers a rebuild unless the order actually changed; months are listed by key scan, not by
+parsing every cached log. Measured on 2 × 1500 strokes at DPR 2: idle 30 → 6 ms of main thread per 6 s, one stroke
+(draw + push + confirm) 554 → 184 ms, zoom settle 415 → 235 ms, pan settle 421 → 344 ms.

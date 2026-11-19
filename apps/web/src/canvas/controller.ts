@@ -59,6 +59,8 @@ export interface ControllerHooks {
   onTouchDraws(on: boolean): void
   /** The offset marker was added or cleared. */
   onMark(on: boolean): void
+  /** The tool changed (by the user, or by a swap from a pen button). */
+  onTool(tool: UiTool, prev: UiTool | null): void
   /** Where the selection's top-right corner is (host px), or null when nothing is selected. */
   onSelection(corner: { x: number; y: number } | null): void
   /** A right click that didn't turn into a pan, at client coordinates. */
@@ -68,6 +70,8 @@ export interface ControllerHooks {
 export class CanvasController {
   readonly month = monthKey()
   tool: UiTool = 'pencil'
+  /** The tool before this one (what the swap button / key / pencil squeeze goes back to). */
+  prevTool: UiTool | null = null
   settings: Settings = structuredClone(DEFAULT_SETTINGS)
   layers: Layers = { pencil: true, pen: true, image: true }
   visibleMonths: string[] = []
@@ -86,6 +90,7 @@ export class CanvasController {
   private mini: HTMLCanvasElement
   private miniLayer = document.createElement('canvas') // the content, drawn once per change; the viewport rect is drawn over it
   private miniKey = ''
+  private miniBounds: { key: string; b: [number, number, number, number] | null } = { key: '', b: null }
   private miniMap = { minX: 0, minY: 0, scale: 1, offX: 0, offY: 0 }
   private miniOn = false
   private miniDrag = false
@@ -111,6 +116,12 @@ export class CanvasController {
   private pend: { qx: number; qy: number; e0: PointerEvent; done: boolean; timer: number } | null = null // finger down, not yet drawing
   private selActive = false // a lasso path or a selection drag is in progress
   private others = new Map<string, { v: number; items: Item[] }>()
+  // caches (see rebuild): what's already drawn is kept, and only what changed is redone
+  private bboxCache = new Map<string, BBox>() // per item id: its ink bounds (an item's points never change under the same id)
+  private baseKey = '' // what the dimmed-months layer currently shows
+  private bitmapsLoaded = 0
+  private stamped: string[] = [] // the events (id:active) drawn into the ink buffers, in order — lets a peer's new strokes be stamped on top instead of redrawing everything
+
   private bitmaps = new Map<string, ImageBitmap | 'loading'>()
   private live: Live | null = null
   private floating: Floating | null = null
@@ -218,9 +229,17 @@ export class CanvasController {
     this.mark = [this.mark[0] + dx / this.view.z, this.mark[1] + dy / this.view.z]
     this.updateMarkRing()
   }
+  /** Go back to the previous tool (and make this one the new previous). */
+  swapTool() {
+    if (this.prevTool) this.setTool(this.prevTool)
+  }
   setTool(t: UiTool) {
-    if (t !== this.tool) this.setMark(null) // changing tool leaves offset mode (the mark goes)
+    if (t !== this.tool) {
+      this.setMark(null) // changing tool leaves offset mode (the mark goes)
+      this.prevTool = this.tool
+    }
     this.tool = t
+    this.hooks.onTool(t, this.prevTool)
     this.host.style.cursor = t === 'eraser' ? 'none' : 'crosshair'
     if (t !== 'eraser') this.ring.style.display = 'none'
     if (!isSelect(t)) this.clearSel()
@@ -270,9 +289,32 @@ export class CanvasController {
   /** The journal brought something new for `month` (a peer's ops, or ours coming back stamped). */
   remoteChanged(month: string) {
     if (month !== this.month && !this.visibleMonths.includes(month)) return
+    if (month === this.month && this.stampAppended()) {
+      this.refreshSelection()
+      this.drawMinimap()
+      this.hooks.onChange()
+      return
+    }
     if (month === this.month) this.refreshSelection()
     this.schedRebuild(30)
     this.hooks.onChange()
+  }
+  /** The common case for a peer's drawing: new strokes at the end of the canvas order, nothing else changed. Stamp just
+   *  those onto what's already drawn. Returns false when it isn't that simple (an op landed earlier in the order, an
+   *  undo / move / delete / image came in, the view moved) and a full rebuild is needed. */
+  private stampAppended(): boolean {
+    const bv = this.buf.bv
+    if (this.lift || this.live || this.drag || this.rbTimer || bv.x !== this.view.x || bv.y !== this.view.y || bv.z !== this.view.z) return false
+    const evs = this.events
+    const now = evs.map(this.sig)
+    if (this.stamped.length > now.length || !this.stamped.every((x, i) => x === now[i])) return false
+    const extra = evs.slice(this.stamped.length)
+    if (!extra.every((e) => e.type === 'stroke' && e.active !== false)) return false
+    for (const e of extra) if (e.type === 'stroke') this.buf.stampStroke(e)
+    this.buf.flush(this.ctx.ink, this.layers)
+    this.stamped = now
+    this.items = this.monthItems(this.month)
+    return true
   }
   /** Pick an image from disk / clipboard and float it for placing. */
   async addImage(file: Blob) {
@@ -335,6 +377,7 @@ export class CanvasController {
       void getBlob(hash).then(async (blob) => {
         if (!blob) return this.bitmaps.delete(hash)
         this.bitmaps.set(hash, await createImageBitmap(blob))
+        this.bitmapsLoaded++
         this.schedRebuild(30)
       })
     }
@@ -351,9 +394,28 @@ export class CanvasController {
     }
   }
 
+  /** Stamp the strokes that can reach the screen. A canvas this big is mostly off-screen: an item whose bounds miss the
+   *  view contributes no pixels, so it isn't stamped at all (its dabs aren't even walked). */
   private stampAll(items: Item[]) {
-    for (const e of items) if (e.tool !== 'image') this.buf.stampStroke(e)
+    const { W, H, bv, dpr } = this.buf
+    const vx0 = bv.x
+    const vy0 = bv.y
+    const vx1 = bv.x + W / (bv.z * dpr)
+    const vy1 = bv.y + H / (bv.z * dpr)
+    for (const e of items) {
+      if (e.tool === 'image') continue
+      let b = this.bboxCache.get(e.id)
+      if (!b) {
+        b = bboxOf([e])
+        const m = e.size * 2.5 // a dab reaches ~3 sigma beyond the path
+        b = [b[0] - m, b[1] - m, b[2] + m, b[3] + m]
+        this.bboxCache.set(e.id, b)
+      }
+      if (b[2] < vx0 || b[0] > vx1 || b[3] < vy0 || b[1] > vy1) continue
+      this.buf.stampStroke(e)
+    }
   }
+  private sig = (e: Ev) => `${e.id}:${e.active === false ? 0 : 1}`
 
   private monthItems(m: string) {
     const log = this.data.log(m)
@@ -370,32 +432,38 @@ export class CanvasController {
     this.view.z = clamp(this.view.z, 0.1, 20)
     this.stage.style.transform = ''
     const { base, imgs, ink } = this.ctx
-    // other months, oldest first, dimmed, underneath
-    base.clearRect(0, 0, W, H)
-    const tm = this.tmpMonth.getContext('2d')!
-    const ti = this.tmpInk.getContext('2d')!
-    for (const m of [...this.visibleMonths].sort()) {
-      const evs = this.monthItems(m)
-      this.buf.clear(this.view)
-      this.stampAll(evs)
-      tm.clearRect(0, 0, W, H)
-      this.drawImages(tm, evs)
-      this.buf.dirty = [0, 0, W, H]
-      ti.clearRect(0, 0, W, H)
-      this.buf.flush(ti, this.layers)
-      tm.drawImage(this.tmpInk, 0, 0)
-      base.globalAlpha = DIM
-      base.drawImage(this.tmpMonth, 0, 0)
-      base.globalAlpha = 1
+    // other months, oldest first, dimmed, underneath — redrawn only if something they depend on changed
+    const months = [...this.visibleMonths].sort()
+    const baseKey = [W, H, this.view.x, this.view.y, this.view.z, this.layers.pencil, this.layers.pen, this.layers.image, this.bitmapsLoaded, months.map((m) => m + ':' + this.data.log(m).version).join(',')].join('|')
+    if (baseKey !== this.baseKey) {
+      this.baseKey = baseKey
+      base.clearRect(0, 0, W, H)
+      const tm = this.tmpMonth.getContext('2d')!
+      const ti = this.tmpInk.getContext('2d')!
+      for (const m of months) {
+        const evs = this.monthItems(m)
+        this.buf.clear(this.view)
+        this.stampAll(evs)
+        tm.clearRect(0, 0, W, H)
+        this.drawImages(tm, evs)
+        ti.clearRect(0, 0, W, H)
+        this.buf.flush(ti, this.layers) // only the part the strokes reached
+        tm.drawImage(this.tmpInk, 0, 0)
+        base.globalAlpha = DIM
+        base.drawImage(this.tmpMonth, 0, 0)
+        base.globalAlpha = 1
+      }
     }
     // this month: images, then ink (the ink buffers stay live for incremental strokes)
     imgs.clearRect(0, 0, W, H)
-    this.items = fold(this.events, this.lift ? [{ type: 'delete', poly: this.lift.poly, only: this.lift.only, ids: this.lift.ids }] : [])
+    if (this.lift) this.items = fold(this.events, [{ type: 'delete', poly: this.lift.poly, only: this.lift.only, ids: this.lift.ids }])
+    else this.items = this.monthItems(this.month)
     this.drawImages(imgs, this.items)
     this.buf.clear(this.view)
     this.stampAll(this.items)
-    this.buf.dirty = [0, 0, W, H]
+    ink.clearRect(0, 0, W, H)
     this.buf.flush(ink, this.layers)
+    this.stamped = this.lift ? [] : this.events.map(this.sig)
     this.ctx.float.clearRect(0, 0, W, H)
     this.float.style.transform = ''
     this.refreshSelectionView()
@@ -624,7 +692,9 @@ export class CanvasController {
 
   // ── events ─────────────────────────────────────────────────────────────
   private pushEvent(ev: Ev) {
+    const inStep = this.stamped.length === this.events.length // everything in the log is drawn
     const op = this.log.addEvent(ev)
+    if (inStep && ev.type === 'stroke') this.stamped.push(`${op.cid}:1`) // the live stroke is already stamped
     this.data.added(this.month)
     this.hooks.onChange()
     this.drawMinimap()
@@ -668,7 +738,18 @@ export class CanvasController {
     this.ring.style.cssText = `display:block;width:${d}px;height:${d}px;transform:translate(${x - d / 2}px,${y - d / 2}px);background:${fill}`
   }
 
+  private barrel = false
+  /** A pen's barrel button (pointer `buttons` bit 2), on its rising edge, swaps back to the previous tool. This is what a web
+   *  page can see of a stylus button; the Apple Pencil Pro's squeeze is not exposed to web pages by Safari. */
+  private penButton(e: PointerEvent) {
+    if (e.pointerType !== 'pen') return
+    const down = (e.buttons & 2) !== 0
+    if (down && !this.barrel) this.swapTool()
+    this.barrel = down
+  }
+
   private pointerDown(e: PointerEvent) {
+    this.penButton(e)
     const now = performance.now()
     if (e.pointerType === 'touch' && this.penSeen && (this.live || now - this.lastPenT < 700)) return e.preventDefault() // palm
     try {
@@ -787,6 +868,7 @@ export class CanvasController {
   }
 
   private pointerMove(e: PointerEvent) {
+    this.penButton(e)
     this.moveRing(e)
     const p = this.ptrs.get(e.pointerId)
     if (!p) return
@@ -980,20 +1062,25 @@ export class CanvasController {
       this.miniKey = ''
     }
     const groups = [...this.visibleMonths].sort().map((m) => ({ items: this.monthItems(m), dim: true, v: this.data.log(m).version })).concat([{ items: this.monthItems(this.month), dim: false, v: this.log.version }])
-    // bounds: all the ink (stable while you pan); with no ink yet, the viewport
-    let x0 = 1e9
-    let y0 = 1e9
-    let x1 = -1e9
-    let y1 = -1e9
-    for (const g of groups) {
-      const real = g.items.filter((it) => it.tool !== 'eraser')
-      if (!real.length) continue
-      const b = bboxOf(real)
-      x0 = Math.min(x0, b[0])
-      y0 = Math.min(y0, b[1])
-      x1 = Math.max(x1, b[2])
-      y1 = Math.max(y1, b[3])
+    // bounds: all the ink (stable while you pan), recomputed only when a month's log changes
+    const bkey = groups.map((g) => g.v).join(',') + '|' + this.layers.image
+    if (this.miniBounds.key !== bkey) {
+      let a = 1e9
+      let b = 1e9
+      let c = -1e9
+      let d = -1e9
+      for (const g of groups) {
+        const real = g.items.filter((it) => it.tool !== 'eraser')
+        if (!real.length) continue
+        const bb = bboxOf(real)
+        a = Math.min(a, bb[0])
+        b = Math.min(b, bb[1])
+        c = Math.max(c, bb[2])
+        d = Math.max(d, bb[3])
+      }
+      this.miniBounds = { key: bkey, b: a > c ? null : [a, b, c, d] }
     }
+    let [x0, y0, x1, y1] = this.miniBounds.b ?? [1e9, 1e9, -1e9, -1e9]
     if (x0 > x1) {
       x0 = this.view.x
       y0 = this.view.y

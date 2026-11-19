@@ -32,6 +32,7 @@ const Icon = ({ d, size = 20, dash }: { d: string; size?: number; dash?: boolean
   </svg>
 )
 const ICONS = {
+  swap: 'M7 4L3 8l4 4M3 8h14M17 20l4-4-4-4M21 16H7',
   undo: 'M9 14L4 9l5-5M4 9h10a6 6 0 010 12h-3',
   redo: 'M15 14l5-5-5-5M20 9H10a6 6 0 000 12h3',
   move: 'M12 3v18M3 12h18M9 6l3-3 3 3M9 18l3 3 3-3M6 9l-3 3 3 3M18 9l3 3-3 3',
@@ -50,6 +51,7 @@ const ICONS = {
 const TOOLS: UiTool[] = ['pencil', 'pen', 'eraser', 'lasso', 'rect']
 /** One key per tool (shown in the tool list and the tooltips). Undo/redo are the usual Cmd/Ctrl+Z / Shift+Z. */
 const KEYS: Record<UiTool | 'image', string> = { pencil: 'P', pen: 'N', eraser: 'E', lasso: 'L', rect: 'R', image: 'I' }
+const SWAP_KEY = 'X' // back to the previous tool
 const MOD = /Mac|iPhone|iPad/.test(navigator.platform) ? '⌘' : 'Ctrl+'
 const toolIcon = (t: UiTool) => <Icon d={ICONS[t]} dash={t === 'rect' || t === 'lasso'} />
 
@@ -164,6 +166,7 @@ export function CanvasView() {
   const prev = useMemo(() => prevMonth(now), [now])
 
   const [tool, setToolState] = useState<UiTool>('pencil')
+  const [prevTool, setPrevTool] = useState<UiTool | null>(null)
   const [dark, setDark] = useState(isDark)
   const [touch, setTouch] = useState<boolean>(() => {
     const v = localStorage.getItem(K_TOUCH)
@@ -199,6 +202,10 @@ export function CanvasView() {
           if (c) saveJSON(K_VIEW, c.view)
         },
         onFloating: setFloating,
+        onTool: (t, prev) => {
+          setToolState(t)
+          setPrevTool(prev)
+        },
         onSelection: setCorner,
         onContext: (x, y) => setMenu({ x, y }),
         onTouchDraws: (on) => setTouch(on),
@@ -240,10 +247,7 @@ export function CanvasView() {
     }
   }, [])
 
-  const pickTool = useCallback((t: UiTool) => {
-    setToolState(t)
-    ctl.current?.setTool(t)
-  }, [])
+  const pickTool = useCallback((t: UiTool) => ctl.current?.setTool(t), []) // the controller reports back through onTool
   const onSetting = useCallback((t: Tool, s: { size?: number; op?: number }) => {
     ctl.current?.setSetting(t, s)
     setSettings((cur) => {
@@ -311,6 +315,11 @@ export function CanvasView() {
     const onKey = (e: KeyboardEvent) => {
       if (e.metaKey || e.ctrlKey || e.altKey || /^(INPUT|TEXTAREA|SELECT)$/.test((e.target as HTMLElement)?.tagName)) return
       const k = e.key.toUpperCase()
+      if (k === SWAP_KEY) {
+        e.preventDefault()
+        ctl.current?.swapTool()
+        return
+      }
       if (k === KEYS.image) {
         e.preventDefault()
         file.current?.click()
@@ -363,6 +372,15 @@ export function CanvasView() {
           onClick={() => setPanel(panel === 'tools' ? null : 'tools')}
         >
           {toolIcon(tool)}
+        </button>
+        <button
+          className="canvas-fab"
+          title={prevTool ? `previous tool: ${prevTool} (${SWAP_KEY})` : 'previous tool'}
+          aria-label="previous tool"
+          disabled={!prevTool}
+          onClick={() => ctl.current?.swapTool()}
+        >
+          {prevTool ? toolIcon(prevTool) : <Icon d={ICONS.swap} />}
         </button>
         <button
           className={'canvas-fab' + (panel === 'options' ? ' on' : '')}
