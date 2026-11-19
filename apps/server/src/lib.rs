@@ -28,6 +28,7 @@ use serde::{Deserialize, Serialize};
 pub mod mcp;
 pub mod oauth;
 pub mod embed_sweeper;
+mod ink;
 pub mod peer_ping;
 pub mod sweeper;
 use serde_json::json;
@@ -218,6 +219,8 @@ pub fn app(state: RouterState, web_dist: Option<PathBuf>) -> Router {
         .route("/feed", get(feed))
         .route("/media/{hash}", get(media))
         .route("/redact", post(redact))
+        .route("/ink", get(ink::months))
+        .route("/ink/{month}", get(ink::list).post(ink::append))
         .route("/trash", get(trash))
         .route("/search", get(search))
         .route("/search/related", get(search_related))
