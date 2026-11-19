@@ -173,6 +173,7 @@ export function CanvasView() {
     return v ? v === 'on' : window.matchMedia('(pointer: coarse)').matches // phones draw with a finger by default
   })
   const [hasMark, setHasMark] = useState(false)
+  const [zoom, setZoom] = useState(1)
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
   const [mini, setMini] = useState(() => localStorage.getItem(K_MINI) === 'on')
   const [panel, setPanel] = useState<'tools' | 'options' | null>(null)
@@ -206,6 +207,7 @@ export function CanvasView() {
           setToolState(t)
           setPrevTool(prev)
         },
+        onZoom: setZoom,
         onSelection: setCorner,
         onContext: (x, y) => setMenu({ x, y }),
         onTouchDraws: (on) => setTouch(on),
@@ -360,7 +362,7 @@ export function CanvasView() {
   }
 
   return (
-    <div className="canvas-view">
+    <div className={'canvas-view' + (mini ? ' mini-on' : '')}>
       <div className="canvas-host" ref={host} />
 
       {/* floating buttons: quick tool picker, options, undo, redo */}
@@ -456,6 +458,25 @@ export function CanvasView() {
             </label>
           </div>
         </div>
+      )}
+
+      {/* zoom: out / percent (tap = back to 100%) / in, under the minimap; without the minimap just a reset button */}
+      {mini ? (
+        <div className="canvas-zoom">
+          <button className="canvas-btn" title="zoom out" aria-label="zoom out" onClick={() => ctl.current?.zoomBy(1 / 1.25)}>
+            <Icon d="M5 12h14" size={16} />
+          </button>
+          <button className="canvas-btn canvas-zoom-reset" title="reset zoom to 100%" aria-label="reset zoom" onClick={() => ctl.current?.resetZoom()}>
+            {Math.round(zoom * 100)}%
+          </button>
+          <button className="canvas-btn" title="zoom in" aria-label="zoom in" onClick={() => ctl.current?.zoomBy(1.25)}>
+            <Icon d="M12 5v14M5 12h14" size={16} />
+          </button>
+        </div>
+      ) : (
+        <button className="canvas-btn canvas-zoom-solo" aria-label="reset zoom" onClick={() => ctl.current?.resetZoom()}>
+          Reset zoom
+        </button>
       )}
 
       {touch && hasMark && !floating && <MoveMarker onMove={(dx, dy) => ctl.current?.moveMarkBy(dx, dy)} />}

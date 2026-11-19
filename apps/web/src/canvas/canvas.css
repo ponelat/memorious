@@ -143,7 +143,7 @@
 .canvas-move-marker {
   position: absolute;
   right: max(14px, env(safe-area-inset-right));
-  bottom: max(14px, env(safe-area-inset-bottom));
+  bottom: calc(max(14px, env(safe-area-inset-bottom)) + 46px); /* above the reset-zoom button */
   z-index: 4;
   width: 64px;
   height: 56px;
@@ -246,17 +246,56 @@
   box-shadow: 0 6px 24px rgb(0 0 0 / 0.18);
 }
 
-/* overview of the whole canvas, top right; click or drag to go there */
+/* overview of the whole canvas, bottom right (zoom bar under it); click or drag to go there */
 .canvas-minimap {
   position: absolute;
-  top: 12px;
-  right: 12px;
+  right: max(14px, env(safe-area-inset-right));
+  bottom: calc(max(14px, env(safe-area-inset-bottom)) + 42px); /* sits on the zoom bar */
   width: 200px;
   height: 140px;
   z-index: 3;
   background: var(--paper);
   border: 1px solid var(--line-strong);
-  border-radius: 10px;
+  border-bottom: none;
+  border-radius: 10px 10px 0 0;
   touch-action: none;
   cursor: pointer;
+}
+
+/* zoom bar under the minimap */
+.canvas-zoom {
+  position: absolute;
+  right: max(14px, env(safe-area-inset-right));
+  bottom: max(14px, env(safe-area-inset-bottom));
+  width: 200px;
+  height: 42px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 6px;
+  z-index: 3;
+  background: var(--paper);
+  border: 1px solid var(--line-strong);
+  border-radius: 0 0 10px 10px;
+}
+.canvas-zoom .canvas-btn {
+  border: none;
+  min-width: 44px;
+  padding: 5px 8px;
+}
+.canvas-zoom .canvas-zoom-reset {
+  flex: 1;
+  margin: 0 4px;
+}
+/* no minimap: just a reset button, bottom right */
+.canvas-zoom-solo {
+  position: absolute;
+  right: max(14px, env(safe-area-inset-right));
+  bottom: max(14px, env(safe-area-inset-bottom));
+  z-index: 3;
+  box-shadow: 0 2px 10px rgb(0 0 0 / 0.12);
+}
+/* the touch marker handle rides above whatever is in that corner */
+.canvas-view.mini-on .canvas-move-marker {
+  bottom: calc(max(14px, env(safe-area-inset-bottom)) + 42px + 140px + 8px);
 }

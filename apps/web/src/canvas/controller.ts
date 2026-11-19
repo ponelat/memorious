@@ -59,6 +59,8 @@ export interface ControllerHooks {
   onTouchDraws(on: boolean): void
   /** The offset marker was added or cleared. */
   onMark(on: boolean): void
+  /** The zoom changed (1 = 100 %). */
+  onZoom(z: number): void
   /** The tool changed (by the user, or by a swap from a pen button). */
   onTool(tool: UiTool, prev: UiTool | null): void
   /** Where the selection's top-right corner is (host px), or null when nothing is selected. */
@@ -430,6 +432,7 @@ export class CanvasController {
     const { W, H } = this.buf
     if (!W) return
     this.view.z = clamp(this.view.z, 0.1, 20)
+    this.hooks.onZoom(this.view.z)
     this.stage.style.transform = ''
     const { base, imgs, ink } = this.ctx
     // other months, oldest first, dimmed, underneath — redrawn only if something they depend on changed
@@ -1175,23 +1178,31 @@ export class CanvasController {
     }
     this.prevG = g
   }
+  /** Scroll zooms (about the pointer); panning is right-button / middle / space drag, or fingers. Ctrl+wheel (a trackpad
+   *  pinch) zooms faster per delta. */
   private wheel(e: WheelEvent) {
     e.preventDefault()
     const r = this.host.getBoundingClientRect()
-    const cx = e.clientX - r.left
-    const cy = e.clientY - r.top
-    if (e.ctrlKey) {
-      const nz = clamp(this.view.z * Math.exp(-e.deltaY * 0.01), 0.1, 20)
-      const wx = this.view.x + cx / this.view.z
-      const wy = this.view.y + cy / this.view.z
-      this.view.z = nz
-      this.view.x = wx - cx / nz
-      this.view.y = wy - cy / nz
-    } else {
-      this.view.x += e.deltaX / this.view.z
-      this.view.y += e.deltaY / this.view.z
-    }
+    const dy = e.deltaMode === 1 ? e.deltaY * 16 : e.deltaY
+    this.zoomAround(e.clientX - r.left, e.clientY - r.top, Math.exp(-dy * (e.ctrlKey ? 0.01 : 0.0015)))
+  }
+  /** Zoom by `factor`, keeping the world point under host-px (cx, cy) where it is. */
+  private zoomAround(cx: number, cy: number, factor: number) {
+    const nz = clamp(this.view.z * factor, 0.1, 20)
+    const wx = this.view.x + cx / this.view.z
+    const wy = this.view.y + cy / this.view.z
+    this.view.z = nz
+    this.view.x = wx - cx / nz
+    this.view.y = wy - cy / nz
     this.gestureTransform()
+  }
+  /** Zoom buttons: step in / out about the middle of the screen. */
+  zoomBy(factor: number) {
+    this.zoomAround(this.host.clientWidth / 2, this.host.clientHeight / 2, factor)
+  }
+  /** Back to 100 % about the middle of the screen. */
+  resetZoom() {
+    this.zoomBy(1 / this.view.z)
   }
   /** During a gesture the existing pixels just move (CSS); the sharp replay follows once it settles. */
   private gestureTransform() {
@@ -1200,6 +1211,7 @@ export class CanvasController {
     const tx = this.view.z * (bv.x - this.view.x)
     const ty = this.view.z * (bv.y - this.view.y)
     this.stage.style.transform = `translate(${tx}px,${ty}px) scale(${s})`
+    this.hooks.onZoom(this.view.z)
     this.refreshSelectionView()
     this.updateMarkRing()
     this.drawMinimap()

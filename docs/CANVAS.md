@@ -23,8 +23,8 @@ Where: `apps/web/src/canvas/` (`CanvasView.tsx` chrome, `controller.ts` input/re
 ## Input
 Mouse / Apple Pencil draw. Fingers: on a phone (coarse pointer) one finger draws and two pan/pinch (a second finger
 discards the stroke the first one started); the first time a pencil is seen, finger drawing switches itself off so on an
-iPad fingers pan. The **finger** button overrides it. Wheel pans, ctrl+wheel (trackpad pinch) zooms,
-space, middle- or **right-button drag** pans; a right click that doesn't move opens the tool menu (tools with their
+iPad fingers pan. The **finger** button overrides it. **Scroll zooms** (about the pointer; ctrl+wheel / trackpad pinch faster per delta). Pan with
+space, middle- or **right-button drag**, or fingers; a right click that doesn't move opens the tool menu (tools with their
 shortcuts, size, opacity, undo / redo).
 
 **Shortcuts** (also shown in the tool list and menu): `P` pencil, `N` pen, `E` eraser, `L` lasso, `R` rect, `I` image;
@@ -45,6 +45,9 @@ Ops without `ids` (older ones) still act on everything inside the polygon. **Era
 back**: the eraser works on pixels, so before a piece is selected or moved the points the erasers visibly wiped are cut
 out of it (a point counts as erased once the erasers passing over it have left < 20 % of it). **An eraser only reaches the
 layers that were visible when it was used** (`only` on the stroke), like move / delete.
+
+**Zoom controls**, bottom right: with the minimap on they sit under it as − / percent (tap = back to 100 %) / +; with it
+off there is just a **Reset zoom** button.
 
 **Minimap** (options → *minimap*): an overview of the whole canvas — every month on show, erasers included — with the
 part you're looking at outlined; click or drag on it to go there. iPad: touchstart/touchmove are `preventDefault`ed on the canvas —
