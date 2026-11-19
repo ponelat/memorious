@@ -4,7 +4,7 @@
  *  including the iPad fix (touchstart/touchmove preventDefault — without it iPadOS swallowed a pencil
  *  touch that landed within ~0.4 s of the previous one). */
 import { InkBuffers, Stamper, rdp, type Ev, type ImageEv, type Item, type Layers, type Poly, type Pt, type StrokeEv, type Tool, type View, type Xf } from './ink'
-import { bboxOf, fold, isIdentity, onlyList, piecesIn, simplifyPoly, xfPoly, xfXY, type BBox } from './select'
+import { bboxOf, fold, isIdentity, layerOf, onlyList, piecesIn, simplifyPoly, xfPoly, xfXY, type BBox } from './select'
 import type { MonthLog } from './oplog'
 import { getBlob, ingest, monthKey } from './store'
 import type { CanvasData } from './sync'
@@ -38,6 +38,7 @@ interface Live {
   seed: number
   size: number
   op?: number
+  only?: string[]
   pts: Pt[]
   stamper: Stamper
   pid: number
@@ -82,6 +83,12 @@ export class CanvasController {
   private float: HTMLCanvasElement
   private over: HTMLCanvasElement
   private ring: HTMLDivElement
+  private mini: HTMLCanvasElement
+  private miniLayer = document.createElement('canvas') // the content, drawn once per change; the viewport rect is drawn over it
+  private miniKey = ''
+  private miniMap = { minX: 0, minY: 0, scale: 1, offX: 0, offY: 0 }
+  private miniOn = false
+  private miniDrag = false
   private ctx: Record<'base' | 'imgs' | 'ink' | 'float' | 'over', CanvasRenderingContext2D>
   private tmpInk = document.createElement('canvas')
   private tmpMonth = document.createElement('canvas')
@@ -92,10 +99,10 @@ export class CanvasController {
     return this.log.events()
   }
   private items: Item[] = []
-  private sel: { poly: Poly; pieces: Item[]; bbox: BBox } | null = null
+  private sel: { poly: Poly; ids: string[]; pieces: Item[]; bbox: BBox } | null = null
   private lassoPath: Poly | null = null
   private rectStart: [number, number] | null = null
-  private lift: { poly: Poly; only?: string[] } | null = null // the selection is being dragged: draw the canvas without it
+  private lift: { poly: Poly; only?: string[]; ids: string[] } | null = null // the selection is being dragged: draw the canvas without it
   private drag: { mode: 'move' | 'scale'; sx: number; sy: number; d0: number; cx: number; cy: number } | null = null
   private dragXf: Xf | null = null
   /** Offset mode (finger): the tool's position (world) — a tap sets it, a drag moves it relatively. */
@@ -140,7 +147,21 @@ export class CanvasController {
     this.over = mk('over')
     this.ring = document.createElement('div')
     this.ring.className = 'canvas-ring'
-    host.append(this.stage, this.ring)
+    this.mini = document.createElement('canvas')
+    this.mini.className = 'canvas-minimap'
+    this.mini.style.display = 'none'
+    host.append(this.stage, this.ring, this.mini)
+    this.mini.addEventListener('pointerdown', (e) => {
+      e.stopPropagation() // the minimap is its own thing, not a drawing surface
+      e.preventDefault()
+      this.mini.setPointerCapture(e.pointerId)
+      this.miniDrag = true
+      this.miniGo(e)
+    })
+    this.mini.addEventListener('pointermove', (e) => this.miniDrag && this.miniGo(e))
+    this.mini.addEventListener('pointerup', () => (this.miniDrag = false))
+    this.mini.addEventListener('pointercancel', () => (this.miniDrag = false))
+    this.mini.addEventListener('touchstart', (e) => e.preventDefault(), { passive: false })
     const g = (c: HTMLCanvasElement, willRead = false) => c.getContext('2d', willRead ? { willReadFrequently: true } : undefined)!
     this.ctx = { base: g(this.base), imgs: g(this.imgs), ink: g(this.ink, true), float: g(this.float), over: g(this.over) }
 
@@ -208,6 +229,13 @@ export class CanvasController {
   setSetting(t: Tool, s: Partial<ToolSetting>) {
     Object.assign(this.settings[t], s)
     if (t === this.tool) this.updateMarkRing()
+  }
+  /** Show / hide the overview of the whole canvas (this month plus the months shown underneath). */
+  setMinimap(on: boolean) {
+    this.miniOn = on
+    this.mini.style.display = on ? 'block' : 'none'
+    this.miniKey = ''
+    this.drawMinimap()
   }
   setLayers(l: Layers) {
     this.layers = { ...l }
@@ -362,7 +390,7 @@ export class CanvasController {
     }
     // this month: images, then ink (the ink buffers stay live for incremental strokes)
     imgs.clearRect(0, 0, W, H)
-    this.items = fold(this.events, this.lift ? [{ type: 'delete', poly: this.lift.poly, only: this.lift.only }] : [])
+    this.items = fold(this.events, this.lift ? [{ type: 'delete', poly: this.lift.poly, only: this.lift.only, ids: this.lift.ids }] : [])
     this.drawImages(imgs, this.items)
     this.buf.clear(this.view)
     this.stampAll(this.items)
@@ -373,6 +401,7 @@ export class CanvasController {
     this.refreshSelectionView()
     this.updateMarkRing()
     this.drawOverlay()
+    this.drawMinimap()
     this.saveView()
   }
 
@@ -457,16 +486,25 @@ export class CanvasController {
     this.drawOverlay()
   }
   private selectPoly(poly: Poly) {
-    const pieces = piecesIn(fold(this.events), poly, this.layers)
+    const { pieces, ids } = piecesIn(fold(this.events), poly, this.layers)
     if (!pieces.length) return this.clearSel()
-    this.sel = { poly, pieces, bbox: bboxOf(pieces) }
+    this.sel = { poly, ids, pieces, bbox: bboxOf(pieces) }
+    this.refreshSelectionView()
+    this.drawOverlay()
+  }
+  /** After a move / duplicate: select exactly the pieces that op produced — not whatever else sits where they landed. */
+  private selectMoved(poly: Poly, opId: string) {
+    const items = fold(this.events)
+    const mine = items.filter((it) => it.tool !== 'eraser' && it.id.includes(`~${opId}i`) && this.layers[layerOf(it)])
+    if (!mine.length) return this.clearSel()
+    this.sel = { poly, ids: mine.map((it) => it.id), pieces: mine, bbox: bboxOf(mine) }
     this.refreshSelectionView()
     this.drawOverlay()
   }
   deleteSelection() {
     const s = this.sel
     if (!s) return
-    this.pushEvent({ type: 'delete', poly: s.poly, only: onlyList(this.layers) })
+    this.pushEvent({ type: 'delete', poly: s.poly, only: onlyList(this.layers), ids: s.ids })
     this.sel = null
     this.rebuild()
   }
@@ -475,10 +513,10 @@ export class CanvasController {
     if (!s) return
     const o = 24 / this.view.z
     const xf: Xf = { dx: o, dy: o, s: 1, cx: (s.bbox[0] + s.bbox[2]) / 2, cy: (s.bbox[1] + s.bbox[3]) / 2 }
-    this.pushEvent({ type: 'move', poly: s.poly, xf, copy: true, only: onlyList(this.layers) })
+    const op = this.pushEvent({ type: 'move', poly: s.poly, xf, copy: true, only: onlyList(this.layers), ids: s.ids })
     this.sel = null
     this.rebuild()
-    this.selectPoly(xfPoly(s.poly, xf))
+    this.selectMoved(xfPoly(s.poly, xf), op.cid)
   }
 
   private selDown(e: PointerEvent) {
@@ -505,7 +543,7 @@ export class CanvasController {
   private beginDrag(mode: 'move' | 'scale', w: [number, number], cx: number, cy: number) {
     const s = this.sel!
     this.selActive = true
-    this.lift = { poly: s.poly, only: onlyList(this.layers) }
+    this.lift = { poly: s.poly, only: onlyList(this.layers), ids: s.ids }
     this.dragXf = { dx: 0, dy: 0, s: 1, cx, cy }
     this.drag = { mode, sx: w[0], sy: w[1], d0: Math.max(1e-6, Math.hypot(w[0] - cx, w[1] - cy)), cx, cy }
     this.rebuild() // main canvas without the selection
@@ -546,7 +584,7 @@ export class CanvasController {
     this.selActive = false
     const xf = this.dragXf
     if (this.drag && xf && this.sel) {
-      const { poly } = this.sel
+      const { poly, ids } = this.sel
       const only = this.lift?.only
       this.drag = null
       this.dragXf = null
@@ -556,9 +594,9 @@ export class CanvasController {
         this.drawOverlay()
         return
       }
-      this.pushEvent({ type: 'move', poly, xf, only })
+      const op = this.pushEvent({ type: 'move', poly, xf, only, ids })
       this.rebuild()
-      this.selectPoly(xfPoly(poly, xf))
+      this.selectMoved(xfPoly(poly, xf), op.cid)
       return
     }
     const path = this.lassoPath
@@ -573,9 +611,11 @@ export class CanvasController {
 
   // ── events ─────────────────────────────────────────────────────────────
   private pushEvent(ev: Ev) {
-    this.log.addEvent(ev)
+    const op = this.log.addEvent(ev)
     this.data.added(this.month)
     this.hooks.onChange()
+    this.drawMinimap()
+    return op
   }
 
   // ── pointer input ──────────────────────────────────────────────────────
@@ -782,7 +822,7 @@ export class CanvasController {
     const t = this.tool as Tool
     const s = this.settings[t]
     const seed = (Math.random() * 4294967296) >>> 0
-    const st = { tool: t, seed, size: s.size, op: s.op < 1 ? s.op : undefined }
+    const st = { tool: t, seed, size: s.size, op: s.op < 1 ? s.op : undefined, only: t === 'eraser' ? onlyList(this.layers) : undefined } // an eraser only reaches the layers that are visible now
     this.live = { ...st, pts: [], stamper: new Stamper(this.buf, st), pid: e.pointerId, lastT: 0, lastX: 0, lastY: 0 }
     this.addPoints(e, true)
   }
@@ -871,6 +911,7 @@ export class CanvasController {
       const kept = rdp(live.pts, SIMPLIFY[live.tool]).map((q) => [+q[0].toFixed(1), +q[1].toFixed(1), +q[2].toFixed(2), +q[3].toFixed(2)] as Pt)
       const ev: StrokeEv = { type: 'stroke', tool: live.tool, seed: live.seed, size: live.size, pts: kept }
       if (live.op != null) ev.op = live.op
+      if (live.only) ev.only = live.only
       this.pushEvent(ev)
     } catch (err) {
       console.error(err)
@@ -900,6 +941,114 @@ export class CanvasController {
       f.rect = [x, y, w * k, h * k]
     }
     this.drawOverlay()
+  }
+
+  // ── minimap ────────────────────────────────────────────────────────────
+  private miniGo(e: PointerEvent) {
+    const r = this.mini.getBoundingClientRect()
+    const m = this.miniMap
+    const wx = m.minX + (e.clientX - r.left - m.offX) / m.scale
+    const wy = m.minY + (e.clientY - r.top - m.offY) / m.scale
+    this.view.x = wx - this.host.clientWidth / this.view.z / 2
+    this.view.y = wy - this.host.clientHeight / this.view.z / 2
+    this.gestureTransform()
+  }
+
+  /** An overview of every month on show: strokes as thin lines, erasers cutting through them, images as pictures or
+   *  boxes, and the part you're looking at as an outline. Click or drag to go there. */
+  private drawMinimap() {
+    if (!this.miniOn) return
+    const dpr = this.dpr
+    const cw = this.mini.clientWidth || 200
+    const ch = this.mini.clientHeight || 140
+    if (this.mini.width !== Math.round(cw * dpr)) {
+      this.mini.width = this.miniLayer.width = Math.round(cw * dpr)
+      this.mini.height = this.miniLayer.height = Math.round(ch * dpr)
+      this.miniKey = ''
+    }
+    const groups = [...this.visibleMonths].sort().map((m) => ({ items: this.monthItems(m), dim: true, v: this.data.log(m).version })).concat([{ items: this.monthItems(this.month), dim: false, v: this.log.version }])
+    // bounds: all the ink (stable while you pan); with no ink yet, the viewport
+    let x0 = 1e9
+    let y0 = 1e9
+    let x1 = -1e9
+    let y1 = -1e9
+    for (const g of groups) {
+      const real = g.items.filter((it) => it.tool !== 'eraser')
+      if (!real.length) continue
+      const b = bboxOf(real)
+      x0 = Math.min(x0, b[0])
+      y0 = Math.min(y0, b[1])
+      x1 = Math.max(x1, b[2])
+      y1 = Math.max(y1, b[3])
+    }
+    if (x0 > x1) {
+      x0 = this.view.x
+      y0 = this.view.y
+      x1 = this.view.x + this.host.clientWidth / this.view.z
+      y1 = this.view.y + this.host.clientHeight / this.view.z
+    }
+    const pad = Math.max(x1 - x0, y1 - y0, 1) * 0.06
+    x0 -= pad
+    y0 -= pad
+    x1 += pad
+    y1 += pad
+    const scale = Math.min(cw / (x1 - x0), ch / (y1 - y0))
+    const offX = (cw - (x1 - x0) * scale) / 2
+    const offY = (ch - (y1 - y0) * scale) / 2
+    this.miniMap = { minX: x0, minY: y0, scale, offX, offY }
+    const key = [groups.map((g) => g.v).join(','), this.layers.pencil, this.layers.pen, this.layers.image, [x0, y0, x1, y1].map((v) => v.toFixed(1)).join(','), cw, ch].join('|')
+    if (key !== this.miniKey) {
+      this.miniKey = key
+      const L = this.miniLayer.getContext('2d')!
+      L.setTransform(1, 0, 0, 1, 0, 0)
+      L.clearRect(0, 0, this.miniLayer.width, this.miniLayer.height)
+      const T = document.createElement('canvas')
+      T.width = this.miniLayer.width
+      T.height = this.miniLayer.height
+      const t = T.getContext('2d')!
+      for (const g of groups) {
+        t.setTransform(1, 0, 0, 1, 0, 0)
+        t.clearRect(0, 0, T.width, T.height)
+        t.setTransform(dpr * scale, 0, 0, dpr * scale, dpr * (offX - x0 * scale), dpr * (offY - y0 * scale))
+        t.lineCap = t.lineJoin = 'round'
+        for (const it of g.items) {
+          if (it.tool === 'image') {
+            if (!this.layers.image) continue
+            const bmp = this.bitmaps.get(it.hash)
+            if (bmp && bmp !== 'loading') t.drawImage(bmp, it.rect[0], it.rect[1], it.rect[2], it.rect[3])
+            else {
+              t.strokeStyle = 'rgb(255 82 0 / 0.6)'
+              t.lineWidth = 1 / scale
+              t.strokeRect(it.rect[0], it.rect[1], it.rect[2], it.rect[3])
+            }
+            continue
+          }
+          const layer = layerOf(it)
+          if (it.tool === 'eraser' ? false : !this.layers[layer]) continue
+          t.globalCompositeOperation = it.tool === 'eraser' ? 'destination-out' : 'source-over'
+          t.globalAlpha = it.tool === 'eraser' ? it.op ?? 1 : it.tool === 'pencil' ? 0.55 * (it.op ?? 1) : it.op ?? 1
+          t.strokeStyle = '#ff5200'
+          t.lineWidth = it.tool === 'eraser' ? 2 * it.size * 1.2 : Math.max(it.size * (it.tool === 'pen' ? 1 : 0.8), 1.5 / scale)
+          t.beginPath()
+          it.pts.forEach((q, i) => (i ? t.lineTo(q[0], q[1]) : t.moveTo(q[0], q[1])))
+          if (it.pts.length === 1) t.lineTo(it.pts[0][0] + 0.01, it.pts[0][1])
+          t.stroke()
+        }
+        t.globalCompositeOperation = 'source-over'
+        t.globalAlpha = 1
+        L.globalAlpha = g.dim ? 0.35 : 1
+        L.drawImage(T, 0, 0)
+      }
+      L.globalAlpha = 1
+    }
+    const c = this.mini.getContext('2d')!
+    c.setTransform(1, 0, 0, 1, 0, 0)
+    c.clearRect(0, 0, this.mini.width, this.mini.height)
+    c.drawImage(this.miniLayer, 0, 0)
+    c.setTransform(dpr, 0, 0, dpr, 0, 0)
+    c.strokeStyle = '#ff5200'
+    c.lineWidth = 1.5
+    c.strokeRect(offX + (this.view.x - x0) * scale, offY + (this.view.y - y0) * scale, (this.host.clientWidth / this.view.z) * scale, (this.host.clientHeight / this.view.z) * scale)
   }
 
   // ── view: pan / zoom ───────────────────────────────────────────────────
@@ -953,6 +1102,7 @@ export class CanvasController {
     this.stage.style.transform = `translate(${tx}px,${ty}px) scale(${s})`
     this.refreshSelectionView()
     this.updateMarkRing()
+    this.drawMinimap()
     this.schedRebuild(180)
   }
 

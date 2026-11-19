@@ -15,15 +15,20 @@ export type Tool = 'pencil' | 'pen' | 'eraser'
 export type Pt = [number, number, number, number] // x, y (world), pressure 0-1, tilt 0-1
 export interface StrokeEv {
   type: 'stroke'
+  /** The op's client id (stable across peers); what moves / deletes refer to. */
+  id?: string
   tool: Tool
   seed: number
   size: number
   op?: number // 0-1, omitted = 1
+  /** Eraser only: the layers that were visible when it was used — it doesn't touch the others. Omitted = all. */
+  only?: string[]
   pts: Pt[]
   active?: boolean
 }
 export interface ImageEv {
   type: 'image'
+  id?: string
   hash: string
   rect: [number, number, number, number] // x, y, w, h in world units
   active?: boolean
@@ -41,6 +46,9 @@ export interface Xf {
  *  `only` = the layers the edit was made with visible; other layers are left alone. */
 export interface MoveEv {
   type: 'move'
+  id?: string
+  /** The items it acts on (a selection holds exactly these — not whatever else sits inside `poly`). Omitted = everything inside `poly` (older ops). */
+  ids?: string[]
   poly: Poly
   xf: Xf
   copy?: boolean
@@ -49,6 +57,8 @@ export interface MoveEv {
 }
 export interface DeleteEv {
   type: 'delete'
+  id?: string
+  ids?: string[]
   poly: Poly
   only?: string[]
   active?: boolean
@@ -56,13 +66,17 @@ export interface DeleteEv {
 export type Ev = StrokeEv | ImageEv | MoveEv | DeleteEv
 /** What a month canvas looks like after folding its events: what actually gets drawn, in order. */
 export interface StrokeItem {
+  /** Stable identity of this piece of ink: the op's id, or `<id>~<op>i<n>` once an op has cut / moved it. */
+  id: string
   tool: Tool
   seed: number
   size: number
   op?: number
+  only?: string[]
   pts: Pt[]
 }
 export interface ImageItem {
+  id: string
   tool: 'image'
   hash: string
   rect: [number, number, number, number]
@@ -197,13 +211,15 @@ export class InkBuffers {
   }
 
   /** Hard-edged eraser dab: thins (depth) and fades (opacity) at once. */
-  erase(cx: number, cy: number, r: number, a: number) {
+  erase(cx: number, cy: number, r: number, a: number, only?: string[]) {
     const { W, H, covPencil, covPen, covPenO } = this
     const x0 = Math.max(0, Math.floor(cx - r - 1))
     const x1 = Math.min(W - 1, Math.ceil(cx + r + 1))
     const y0 = Math.max(0, Math.floor(cy - r - 1))
     const y1 = Math.min(H - 1, Math.ceil(cy + r + 1))
     if (x1 < x0 || y1 < y0) return
+    const ep = !only || only.includes('pencil')
+    const en = !only || only.includes('pen')
     const inner = Math.max(0, r - 0.5)
     const inner2 = inner * inner
     const outer2 = (r + 0.5) * (r + 0.5)
@@ -219,16 +235,18 @@ export class InkBuffers {
         if (w <= 0) continue
         const k = 1 - a * w
         const i = row + x
-        covPencil[i] *= k
-        covPen[i] *= k
-        covPenO[i] *= k
+        if (ep) covPencil[i] *= k
+        if (en) {
+          covPen[i] *= k
+          covPenO[i] *= k
+        }
       }
     }
     this.markDirty(x0, y0, x1 + 1, y1 + 1)
   }
 
   /** Stamp a whole stored stroke. */
-  stampStroke(st: StrokeItem) {
+  stampStroke(st: Omit<StrokeItem, 'id'> & { id?: string }) {
     const s = new Stamper(this, st)
     for (const p of st.pts) s.push(p)
     s.end()
@@ -307,7 +325,7 @@ export class Stamper {
   id: number
   constructor(
     private b: InkBuffers,
-    private st: { tool: Tool; seed: number; size: number; op?: number },
+    private st: { tool: Tool; seed: number; size: number; op?: number; only?: string[] },
   ) {
     this.rng = mulberry32(st.seed)
     this.id = ++b.seq
@@ -377,7 +395,7 @@ export class Stamper {
     const fl = this.st.op ?? 1
     // one pass over a point (2r/sp dabs) removes `op` in total
     const a = fl >= 1 ? 1 : 1 - Math.pow(1 - fl, sp / (2 * r))
-    this.b.erase((q[0] - bv.x) * S, (q[1] - bv.y) * S, r, a)
+    this.b.erase((q[0] - bv.x) * S, (q[1] - bv.y) * S, r, a, this.st.only)
     this.next = sp
     this.started = true
   }

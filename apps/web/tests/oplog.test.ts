@@ -103,4 +103,16 @@ describe('MonthLog', () => {
     expect(wire.opacity).toBe(0.7)
     expect('op' in l.events()[0] && (l.events()[0] as { op?: number }).op).toBe(0.7)
   })
+
+  test('selection scope, eraser layers and op ids survive the wire and reach the fold', () => {
+    const l = new MonthLog('2026-11', 'me')
+    const a = l.addEvent({ type: 'stroke', tool: 'eraser', seed: 1, size: 5, op: 0.4, only: ['pencil'], pts: [[0, 0, 1, 0]] })
+    const m = l.addEvent({ type: 'move', poly: [[0, 0], [1, 0], [1, 1]], xf: { dx: 1, dy: 2, s: 1, cx: 0, cy: 0 }, ids: ['x', 'y'] })
+    const evs = l.events()
+    expect((evs[0] as { only?: string[]; id?: string }).only).toEqual(['pencil'])
+    expect((evs[0] as { id?: string }).id).toBe(a.cid)
+    expect((evs[1] as { ids?: string[]; id?: string }).ids).toEqual(['x', 'y'])
+    expect((evs[1] as { id?: string }).id).toBe(m.cid)
+    expect((m.data as { ids?: string[] }).ids).toEqual(['x', 'y'])
+  })
 })

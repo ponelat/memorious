@@ -8,10 +8,10 @@
 import type { Ev, Poly, Pt, Tool, Xf } from './ink'
 
 export type OpData =
-  | { op: 'stroke'; tool: Tool; seed: number; size: number; opacity?: number; pts: Pt[] }
+  | { op: 'stroke'; tool: Tool; seed: number; size: number; opacity?: number; only?: string[]; pts: Pt[] }
   | { op: 'image'; hash: string; rect: [number, number, number, number] }
-  | { op: 'move'; poly: Poly; xf: Xf; copy?: boolean; only?: string[] }
-  | { op: 'delete'; poly: Poly; only?: string[] }
+  | { op: 'move'; poly: Poly; xf: Xf; copy?: boolean; only?: string[]; ids?: string[] }
+  | { op: 'delete'; poly: Poly; only?: string[]; ids?: string[] }
   | { op: 'undo'; target: string }
   | { op: 'redo'; target: string }
 
@@ -47,6 +47,7 @@ export function toData(ev: Ev): OpData {
     case 'stroke': {
       const d: OpData = { op: 'stroke', tool: ev.tool, seed: ev.seed, size: ev.size, pts: ev.pts }
       if (ev.op != null) d.opacity = ev.op
+      if (ev.only) d.only = ev.only
       return d
     }
     case 'image':
@@ -55,26 +56,28 @@ export function toData(ev: Ev): OpData {
       const d: OpData = { op: 'move', poly: ev.poly, xf: ev.xf }
       if (ev.copy) d.copy = true
       if (ev.only) d.only = ev.only
+      if (ev.ids) d.ids = ev.ids
       return d
     }
     case 'delete': {
       const d: OpData = { op: 'delete', poly: ev.poly }
       if (ev.only) d.only = ev.only
+      if (ev.ids) d.ids = ev.ids
       return d
     }
   }
 }
 
-function toEv(d: OpData, active: boolean): Ev | null {
+function toEv(d: OpData, active: boolean, id: string): Ev | null {
   switch (d.op) {
     case 'stroke':
-      return { type: 'stroke', tool: d.tool, seed: d.seed, size: d.size, op: d.opacity, pts: d.pts, active }
+      return { type: 'stroke', id, tool: d.tool, seed: d.seed, size: d.size, op: d.opacity, only: d.only, pts: d.pts, active }
     case 'image':
-      return { type: 'image', hash: d.hash, rect: d.rect, active }
+      return { type: 'image', id, hash: d.hash, rect: d.rect, active }
     case 'move':
-      return { type: 'move', poly: d.poly, xf: d.xf, copy: d.copy, only: d.only, active }
+      return { type: 'move', id, poly: d.poly, xf: d.xf, copy: d.copy, only: d.only, ids: d.ids, active }
     case 'delete':
-      return { type: 'delete', poly: d.poly, only: d.only, active }
+      return { type: 'delete', id, poly: d.poly, only: d.only, ids: d.ids, active }
     default:
       return null
   }
@@ -170,7 +173,7 @@ export class MonthLog {
     const events: Ev[] = []
     for (const o of this.ops) {
       if (!isDrawable(o.data)) continue
-      const ev = toEv(o.data, active.get(o.cid) ?? true)
+      const ev = toEv(o.data, active.get(o.cid) ?? true, o.cid)
       if (ev) events.push(ev)
     }
     this.resolved = { v: this.version, events, active }

@@ -245,3 +245,18 @@
   gap: 10px;
   box-shadow: 0 6px 24px rgb(0 0 0 / 0.18);
 }
+
+/* overview of the whole canvas, top right; click or drag to go there */
+.canvas-minimap {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  width: 200px;
+  height: 140px;
+  z-index: 3;
+  background: var(--paper);
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  touch-action: none;
+  cursor: pointer;
+}

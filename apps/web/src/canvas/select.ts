@@ -92,52 +92,151 @@ export function xfItem(it: Item, f: Xf): Item {
 
 const anchor = (it: ImageItem): [number, number] => [it.rect[0] + it.rect[2] / 2, it.rect[1] + it.rect[3] / 2]
 
+// ── erased ink ──────────────────────────────────────────────────────────────
+// The eraser works on pixels, so a stroke that has been erased over is still all there in the log. Selecting or
+// moving it must not resurrect the erased parts (a moved piece lands on top of the erasers, which then can't touch
+// it) — so before a piece is selected or moved, the points the erasers visibly wiped are dropped from it. A point
+// counts as erased once the erasers after it that pass within their radius have left under ERASED_BELOW of it
+// (each pass removes its opacity in total), and only erasers drawn with that point's layer visible count.
+const ERASED_BELOW = 0.2
+const ERASER_RADIUS = 1.2 // × size, world units (same as the dab)
+
+interface Eraser {
+  it: StrokeItem
+  r: number
+  box: BBox
+}
+const erasersAfter = (items: Item[], k: number, layer: keyof Layers): Eraser[] => {
+  const out: Eraser[] = []
+  for (let i = k + 1; i < items.length; i++) {
+    const e = items[i]
+    if (e.tool !== 'eraser' || (e.only && !e.only.includes(layer))) continue
+    const r = e.size * ERASER_RADIUS
+    let x0 = 1e9
+    let y0 = 1e9
+    let x1 = -1e9
+    let y1 = -1e9
+    for (const q of e.pts) {
+      x0 = Math.min(x0, q[0])
+      y0 = Math.min(y0, q[1])
+      x1 = Math.max(x1, q[0])
+      y1 = Math.max(y1, q[1])
+    }
+    out.push({ it: e, r, box: [x0 - r, y0 - r, x1 + r, y1 + r] })
+  }
+  return out
+}
+function distToPath(x: number, y: number, pts: Pt[]): number {
+  if (pts.length === 1) return Math.hypot(x - pts[0][0], y - pts[0][1])
+  let best = Infinity
+  for (let i = 0; i < pts.length - 1; i++) {
+    const [ax, ay] = pts[i]
+    const dx = pts[i + 1][0] - ax
+    const dy = pts[i + 1][1] - ay
+    const l2 = dx * dx + dy * dy
+    const t = l2 ? Math.max(0, Math.min(1, ((x - ax) * dx + (y - ay) * dy) / l2)) : 0
+    best = Math.min(best, Math.hypot(x - ax - t * dx, y - ay - t * dy))
+  }
+  return best
+}
+/** A piece cut into the runs of points that haven't been erased away. */
+function visibleRuns(pts: Pt[], all: Eraser[]): Pt[][] {
+  // only erasers that come near this piece matter
+  let x0 = 1e9
+  let y0 = 1e9
+  let x1 = -1e9
+  let y1 = -1e9
+  for (const q of pts) {
+    x0 = Math.min(x0, q[0])
+    y0 = Math.min(y0, q[1])
+    x1 = Math.max(x1, q[0])
+    y1 = Math.max(y1, q[1])
+  }
+  const erasers = all.filter((e) => e.box[0] <= x1 && e.box[2] >= x0 && e.box[1] <= y1 && e.box[3] >= y0)
+  if (!erasers.length) return [pts]
+  // a straight stroke is just its two end points, so look along it: sample often enough to see a gap the width of the narrowest eraser
+  const step = Math.max(0.5, Math.min(...erasers.map((e) => e.r)) * 0.4)
+  const dense: Pt[] = [pts[0]]
+  for (let i = 1; i < pts.length; i++) {
+    const a = pts[i - 1]
+    const b = pts[i]
+    const n = Math.min(400, Math.ceil(Math.hypot(b[0] - a[0], b[1] - a[1]) / step))
+    for (let k = 1; k <= n; k++) {
+      const t = k / n
+      dense.push([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t, a[3] + (b[3] - a[3]) * t])
+    }
+  }
+  pts = dense
+  const runs: Pt[][] = []
+  let cur: Pt[] = []
+  for (const q of pts) {
+    let left = 1
+    for (const e of erasers) {
+      if (q[0] < e.box[0] || q[0] > e.box[2] || q[1] < e.box[1] || q[1] > e.box[3]) continue
+      if (distToPath(q[0], q[1], e.it.pts) <= e.r) left *= 1 - (e.it.op ?? 1)
+    }
+    if (left < ERASED_BELOW) {
+      if (cur.length) runs.push(cur)
+      cur = []
+    } else cur.push(q)
+  }
+  if (cur.length) runs.push(cur)
+  return pts.length > 1 ? runs.filter((r) => r.length > 1) : runs // a lone survivor of a cut is a speck, not a stroke
+}
+
 export function fold(evs: Ev[], extra: Ev[] = []): Item[] {
   let items: Item[] = []
+  let n = 0
   for (const ev of evs.concat(extra)) {
     if (ev.active === false) continue
+    n++
     if (ev.type === 'stroke') {
-      items.push({ tool: ev.tool, seed: ev.seed, size: ev.size, op: ev.op, pts: ev.pts })
+      items.push({ id: ev.id ?? `s${n}`, tool: ev.tool, seed: ev.seed, size: ev.size, op: ev.op, only: ev.only, pts: ev.pts })
       continue
     }
     if (ev.type === 'image') {
-      items.push({ tool: 'image', hash: ev.hash, rect: ev.rect })
+      items.push({ id: ev.id ?? `s${n}`, tool: 'image', hash: ev.hash, rect: ev.rect })
       continue
     }
+    const evId = ev.id ?? `e${n}`
+    const scope = ev.ids ? new Set(ev.ids) : null
     const keep: Item[] = []
     const moved: Item[] = []
-    for (const it of items) {
+    let pieceNo = 0
+    items.forEach((it, k) => {
       if (it.tool === 'eraser') {
         keep.push(it) // erasers are subtractive history, not selectable ink
-        continue
+        return
       }
-      if (ev.only && !ev.only.includes(layerOf(it))) {
-        keep.push(it) // edit was made with that layer hidden: leave it alone
-        continue
+      if ((ev.only && !ev.only.includes(layerOf(it))) || (scope && !scope.has(it.id))) {
+        keep.push(it) // edit was made with that layer hidden / the item isn't part of the selection
+        return
       }
       if (it.tool === 'image') {
         const [ax, ay] = anchor(it)
         if (!pip(ev.poly, ax, ay)) {
           keep.push(it)
-          continue
+          return
         }
         if (ev.type === 'move') {
           if (ev.copy) keep.push(it)
-          moved.push(xfItem(it, ev.xf))
+          moved.push({ ...(xfItem(it, ev.xf) as ImageItem), id: `${it.id}~${evId}i${pieceNo++}` })
         }
-        continue
+        return
       }
       const { ins, outs } = splitByPoly(it.pts, ev.poly)
       if (!ins.length) {
         keep.push(it)
-        continue
+        return
       }
+      const gone = erasersAfter(items, k, layerOf(it))
+      const inside = ins.flatMap((p) => visibleRuns(p, gone)) // what's actually there to move / delete
       if (ev.type === 'move') {
         if (ev.copy) keep.push(it)
-        else outs.forEach((p) => keep.push({ ...it, pts: p }))
-        ins.forEach((p, i) => moved.push({ ...(xfItem({ ...it, pts: p }, ev.xf) as StrokeItem), seed: (it.seed + 977 * (i + 1)) >>> 0 }))
-      } else outs.forEach((p) => keep.push({ ...it, pts: p }))
-    }
+        else outs.forEach((p, i) => keep.push({ ...it, id: `${it.id}~${evId}o${i}`, pts: p }))
+        for (const p of inside) moved.push({ ...(xfItem({ ...it, pts: p }, ev.xf) as StrokeItem), id: `${it.id}~${evId}i${pieceNo}`, seed: (it.seed + 977 * (++pieceNo)) >>> 0 })
+      } else outs.forEach((p, i) => keep.push({ ...it, id: `${it.id}~${evId}o${i}`, pts: p }))
+    })
     items = keep.concat(moved) // moved pieces land on top (after any earlier erasers)
   }
   return items
@@ -169,19 +268,32 @@ export function bboxOf(items: Item[]): BBox {
   return [x0, y0, x1, y1]
 }
 
-/** The visible ink inside `poly`: strokes cut at the boundary, images by centre. Hidden layers can't be selected. */
-export function piecesIn(items: Item[], poly: Poly, layers: Layers): Item[] {
-  const out: Item[] = []
-  for (const it of items) {
-    if (it.tool === 'eraser' || !layers[layerOf(it)]) continue
+/** What a polygon selects: the visible ink inside it — strokes cut at the boundary and minus anything erased, images by
+ *  centre; hidden layers can't be selected. `ids` are the items it came from, which is what the move / delete op is
+ *  then scoped to, so it never picks up other ink that happens to sit there later. */
+export function piecesIn(items: Item[], poly: Poly, layers: Layers): { pieces: Item[]; ids: string[] } {
+  const pieces: Item[] = []
+  const ids: string[] = []
+  items.forEach((it, k) => {
+    if (it.tool === 'eraser' || !layers[layerOf(it)]) return
     if (it.tool === 'image') {
       const [ax, ay] = anchor(it)
-      if (pip(poly, ax, ay)) out.push(it)
-      continue
+      if (pip(poly, ax, ay)) {
+        pieces.push(it)
+        ids.push(it.id)
+      }
+      return
     }
-    for (const p of splitByPoly(it.pts, poly).ins) out.push({ ...it, pts: p })
-  }
-  return out
+    const gone = erasersAfter(items, k, layerOf(it))
+    let any = false
+    for (const p of splitByPoly(it.pts, poly).ins)
+      for (const run of visibleRuns(p, gone)) {
+        pieces.push({ ...it, pts: run })
+        any = true
+      }
+    if (any) ids.push(it.id)
+  })
+  return { pieces, ids }
 }
 
 /** 2D Ramer-Douglas-Peucker for lasso paths. */

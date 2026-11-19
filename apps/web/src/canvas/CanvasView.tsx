@@ -12,6 +12,7 @@ const K_LAYERS = 'memorious.canvas.layers'
 const K_MONTHS = 'memorious.canvas.months'
 const K_VIEW = 'memorious.canvas.view'
 const K_TOUCH = 'memorious.canvas.touch'
+const K_MINI = 'memorious.canvas.minimap'
 
 interface MonthPrefs {
   visible: string[]
@@ -170,6 +171,7 @@ export function CanvasView() {
   })
   const [hasMark, setHasMark] = useState(false)
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
+  const [mini, setMini] = useState(() => localStorage.getItem(K_MINI) === 'on')
   const [panel, setPanel] = useState<'tools' | 'options' | null>(null)
   const [corner, setCorner] = useState<{ x: number; y: number } | null>(null)
   const [settings, setSettings] = useState<Settings>(() => {
@@ -208,6 +210,7 @@ export function CanvasView() {
     ctl.current = c
     c.layers = layers
     c.setVisibleMonths(prefs.visible)
+    c.setMinimap(mini)
     c.setTool('pencil')
     c.rebuild()
     return () => {
@@ -334,6 +337,12 @@ export function CanvasView() {
       </button>
     </div>
   )
+  const toggleMini = () => {
+    const next = !mini
+    setMini(next)
+    localStorage.setItem(K_MINI, next ? 'on' : 'off')
+    ctl.current?.setMinimap(next)
+  }
   const toggleTouch = () => {
     const next = !touch
     setTouch(next)
@@ -391,6 +400,9 @@ export function CanvasView() {
             </button>
             <button className={'canvas-btn' + (touch ? ' on' : '')} onClick={toggleTouch}>
               finger
+            </button>
+            <button className={'canvas-btn' + (mini ? ' on' : '')} onClick={toggleMini}>
+              minimap
             </button>
 
           </div>

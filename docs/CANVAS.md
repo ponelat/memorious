@@ -35,8 +35,18 @@ Cmd/Ctrl+Z undoes, with shift (or Ctrl+Y) redoes; options has undo / redo icons 
 **Selection** (`lasso` freehand, `rect` rectangle): the polygon cuts strokes at its boundary, so only the part
 inside is selected; images are selected whole when the polygon holds their centre; hidden layers can't be
 selected. Drag inside to move, drag the corner dot to scale; duplicate / delete icons sit at the selection's
-top-right (Delete, Esc and Cmd+D work too). Edits are events — `move {poly, xf, copy}` and `delete {poly}` —
-folded in order over the strokes (`select.ts`), so they undo like anything else. No rotation yet. iPad: touchstart/touchmove are `preventDefault`ed on the canvas —
+top-right (Delete, Esc and Cmd+D work too). Edits are events — `move {poly, xf, copy, ids}` and `delete {poly, ids}` —
+folded in order over the strokes (`select.ts`), so they undo like anything else. No rotation yet.
+
+A selection holds **exactly the ink that was selected**: the op carries `ids` (the items it came from), so moving it
+over other ink never picks that ink up, and moving it again moves only the same pieces (piece ids are `<id>~<op>i<n>`).
+Ops without `ids` (older ones) still act on everything inside the polygon. **Erased ink isn't selected and doesn't come
+back**: the eraser works on pixels, so before a piece is selected or moved the points the erasers visibly wiped are cut
+out of it (a point counts as erased once the erasers passing over it have left < 20 % of it). **An eraser only reaches the
+layers that were visible when it was used** (`only` on the stroke), like move / delete.
+
+**Minimap** (options → *minimap*): an overview of the whole canvas — every month on show, erasers included — with the
+part you're looking at outlined; click or drag on it to go there. iPad: touchstart/touchmove are `preventDefault`ed on the canvas —
 without that iPadOS swallowed a pencil touch landing within ~0.4 s of the previous one.
 
 ## Offset mode (finger)
