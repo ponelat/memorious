@@ -24,7 +24,11 @@ Where: `apps/web/src/canvas/` (`CanvasView.tsx` chrome, `controller.ts` input/re
 Mouse / Apple Pencil draw. Fingers: on a phone (coarse pointer) one finger draws and two pan/pinch (a second finger
 discards the stroke the first one started); the first time a pencil is seen, finger drawing switches itself off so on an
 iPad fingers pan. The **finger** button overrides it. Wheel pans, ctrl+wheel (trackpad pinch) zooms,
-space or middle-drag pans. Right-click opens the tool menu (tools, size, opacity, undo / redo). Image: pick, paste or drop one, drag to move, drag the corner dot to scale, then **place**.
+space, middle- or **right-button drag** pans; a right click that doesn't move opens the tool menu (tools with their
+shortcuts, size, opacity, undo / redo).
+
+**Shortcuts** (also shown in the tool list and menu): `P` pencil, `N` pen, `E` eraser, `L` lasso, `R` rect, `I` image;
+`Space` + drag pan; Cmd/Ctrl+Z undo, +Shift+Z (or Ctrl+Y) redo; Delete, Esc and Cmd/Ctrl+D act on a selection. Image: pick, paste or drop one, drag to move, drag the corner dot to scale, then **place**.
 Cmd/Ctrl+Z undoes, with shift (or Ctrl+Y) redoes; options has undo / redo icons and one light/dark button
 (it drives the app-wide appearance setting).
 

@@ -60,7 +60,7 @@ export interface ControllerHooks {
   onMark(on: boolean): void
   /** Where the selection's top-right corner is (host px), or null when nothing is selected. */
   onSelection(corner: { x: number; y: number } | null): void
-  /** Right-click at client coordinates. */
+  /** A right click that didn't turn into a pan, at client coordinates. */
   onContext(x: number, y: number): void
 }
 
@@ -109,6 +109,7 @@ export class CanvasController {
   private floating: Floating | null = null
   private floatDrag: { mode: 'move' | 'scale'; sx: number; sy: number; rect: Floating['rect'] } | null = null
   private ptrs = new Map<number, { x: number; y: number; pan: boolean; touch: boolean }>()
+  private rightDown: { id: number; x: number; y: number; moved: boolean } | null = null // a right press that is still a click
   private penSeen = false
   private lastPenT = 0
   private spaceDown = false
@@ -163,10 +164,7 @@ export class CanvasController {
       if (!this.mark) this.ring.style.display = 'none' // the mark stays where the tool is
     })
     on('wheel', (e) => this.wheel(e), { passive: false })
-    on('contextmenu', (e) => {
-      e.preventDefault()
-      this.hooks.onContext(e.clientX, e.clientY)
-    })
+    on('contextmenu', (e) => e.preventDefault()) // the right button is ours: drag pans, a plain click opens our menu (below)
     on('dragover', (e) => e.preventDefault())
     on('drop', (e) => {
       e.preventDefault()
@@ -647,7 +645,11 @@ export class CanvasController {
       this.applyGesture()
       return e.preventDefault()
     }
-    const draws = !(e.button === 1 || this.spaceDown) && (e.pointerType !== 'touch' || this.touchDraws)
+    // mouse: right (or ctrl-) button, middle button, or space + drag pans; the primary button draws
+    const mousePan = e.pointerType === 'mouse' && (e.button === 1 || e.button === 2 || e.ctrlKey)
+    const draws = !(mousePan || this.spaceDown) && (e.pointerType !== 'touch' || this.touchDraws)
+    if (!draws && e.pointerType === 'mouse') this.host.style.cursor = 'grabbing'
+    if (mousePan && e.button !== 1) this.rightDown = { id: e.pointerId, x: e.clientX, y: e.clientY, moved: false }
     // lift-and-return: the previous stroke's pointerup hasn't arrived — finish it, never swallow the new one
     if (draws && this.live && (e.pointerType !== 'touch' || this.live.pid === e.pointerId)) {
       this.ptrs.delete(this.live.pid)
@@ -739,6 +741,8 @@ export class CanvasController {
     p.x = lx
     p.y = ly
     if (e.pointerType === 'pen') this.lastPenT = performance.now()
+    const rd = this.rightDown
+    if (rd && rd.id === e.pointerId && !rd.moved && Math.hypot(e.clientX - rd.x, e.clientY - rd.y) > 5) rd.moved = true
     if (p.pan) this.applyGesture()
     else if (this.pend) this.pendMove(e)
     else if (this.live) {
@@ -761,6 +765,11 @@ export class CanvasController {
       this.floatDrag = null
       this.rebuild()
     } else if (this.selActive) this.selUp()
+    if (this.rightDown?.id === e.pointerId) {
+      if (!this.rightDown.moved && e.type === 'pointerup') this.hooks.onContext(e.clientX, e.clientY)
+      this.rightDown = null
+    }
+    if (p.pan && e.pointerType === 'mouse') this.host.style.cursor = this.tool === 'eraser' ? 'none' : 'crosshair'
     if (e.pointerType === 'touch') {
       if (this.mark) this.updateMarkRing()
       else this.ring.style.display = 'none'

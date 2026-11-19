@@ -47,6 +47,9 @@ const ICONS = {
   moon: 'M20 14A8 8 0 1110 4a6.5 6.5 0 0010 10z',
 }
 const TOOLS: UiTool[] = ['pencil', 'pen', 'eraser', 'lasso', 'rect']
+/** One key per tool (shown in the tool list and the tooltips). Undo/redo are the usual Cmd/Ctrl+Z / Shift+Z. */
+const KEYS: Record<UiTool | 'image', string> = { pencil: 'P', pen: 'N', eraser: 'E', lasso: 'L', rect: 'R', image: 'I' }
+const MOD = /Mac|iPhone|iPad/.test(navigator.platform) ? '⌘' : 'Ctrl+'
 const toolIcon = (t: UiTool) => <Icon d={ICONS[t]} dash={t === 'rect' || t === 'lasso'} />
 
 const MARK_NUDGE: Record<string, [number, number]> = {
@@ -140,11 +143,13 @@ function ToolList({ tool, onTool, onImage }: ToolListProps) {
         <button key={t} className={'canvas-btn wide' + (tool === t ? ' on' : '')} onClick={() => onTool(t)}>
           {toolIcon(t)}
           {t}
+          <kbd className="canvas-key">{KEYS[t]}</kbd>
         </button>
       ))}
       <button className="canvas-btn wide" onClick={onImage}>
         <Icon d={ICONS.image} />
         image
+        <kbd className="canvas-key">{KEYS.image}</kbd>
       </button>
     </div>
   )
@@ -164,6 +169,7 @@ export function CanvasView() {
     return v ? v === 'on' : window.matchMedia('(pointer: coarse)').matches // phones draw with a finger by default
   })
   const [hasMark, setHasMark] = useState(false)
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
   const [panel, setPanel] = useState<'tools' | 'options' | null>(null)
   const [corner, setCorner] = useState<{ x: number; y: number } | null>(null)
   const [settings, setSettings] = useState<Settings>(() => {
@@ -173,7 +179,6 @@ export function CanvasView() {
   const [layers, setLayers] = useState<Layers>(() => loadJSON(K_LAYERS, { pencil: true, pen: true, image: true }))
   const [prefs, setPrefs] = useState<MonthPrefs>(() => loadJSON(K_MONTHS, { visible: [prev], extra: [] }))
   const [floating, setFloating] = useState(false)
-  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
   const [tick, setTick] = useState(0)
   const [remote, setRemote] = useState<string[]>([])
 
@@ -193,9 +198,9 @@ export function CanvasView() {
         },
         onFloating: setFloating,
         onSelection: setCorner,
+        onContext: (x, y) => setMenu({ x, y }),
         onTouchDraws: (on) => setTouch(on),
         onMark: setHasMark,
-        onContext: (x, y) => setMenu({ x, y }),
       },
       data,
       { settings, view: loadJSON<View>(K_VIEW, { x: 0, y: 0, z: 1 }), touchDraws: touch },
@@ -267,7 +272,7 @@ export function CanvasView() {
 
   // close the popovers on any outside press / Escape
   useEffect(() => {
-    if (!menu && !panel) return
+    if (!panel && !menu) return
     const close = (e: Event) => {
       if (!(e.target as HTMLElement).closest?.('.canvas-menu, .canvas-pop, .canvas-fabs')) {
         setMenu(null)
@@ -286,7 +291,7 @@ export function CanvasView() {
       window.removeEventListener('pointerdown', close, true)
       window.removeEventListener('keydown', esc)
     }
-  }, [menu, panel])
+  }, [panel, menu])
 
   const chooseTool = (t: UiTool) => {
     pickTool(t)
@@ -298,22 +303,43 @@ export function CanvasView() {
     setMenu(null)
     file.current?.click()
   }
+  // tool shortcuts (single letters; ignored while typing or with a modifier held)
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.metaKey || e.ctrlKey || e.altKey || /^(INPUT|TEXTAREA|SELECT)$/.test((e.target as HTMLElement)?.tagName)) return
+      const k = e.key.toUpperCase()
+      if (k === KEYS.image) {
+        e.preventDefault()
+        file.current?.click()
+        return
+      }
+      const t = TOOLS.find((x) => KEYS[x] === k)
+      if (t) {
+        e.preventDefault()
+        pickTool(t)
+        setPanel(null)
+        setMenu(null)
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [pickTool])
+  const undoRedo = (
+    <div className="canvas-row">
+      <button className="canvas-btn icon" title={`undo (${MOD}Z)`} aria-label="undo" disabled={!ctl.current?.canUndo} onClick={() => ctl.current?.undo()}>
+        <Icon d={ICONS.undo} />
+      </button>
+      <button className="canvas-btn icon" title={`redo (${MOD}⇧Z)`} aria-label="redo" disabled={!ctl.current?.canRedo} onClick={() => ctl.current?.redo()}>
+        <Icon d={ICONS.redo} />
+      </button>
+    </div>
+  )
   const toggleTouch = () => {
     const next = !touch
     setTouch(next)
     localStorage.setItem(K_TOUCH, next ? 'on' : 'off')
     if (ctl.current) ctl.current.touchDraws = next
   }
-  const undoRedo = (
-    <div className="canvas-row">
-      <button className="canvas-btn icon" title="undo" aria-label="undo" disabled={!ctl.current?.canUndo} onClick={() => ctl.current?.undo()}>
-        <Icon d={ICONS.undo} />
-      </button>
-      <button className="canvas-btn icon" title="redo" aria-label="redo" disabled={!ctl.current?.canRedo} onClick={() => ctl.current?.redo()}>
-        <Icon d={ICONS.redo} />
-      </button>
-    </div>
-  )
 
   return (
     <div className="canvas-view">
@@ -323,7 +349,7 @@ export function CanvasView() {
       <div className="canvas-fabs">
         <button
           className={'canvas-fab' + (panel === 'tools' ? ' on' : '')}
-          title={tool}
+          title={`${tool} (${KEYS[tool]})`}
           aria-label="tools"
           onClick={() => setPanel(panel === 'tools' ? null : 'tools')}
         >
@@ -337,10 +363,10 @@ export function CanvasView() {
         >
           <Icon d={ICONS.options} />
         </button>
-        <button className="canvas-fab" title="undo" aria-label="undo" disabled={!ctl.current?.canUndo} onClick={() => ctl.current?.undo()}>
+        <button className="canvas-fab" title={`undo (${MOD}Z)`} aria-label="undo" disabled={!ctl.current?.canUndo} onClick={() => ctl.current?.undo()}>
           <Icon d={ICONS.undo} />
         </button>
-        <button className="canvas-fab" title="redo" aria-label="redo" disabled={!ctl.current?.canRedo} onClick={() => ctl.current?.redo()}>
+        <button className="canvas-fab" title={`redo (${MOD}⇧Z)`} aria-label="redo" disabled={!ctl.current?.canRedo} onClick={() => ctl.current?.redo()}>
           <Icon d={ICONS.redo} />
         </button>
       </div>
