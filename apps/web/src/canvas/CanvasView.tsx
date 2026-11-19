@@ -370,6 +370,17 @@ export function CanvasView() {
     localStorage.setItem(K_MINI, next ? 'on' : 'off')
     ctl.current?.setMinimap(next)
   }
+  // the layer toggles, in the options panel and the right-click menu
+  const layerChecks = (
+    <div className="canvas-checks">
+      {(['pencil', 'pen', 'image'] as (keyof Layers)[]).map((l) => (
+        <label key={l} className="canvas-check">
+          <input type="checkbox" checked={layers[l]} onChange={() => toggleLayer(l)} />
+          {l === 'image' ? 'images' : l}
+        </label>
+      ))}
+    </div>
+  )
   const toggleTouch = () => {
     const next = !touch
     setTouch(next)
@@ -443,14 +454,7 @@ export function CanvasView() {
 
           </div>
           <hr />
-          <div className="canvas-checks">
-            {(['pencil', 'pen', 'image'] as (keyof Layers)[]).map((l) => (
-              <label key={l} className="canvas-check">
-                <input type="checkbox" checked={layers[l]} onChange={() => toggleLayer(l)} />
-                {l === 'image' ? 'images' : l}
-              </label>
-            ))}
-          </div>
+          {layerChecks}
           <hr />
           <div className="canvas-checks">
             {months.map((m) => (
@@ -520,10 +524,12 @@ export function CanvasView() {
       )}
 
       {menu && (
-        <div className="canvas-menu" style={{ left: Math.min(menu.x, window.innerWidth - 240), top: Math.min(menu.y, window.innerHeight - 330) }}>
+        <div className="canvas-menu" style={{ left: Math.min(menu.x, window.innerWidth - 240), top: Math.max(8, Math.min(menu.y, window.innerHeight - 580)) }}>
           <ToolList tool={tool} onTool={chooseTool} onImage={chooseImage} />
           <Sliders tool={tool} settings={settings} onSetting={onSetting} zoom={ctl.current?.view.z ?? 1} />
           {undoRedo}
+          <hr />
+          {layerChecks}
         </div>
       )}
 

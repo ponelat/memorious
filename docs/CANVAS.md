@@ -25,7 +25,7 @@ Mouse / Apple Pencil draw. Fingers: on a phone (coarse pointer) one finger draws
 discards the stroke the first one started); the first time a pencil is seen, finger drawing switches itself off so on an
 iPad fingers pan. The **finger** button overrides it. **Scroll zooms** (about the pointer; ctrl+wheel / trackpad pinch faster per delta). Pan with
 space, middle- or **right-button drag**, or fingers; a right click that doesn't move opens the tool menu (tools with their
-shortcuts, size, opacity, undo / redo).
+shortcuts, size, opacity, undo / redo, layer toggles).
 
 **Shortcuts** — all on the left of the keyboard so one hand can drive them while the other holds the pencil (also shown in
 the tool list and tooltips): `D` pencil, `W` pen, `E` eraser, `S` lasso, `R` rect, `G` image, `X` back to the previous tool
