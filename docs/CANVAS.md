@@ -27,11 +27,12 @@ iPad fingers pan. The **finger** button overrides it. **Scroll zooms** (about th
 space, middle- or **right-button drag**, or fingers; a right click that doesn't move opens the tool menu (tools with their
 shortcuts, size, opacity, undo / redo).
 
-**Shortcuts** (also shown in the tool list and menu): `P` pencil, `N` pen, `E` eraser, `L` lasso, `R` rect, `I` image;
-`X` back to the previous tool (also the swap button next to the tool picker, and a stylus barrel-button press — the
-Apple Pencil Pro's *squeeze* is not exposed to web pages by Safari, so it needs the native app); `Space` + drag pan; Cmd/Ctrl+Z undo, +Shift+Z (or Ctrl+Y) redo; Delete, Esc and Cmd/Ctrl+D act on a selection. Image: pick, paste or drop one, drag to move, drag the corner dot to scale, then **place**.
-Cmd/Ctrl+Z undoes, with shift (or Ctrl+Y) redoes; options has undo / redo icons and one light/dark button
-(it drives the app-wide appearance setting).
+**Shortcuts** — all on the left of the keyboard so one hand can drive them while the other holds the pencil (also shown in
+the tool list and tooltips): `D` pencil, `W` pen, `E` eraser, `S` lasso, `R` rect, `G` image, `X` back to the previous tool
+(also the swap button next to the tool picker, a stylus barrel-button press, and **holding the Apple Pencil still for
+~0.6 s** — nothing is drawn; the Pencil Pro's squeeze and double-tap aren't exposed to web pages by Safari, so they need
+the native app); with a selection `C` duplicates and `Q` deletes (Cmd/Ctrl+D and Delete still work), `Esc` deselects;
+`Space` + drag pans; Cmd/Ctrl+Z undo, +Shift+Z redo.
 
 **Selection** (`lasso` freehand, `rect` rectangle): the polygon cuts strokes at its boundary, so only the part
 inside is selected; images are selected whole when the polygon holds their centre; hidden layers can't be

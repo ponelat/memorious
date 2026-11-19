@@ -49,8 +49,8 @@ const ICONS = {
   moon: 'M20 14A8 8 0 1110 4a6.5 6.5 0 0010 10z',
 }
 const TOOLS: UiTool[] = ['pencil', 'pen', 'eraser', 'lasso', 'rect']
-/** One key per tool (shown in the tool list and the tooltips). Undo/redo are the usual Cmd/Ctrl+Z / Shift+Z. */
-const KEYS: Record<UiTool | 'image', string> = { pencil: 'P', pen: 'N', eraser: 'E', lasso: 'L', rect: 'R', image: 'I' }
+/** One key per tool (shown in the tool list and the tooltips). Undo/redo are the usual Cmd/Ctrl+Z / Shift+Z. With a selection: C duplicates, Q deletes. */
+const KEYS: Record<UiTool | 'image', string> = { pencil: 'D', pen: 'W', eraser: 'E', lasso: 'S', rect: 'R', image: 'G' } // all on the left of the keyboard: one hand on the keys, the other on the pencil
 const SWAP_KEY = 'X' // back to the previous tool
 const MOD = /Mac|iPhone|iPad/.test(navigator.platform) ? '⌘' : 'Ctrl+'
 const toolIcon = (t: UiTool) => <Icon d={ICONS[t]} dash={t === 'rect' || t === 'lasso'} />
@@ -494,10 +494,10 @@ export function CanvasView() {
 
       {corner && (
         <div className="canvas-selbar" style={{ left: Math.max(corner.x, 100), top: Math.max(corner.y, 54) }}>
-          <button className="canvas-btn icon" title="duplicate" aria-label="duplicate" onClick={() => ctl.current?.duplicateSelection()}>
+          <button className="canvas-btn icon" title={`duplicate (C, ${MOD}D)`} aria-label="duplicate" onClick={() => ctl.current?.duplicateSelection()}>
             <Icon d={ICONS.copy} />
           </button>
-          <button className="canvas-btn icon" title="delete" aria-label="delete" onClick={() => ctl.current?.deleteSelection()}>
+          <button className="canvas-btn icon" title="delete (Q, Del)" aria-label="delete" onClick={() => ctl.current?.deleteSelection()}>
             <Icon d={ICONS.trash} />
           </button>
         </div>

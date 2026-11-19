@@ -795,8 +795,11 @@ export class CanvasController {
     this.ptrs.set(e.pointerId, { x: lx, y: ly, pan: !draws, touch: e.pointerType === 'touch' })
     if (draws && !this.live) {
       if (this.floating) this.floatDown(e)
-      else if (isSelect(this.tool)) this.selDown(e)
-      else if (e.pointerType === 'touch' && isDraw(this.tool)) this.pendDown(e, lx, ly) // finger: wait to tell a drag, a tap and a long press apart
+      else if (isSelect(this.tool)) {
+        this.selDown(e)
+        if (e.pointerType === 'pen' && !this.drag) this.holdStart(e) // holding the pencil still with lasso / rect also goes back to the previous tool
+      }
+      else if ((e.pointerType === 'touch' || e.pointerType === 'pen') && isDraw(this.tool)) this.pendDown(e, lx, ly) // finger / pencil: wait to tell a drag, a tap and a long press apart
       else this.startStroke(e)
     } else {
       this.prevG = null
@@ -808,24 +811,49 @@ export class CanvasController {
 
   /** A finger touched down with a drawing tool. Not drawn yet: a drag starts the stroke (at the mark in offset mode, else where the
    *  finger landed), a tap moves the mark (offset mode) or leaves a dot, a long press enters / leaves offset mode. */
+  private hold: { x: number; y: number; timer: number } | null = null
+  private holdStart(e: PointerEvent) {
+    this.holdClear()
+    this.hold = {
+      x: e.clientX,
+      y: e.clientY,
+      timer: window.setTimeout(() => {
+        this.hold = null
+        if (!this.selActive || this.drag) return
+        this.lassoPath = null // nothing was being outlined: it was a hold, not a lasso
+        this.rectStart = null
+        this.selActive = false
+        this.drawOverlay()
+        navigator.vibrate?.(15)
+        this.swapTool()
+      }, 600),
+    }
+  }
+  private holdClear() {
+    if (this.hold) window.clearTimeout(this.hold.timer)
+    this.hold = null
+  }
+
   private pendDown(e: PointerEvent, lx: number, ly: number) {
-    this.pend = { qx: lx, qy: ly, e0: e, done: false, timer: window.setTimeout(() => this.longPress(), 500) }
+    this.pend = { qx: lx, qy: ly, e0: e, done: false, timer: window.setTimeout(() => this.longPress(), e.pointerType === 'pen' ? 600 : 500) }
   }
   private longPress() {
     const p = this.pend
     if (!p || p.done) return
     p.done = true
-    this.setMark(this.mark ? null : this.toWorld(p.qx, p.qy))
     navigator.vibrate?.(15)
+    if (p.e0.pointerType === 'pen') return this.swapTool() // hold the pencil still: back to the previous tool
+    this.setMark(this.mark ? null : this.toWorld(p.qx, p.qy))
   }
   private pendMove(e: PointerEvent) {
     const p = this.pend!
     if (p.done) return
     const [lx, ly] = this.local(e)
-    if (Math.hypot(lx - p.qx, ly - p.qy) < 6) return
+    const pen = p.e0.pointerType === 'pen'
+    if (Math.hypot(lx - p.qx, ly - p.qy) < (pen ? 4 : 6)) return
     window.clearTimeout(p.timer)
     this.pend = null
-    if (this.mark) {
+    if (this.mark && !pen) {
       this.off = { qx: lx, qy: ly, started: true }
       this.startStroke(e) // first point = the mark itself
       this.updateMarkRing()
@@ -839,7 +867,7 @@ export class CanvasController {
     window.clearTimeout(p.timer)
     this.pend = null
     if (p.done) return
-    if (this.mark) this.setMark(this.toWorld(p.qx, p.qy)) // tap: move the mark, draw nothing
+    if (this.mark && p.e0.pointerType === 'touch') this.setMark(this.toWorld(p.qx, p.qy)) // tap: move the mark, draw nothing
     else {
       this.startStroke(p.e0) // plain tap: a dot
       this.endStroke()
@@ -848,6 +876,7 @@ export class CanvasController {
 
   /** Throw away an unfinished stroke / lasso / selection drag (nothing was committed, so a rebuild restores the canvas). */
   private abortInput() {
+    this.holdClear()
     if (this.pend) window.clearTimeout(this.pend.timer)
     this.pend = null
     this.off = null
@@ -871,6 +900,7 @@ export class CanvasController {
   }
 
   private pointerMove(e: PointerEvent) {
+    if (this.hold && Math.hypot(e.clientX - this.hold.x, e.clientY - this.hold.y) > 4) this.holdClear() // it moved: a lasso, not a hold
     this.penButton(e)
     this.moveRing(e)
     const p = this.ptrs.get(e.pointerId)
@@ -895,6 +925,7 @@ export class CanvasController {
     if (e.pointerType === 'pen') this.lastPenT = performance.now()
     const p = this.ptrs.get(e.pointerId)
     if (!p) return
+    this.holdClear()
     this.ptrs.delete(e.pointerId)
     if (p.pan) this.prevG = null
     else if (this.pend) this.pendUp()
@@ -1232,6 +1263,12 @@ export class CanvasController {
     } else if (mod && (e.key === 'd' || e.key === 'D') && this.sel) {
       e.preventDefault()
       this.duplicateSelection()
+    } else if (!mod && !e.altKey && e.key.toLowerCase() === 'c' && this.sel) {
+      e.preventDefault()
+      this.duplicateSelection() // left-hand twins of Cmd+D / Delete
+    } else if (!mod && !e.altKey && e.key.toLowerCase() === 'q' && this.sel) {
+      e.preventDefault()
+      this.deleteSelection()
     } else if ((e.key === 'Delete' || e.key === 'Backspace') && this.sel) {
       e.preventDefault()
       this.deleteSelection()
