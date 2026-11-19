@@ -270,7 +270,7 @@ export class CanvasController {
   /** The journal brought something new for `month` (a peer's ops, or ours coming back stamped). */
   remoteChanged(month: string) {
     if (month !== this.month && !this.visibleMonths.includes(month)) return
-    if (month === this.month) this.sel = null
+    if (month === this.month) this.refreshSelection()
     this.schedRebuild(30)
     this.hooks.onChange()
   }
@@ -489,6 +489,19 @@ export class CanvasController {
     const { pieces, ids } = piecesIn(fold(this.events), poly, this.layers)
     if (!pieces.length) return this.clearSel()
     this.sel = { poly, ids, pieces, bbox: bboxOf(pieces) }
+    this.refreshSelectionView()
+    this.drawOverlay()
+  }
+  /** The journal changed under a selection (our own op coming back stamped, or a peer's): keep holding the same ink.
+   *  Its ids are stable, so look the pieces up again; the selection only goes if all of it is gone. */
+  private refreshSelection() {
+    const s = this.sel
+    if (!s || this.drag) return
+    const ids = new Set(s.ids)
+    const { pieces } = piecesIn(fold(this.events).filter((it) => ids.has(it.id)), s.poly, this.layers)
+    if (!pieces.length) return this.clearSel()
+    s.pieces = pieces
+    s.bbox = bboxOf(pieces)
     this.refreshSelectionView()
     this.drawOverlay()
   }
