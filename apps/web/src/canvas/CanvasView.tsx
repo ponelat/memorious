@@ -39,7 +39,7 @@ const ICONS = {
   trash: 'M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3',
   copy: 'M9 9h11v11H9zM5 15V4h11',
   pencil: 'M4 20l1-4L16 5l3 3L8 19zM14 7l3 3',
-  pen: 'M12 3l5 9-5 9-5-9zM12 3v9',
+  pen: 'M16 3.5l4.5 4.5L8 20.5 3 21.5l1-5zM3.5 21l6-6', // a pen: the pencil's shape without the eraser band, with the nib's slit
   eraser: 'M7 21h12M5 15l9-9 5 5-7 7H8z',
   lasso: 'M6 9c0-3 6-5 10-3s3 7-1 9-8 1-9-2M10 17c0 2 1 3 3 4',
   rect: 'M5 5h14v14H5z',
