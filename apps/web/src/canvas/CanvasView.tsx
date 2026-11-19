@@ -48,7 +48,8 @@ const ICONS = {
   sun: 'M12 8a4 4 0 100 8 4 4 0 000-8zM12 2v2M12 20v2M2 12h2M20 12h2M5 5l1.5 1.5M17.5 17.5L19 19M5 19l1.5-1.5M17.5 6.5L19 5',
   moon: 'M20 14A8 8 0 1110 4a6.5 6.5 0 0010 10z',
 }
-/** The pen is the one solid icon: a filled body with the nib's slit knocked out (a mask, so it works on any button colour). */
+/** The pen is the one solid icon: a filled body with the nib's slit knocked out (a mask, so it works on any button colour), drawn a
+ *  little smaller than the outline icons so its weight matches the pencil's. */
 function PenIcon({ size = 20 }: { size?: number }) {
   const id = useId()
   return (
@@ -57,7 +58,9 @@ function PenIcon({ size = 20 }: { size?: number }) {
         <rect width="24" height="24" fill="white" />
         <path d="M5.2 19.2L10.2 14.2" stroke="black" strokeWidth="1.7" strokeLinecap="round" />
       </mask>
-      <path d={ICONS.pen} fill="currentColor" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" mask={`url(#${id})`} />
+      <g transform="translate(12.1 12.1) scale(0.86) translate(-12 -12)">
+        <path d={ICONS.pen} fill="currentColor" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round" mask={`url(#${id})`} />
+      </g>
     </svg>
   )
 }
