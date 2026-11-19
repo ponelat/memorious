@@ -203,6 +203,23 @@ export interface JournalApi {
   needsAuth: boolean
   checkPasscode(passcode: string): Promise<boolean>
   captureText(text: string): Promise<Entry>
+/** One ink op as the server stores it (docs/CANVAS-SYNC.md). `data.op` names it; `data.cid` is the client's id for it. */
+export interface InkRecord {
+  event_id: string
+  device_id: string
+  recorded_at: number
+  data: Record<string, unknown>
+}
+
+/** The infinite canvas's ink ops, per UTC month. */
+export interface InkApi {
+  months(): Promise<string[]>
+  /** Ops that arrived on the peer after `after` (a `cursor` from an earlier call; omit for all), in arrival order. */
+  list(month: string, after?: number): Promise<{ device_id: string; cursor: number; events: InkRecord[] }>
+  /** Append a batch; resolves with the stored ids in the same order. */
+  append(month: string, ops: Record<string, unknown>[]): Promise<{ event_id: string; recorded_at: number }[]>
+}
+
   capturePhoto(file: Blob): Promise<Entry>
   captureAudio(file: Blob, kind?: AudioKind): Promise<Entry>
   captureVideo(file: Blob): Promise<Entry>
@@ -243,6 +260,8 @@ export interface JournalApi {
   /** Delete this device's (or, over the browser, this server's) copy of the
    * journal and its identity; other devices keep theirs. On the browser
    * this also ends the server process — it takes longer to come back than
+  /** The infinite canvas's sync (browser today; hosts without it keep the canvas on this device only). */
+  ink?: InkApi
    * on desktop, where the app just returns to first-run setup in place. */
   resetDevice?(): Promise<void>
   /** Forget the cached passcode and return to the passcode screen — doesn't

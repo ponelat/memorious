@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent } from 'react'
+import { api } from '../api'
 import { CanvasController, DEFAULT_SETTINGS, type Settings, type UiTool } from './controller'
+import { CanvasData } from './sync'
 import { onAppearanceChange, readAppearance, setAppearance } from '../appearance'
 import { renderSample, type Layers, type Tool, type View } from './ink'
 import { isMonthKey, loadJSON, monthKey, monthLabel, monthsWithContent, prevMonth, saveJSON } from './store'
@@ -173,15 +175,21 @@ export function CanvasView() {
   const [floating, setFloating] = useState(false)
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
   const [tick, setTick] = useState(0)
+  const [remote, setRemote] = useState<string[]>([])
 
   // controller lifetime = view lifetime
   useEffect(() => {
-    const c = new CanvasController(
+    let c: CanvasController | null = null
+    const data = new CanvasData(api.ink, (m) => c?.remoteChanged(m))
+    const refreshMonths = () => void data.remoteMonths().then(setRemote)
+    refreshMonths()
+    const monthsTimer = window.setInterval(refreshMonths, 30000)
+    c = new CanvasController(
       host.current!,
       {
         onChange: () => {
           setTick((t) => t + 1)
-          saveJSON(K_VIEW, c.view)
+          if (c) saveJSON(K_VIEW, c.view)
         },
         onFloating: setFloating,
         onSelection: setCorner,
@@ -189,26 +197,29 @@ export function CanvasView() {
         onMark: setHasMark,
         onContext: (x, y) => setMenu({ x, y }),
       },
+      data,
       { settings, view: loadJSON<View>(K_VIEW, { x: 0, y: 0, z: 1 }), touchDraws: touch },
     )
     ctl.current = c
     c.layers = layers
-    c.visibleMonths = prefs.visible.filter((m) => m !== now)
+    c.setVisibleMonths(prefs.visible)
     c.setTool('pencil')
     c.rebuild()
     return () => {
-      c.dispose()
+      window.clearInterval(monthsTimer)
+      c?.dispose()
+      data.dispose()
       ctl.current = null
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   const months = useMemo(() => {
-    const all = new Set([now, prev, ...monthsWithContent(), ...prefs.extra])
+    const all = new Set([now, prev, ...monthsWithContent(), ...remote, ...prefs.extra])
     return [...all].sort().reverse()
     // tick: a stroke may have made the current month non-empty
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [now, prev, prefs.extra, tick])
+  }, [now, prev, prefs.extra, remote, tick])
 
   useEffect(() => {
     const f = () => setDark(isDark())

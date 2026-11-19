@@ -1,11 +1,15 @@
-/** Browser-local persistence for the month canvases (first cut — not yet in the journal).
- *  Events per month live in localStorage; image pixels are content-addressed blobs in IndexedDB. */
+/** Browser-local persistence for the month canvases: a cache of each month's op log (so the canvas works offline
+ *  and resumes after a reload) — the journal, via /api/ink, is the source of truth when the host has one.
+ *  Image pixels are content-addressed blobs in IndexedDB. */
 import type { Ev } from './ink'
+import type { Op } from './oplog'
 
-const EV_PREFIX = 'memorious.canvas.events.'
+const OPS_PREFIX = 'memorious.canvas.ops.'
+const LEGACY_PREFIX = 'memorious.canvas.events.' // before ink synced: Ev[] with `active` flags, per local month
 const monthRe = /^\d{4}-\d{2}$/
 
-export const monthKey = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
+/** Canvas months are UTC calendar months — the same month on every peer, whatever its time zone. */
+export const monthKey = (d = new Date()) => d.toISOString().slice(0, 7)
 
 export function prevMonth(key: string): string {
   const [y, m] = key.split('-').map(Number)
@@ -17,48 +21,83 @@ export function monthLabel(key: string): string {
   return new Date(y, m - 1, 1).toLocaleDateString(undefined, { month: 'short', year: 'numeric' })
 }
 
-export const isMonthKey = (s: string) => monthRe.test(s)
+export const isMonthKey = (s: string) => monthRe.test(s) && +s.slice(5) >= 1 && +s.slice(5) <= 12
 
-export function loadMonth(key: string): Ev[] {
+export interface SavedLog {
+  v: 1
+  /** This device's id as the journal knows it ('local' when there is no journal). */
+  me: string
+  /** The server cursor this cache is current to (0 = never pulled). */
+  cursor: number
+  ops: Op[]
+}
+
+export function loadOps(month: string): SavedLog | null {
   try {
-    const raw = localStorage.getItem(EV_PREFIX + key)
-    return raw ? (JSON.parse(raw) as Ev[]) : []
+    const raw = localStorage.getItem(OPS_PREFIX + month)
+    return raw ? (JSON.parse(raw) as SavedLog) : null
+  } catch {
+    return null
+  }
+}
+
+/** Strokes drawn before ink synced, as ops (undone ones dropped). */
+export function legacyOps(month: string, me: string): Op[] {
+  try {
+    const raw = localStorage.getItem(LEGACY_PREFIX + month)
+    if (!raw) return []
+    const t = Date.now()
+    return (JSON.parse(raw) as Ev[])
+      .filter((e) => e.active !== false)
+      .flatMap((e, i): Op[] => {
+        const base = { cid: crypto.randomUUID(), dev: me, t: t + i }
+        switch (e.type) {
+          case 'stroke':
+            return [{ ...base, data: { op: 'stroke', tool: e.tool, seed: e.seed, size: e.size, ...(e.op != null ? { opacity: e.op } : {}), pts: e.pts } }]
+          case 'image':
+            return [{ ...base, data: { op: 'image', hash: e.hash, rect: e.rect } }]
+          case 'move':
+            return [{ ...base, data: { op: 'move', poly: e.poly, xf: e.xf, ...(e.copy ? { copy: true } : {}), ...(e.only ? { only: e.only } : {}) } }]
+          case 'delete':
+            return [{ ...base, data: { op: 'delete', poly: e.poly, ...(e.only ? { only: e.only } : {}) } }]
+        }
+      })
   } catch {
     return []
   }
 }
 
-/** Months that have any drawing, newest first. */
+/** Months with any drawing cached here, newest first. */
 export function monthsWithContent(): string[] {
   const out: string[] = []
   for (let i = 0; i < localStorage.length; i++) {
     const k = localStorage.key(i)
-    if (k?.startsWith(EV_PREFIX)) {
-      const m = k.slice(EV_PREFIX.length)
-      if (isMonthKey(m) && loadMonth(m).some((e) => e.active !== false)) out.push(m)
+    if (k?.startsWith(OPS_PREFIX)) {
+      const m = k.slice(OPS_PREFIX.length)
+      if (isMonthKey(m) && loadOps(m)?.ops.some((o) => o.data.op !== 'undo' && o.data.op !== 'redo')) out.push(m)
     }
   }
   return out.sort().reverse()
 }
 
 const timers = new Map<string, number>()
-const pending = new Map<string, Ev[]>()
+const pending = new Map<string, SavedLog>()
 function write(key: string) {
-  const evs = pending.get(key)
-  if (!evs) return
+  const v = pending.get(key)
+  if (!v) return
   pending.delete(key)
   window.clearTimeout(timers.get(key))
   timers.delete(key)
   try {
-    localStorage.setItem(EV_PREFIX + key, JSON.stringify(evs))
+    localStorage.setItem(OPS_PREFIX + key, JSON.stringify(v))
   } catch {
-    /* quota: the canvas keeps working in memory */
+    /* quota: the canvas keeps working in memory and from the journal */
   }
 }
 /** Debounced (a stroke end used to stall iPad when it stringified synchronously); flushed when the page hides. */
-export function saveMonth(key: string, evs: Ev[]) {
-  pending.set(key, evs)
-  if (!timers.has(key)) timers.set(key, window.setTimeout(() => write(key), 600))
+export function saveOps(month: string, v: SavedLog) {
+  pending.set(month, v)
+  if (!timers.has(month)) timers.set(month, window.setTimeout(() => write(month), 600))
 }
 const flushAll = () => [...pending.keys()].forEach(write)
 window.addEventListener('pagehide', flushAll)

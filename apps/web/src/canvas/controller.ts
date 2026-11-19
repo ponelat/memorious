@@ -5,7 +5,9 @@
  *  touch that landed within ~0.4 s of the previous one). */
 import { InkBuffers, Stamper, rdp, type Ev, type ImageEv, type Item, type Layers, type Poly, type Pt, type StrokeEv, type Tool, type View, type Xf } from './ink'
 import { bboxOf, fold, isIdentity, onlyList, piecesIn, simplifyPoly, xfPoly, xfXY, type BBox } from './select'
-import { getBlob, ingest, loadMonth, monthKey, saveMonth } from './store'
+import type { MonthLog } from './oplog'
+import { getBlob, ingest, monthKey } from './store'
+import type { CanvasData } from './sync'
 
 export interface ToolSetting {
   size: number
@@ -85,7 +87,10 @@ export class CanvasController {
   private tmpMonth = document.createElement('canvas')
   private buf = new InkBuffers()
   private dpr = Math.min(window.devicePixelRatio || 1, 2)
-  private events: Ev[]
+  private log: MonthLog
+  private get events(): Ev[] {
+    return this.log.events()
+  }
   private items: Item[] = []
   private sel: { poly: Poly; pieces: Item[]; bbox: BBox } | null = null
   private lassoPath: Poly | null = null
@@ -98,7 +103,7 @@ export class CanvasController {
   private off: { qx: number; qy: number; started: boolean } | null = null // active offset-mode drag
   private pend: { qx: number; qy: number; e0: PointerEvent; done: boolean; timer: number } | null = null // finger down, not yet drawing
   private selActive = false // a lasso path or a selection drag is in progress
-  private others = new Map<string, Item[]>()
+  private others = new Map<string, { v: number; items: Item[] }>()
   private bitmaps = new Map<string, ImageBitmap | 'loading'>()
   private live: Live | null = null
   private floating: Floating | null = null
@@ -112,12 +117,13 @@ export class CanvasController {
   private ro: ResizeObserver
   private cleanups: (() => void)[] = []
 
-  constructor(host: HTMLElement, private hooks: ControllerHooks, saved?: Partial<{ settings: Settings; view: View; touchDraws: boolean }>) {
+  constructor(host: HTMLElement, private hooks: ControllerHooks, private data: CanvasData, saved?: Partial<{ settings: Settings; view: View; touchDraws: boolean }>) {
     this.host = host
     if (saved?.settings) this.settings = { ...this.settings, ...saved.settings }
     if (saved?.view) this.view = { ...saved.view }
     this.touchDraws = saved?.touchDraws ?? false
-    this.events = loadMonth(this.month)
+    this.log = data.log(this.month)
+    data.watch([], this.month)
     this.stage = document.createElement('div')
     this.stage.className = 'canvas-stage'
     const mk = (cls: string) => {
@@ -212,32 +218,35 @@ export class CanvasController {
   }
   setVisibleMonths(ms: string[]) {
     this.visibleMonths = ms.filter((m) => m !== this.month)
+    this.data.watch(this.visibleMonths, this.month)
     this.rebuild()
   }
   get canUndo() {
-    return this.events.some((e) => e.active !== false)
+    return this.log.canUndo
   }
   get canRedo() {
-    return this.events.some((e) => e.active === false)
+    return this.log.canRedo
   }
   undo() {
-    for (let i = this.events.length - 1; i >= 0; i--)
-      if (this.events[i].active !== false) {
-        this.events[i].active = false
-        this.sel = null
-        this.persist()
-        this.rebuild()
-        return
-      }
+    if (!this.log.undo()) return
+    this.sel = null
+    this.data.added(this.month)
+    this.hooks.onChange()
+    this.rebuild()
   }
   redo() {
-    const ev = this.events.find((e) => e.active === false)
-    if (ev) {
-      ev.active = true
-      this.sel = null
-      this.persist()
-      this.rebuild()
-    }
+    if (!this.log.redo()) return
+    this.sel = null
+    this.data.added(this.month)
+    this.hooks.onChange()
+    this.rebuild()
+  }
+  /** The journal brought something new for `month` (a peer's ops, or ours coming back stamped). */
+  remoteChanged(month: string) {
+    if (month !== this.month && !this.visibleMonths.includes(month)) return
+    if (month === this.month) this.sel = null
+    this.schedRebuild(30)
+    this.hooks.onChange()
   }
   /** Pick an image from disk / clipboard and float it for placing. */
   async addImage(file: Blob) {
@@ -321,9 +330,10 @@ export class CanvasController {
   }
 
   private monthItems(m: string) {
+    const log = this.data.log(m)
     let e = this.others.get(m)
-    if (!e) this.others.set(m, (e = fold(loadMonth(m))))
-    return e
+    if (!e || e.v !== log.version) this.others.set(m, (e = { v: log.version, items: fold(log.events()) }))
+    return e.items
   }
 
   rebuild() {
@@ -565,17 +575,9 @@ export class CanvasController {
 
   // ── events ─────────────────────────────────────────────────────────────
   private pushEvent(ev: Ev) {
-    while (this.events.length && this.events[this.events.length - 1].active === false) this.events.pop()
-    this.events.push({ ...ev, active: true })
-    this.persist()
-  }
-  private persist() {
-    saveMonth(this.month, this.events)
+    this.log.addEvent(ev)
+    this.data.added(this.month)
     this.hooks.onChange()
-  }
-  /** Months the user has since left behind need re-reading if another tab drew in them. */
-  invalidateOthers() {
-    this.others.clear()
   }
 
   // ── pointer input ──────────────────────────────────────────────────────

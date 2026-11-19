@@ -42,14 +42,21 @@ Entering drops a ring — the "mark" — where you pressed. While it exists, a *
 drawn or erased. A second long press leaves the mode and clears the mark; so does switching tool. The mark follows
 pan/zoom. Mouse and pencil are unaffected. Outside the mode a finger tap leaves a dot and a drag draws under the finger.
 
-## Storage — NOT in the journal yet
-First cut is browser-local: strokes/images per month in `localStorage` (`memorious.canvas.events.YYYY-MM`),
-image pixels (lossy WebP ≤1024 px) content-addressed in IndexedDB. Nothing syncs and the engine is untouched.
-The journal rules still apply to whatever comes next: append-only (undo here is an `active` flag, which would
-become a redact event), flat stream, one media format (images would become JPEG blobs through iroh-blobs).
-The open design question is the payload: an `Ink` capture carrying a month key + the stroke/image events,
-versus one capture per stroke. Decide before touching `crates/core`.
+## Storage and sync
+The canvas lives in the journal: every drawing op is an `infra` event (`infra_kind: "ink"`, `target` = the UTC month)
+and syncs to every peer — design, op list, undo/redo model and the planned freeze/snapshot/compaction in
+**`docs/CANVAS-SYNC.md`**. The browser talks to its server peer over `/api/ink`: ops are applied and cached at once
+(localStorage, `memorious.canvas.ops.YYYY-MM`), pushed in batches ~0.6 s after the last one and on page hide, and
+the peer is polled every 2.5 s (current month) / 20 s (months shown underneath). Offline strokes queue and flush when
+the server is back; drawing made before sync existed is adopted and pushed on first load. Months are **UTC**.
+Undo/redo are per author (you undo your own ops). Hosts without `api.ink` (the desktop app, for now) keep the canvas
+on that device only.
+
+Tests: `crates/core/tests/ink.rs`, `apps/server/tests/ink.rs`, and the op-log logic in
+`apps/web/tests/oplog.test.ts` (`cd apps/web && bun test tests/oplog.test.ts`).
+
+Image pixels do **not** sync yet (the `image` op does; other clients can't draw the picture) — see CANVAS-SYNC.md.
 
 ## Not done
-Rotating a selection, tilt shading, finger-draw toggle, month rollover while
-the tab stays open, journal sync, desktop/iOS faces.
+Rotating a selection, tilt shading, month rollover while the tab stays open, image pixels in sync, the freeze /
+snapshot / compaction phase, and the desktop (Tauri) and iOS faces of `/api/ink`.
