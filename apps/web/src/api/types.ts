@@ -193,16 +193,6 @@ export interface SetupApi {
   unlock(password: string): Promise<void>
 }
 
-/**
- * The one seam between the shared UI and its host. The browser build talks HTTP
- * to the server peer; the Tauri build implements the same interface with
- * commands against the embedded core.
- */
-export interface JournalApi {
-  /** Browser needs the passcode; a host with its own core is already trusted. */
-  needsAuth: boolean
-  checkPasscode(passcode: string): Promise<boolean>
-  captureText(text: string): Promise<Entry>
 /** One ink op as the server stores it (docs/CANVAS-SYNC.md). `data.op` names it; `data.cid` is the client's id for it. */
 export interface InkRecord {
   event_id: string
@@ -222,6 +212,17 @@ export interface InkApi {
   /** Append a batch; resolves with the stored ids in the same order. */
   append(month: string, ops: Record<string, unknown>[]): Promise<{ event_id: string; recorded_at: number }[]>
 }
+
+/**
+ * The one seam between the shared UI and its host. The browser build talks HTTP
+ * to the server peer; the Tauri build implements the same interface with
+ * commands against the embedded core.
+ */
+export interface JournalApi {
+  /** Browser needs the passcode; a host with its own core is already trusted. */
+  needsAuth: boolean
+  checkPasscode(passcode: string): Promise<boolean>
+  captureText(text: string): Promise<Entry>
 
   capturePhoto(file: Blob): Promise<Entry>
   captureAudio(file: Blob, kind?: AudioKind): Promise<Entry>
@@ -255,6 +256,8 @@ export interface InkApi {
     mint(name: string): Promise<string>
     revoke(id: string): Promise<void>
   }
+  /** The infinite canvas's sync (browser today; hosts without it keep the canvas on this device only). */
+  ink?: InkApi
   /** Present only on hosts that dial peers themselves (desktop). */
   setup?: SetupApi
   syncNow?(ticket?: string): Promise<SyncReport>
@@ -263,8 +266,6 @@ export interface InkApi {
   /** Delete this device's (or, over the browser, this server's) copy of the
    * journal and its identity; other devices keep theirs. On the browser
    * this also ends the server process — it takes longer to come back than
-  /** The infinite canvas's sync (browser today; hosts without it keep the canvas on this device only). */
-  ink?: InkApi
    * on desktop, where the app just returns to first-run setup in place. */
   resetDevice?(): Promise<void>
   /** Forget the cached passcode and return to the passcode screen — doesn't

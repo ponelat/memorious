@@ -121,14 +121,6 @@ export const httpApi: JournalApi = {
     })
   },
 
-  agents: {
-    list: () => json<AgentKey[]>('/api/agents'),
-    async mint(name: string) {
-      const r = await request('/api/agents', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name }),
-      })
   ink: {
     async months() {
       return (await json<{ months: string[] }>('/api/ink')).months
@@ -201,6 +193,14 @@ export const httpApi: JournalApi = {
     },
   },
 
+  agents: {
+    list: () => json<AgentKey[]>('/api/agents'),
+    async mint(name: string) {
+      const r = await request('/api/agents', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name }),
+      })
       return ((await r.json()) as { ticket: string }).ticket
     },
     async revoke(id: string) {
