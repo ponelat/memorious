@@ -1002,3 +1002,50 @@ async fn setup_join_pairs_with_an_existing_journal_and_sets_a_passcode() {
     peer.shutdown().await;
     std::env::remove_var("MEMORIOUS_PASSWORD");
 }
+
+#[tokio::test]
+async fn peers_can_be_marked_optional_and_health_follows() {
+    let (_d, state) = test_state().await;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64;
+    // One required peer we haven't heard from in 3 days: red.
+    state.node.journal().record_sync_contact("peer-a", now - 72 * 3600 * 1000, None, "ticket").unwrap();
+    let router = app(wrap(state.clone()), None);
+
+    let get_status = || async {
+        let resp = router
+            .clone()
+            .oneshot(authed(Request::get("/api/status")).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        body_json(resp).await
+    };
+    let v = get_status().await;
+    assert_eq!(v["peers"][0]["required"], true, "required unless marked otherwise");
+    assert_eq!(v["health"]["color"], "red");
+    assert_eq!(v["health"]["required_peers"], 1);
+
+    let post = |body: &'static str| {
+        router.clone().oneshot(
+            authed(Request::post("/api/peers/required"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(body))
+                .unwrap(),
+        )
+    };
+    assert_eq!(post(r#"{"endpoint_id":"peer-a","required":false}"#).await.unwrap().status(), StatusCode::OK);
+    let v = get_status().await;
+    assert_eq!(v["peers"][0]["required"], false);
+    assert_eq!(v["health"]["color"], "green", "an optional peer cannot make it red");
+    assert_eq!(v["health"]["required_peers"], 0);
+    assert_eq!(v["health"]["peers"], 1);
+
+    assert_eq!(post(r#"{"endpoint_id":"peer-a","required":true}"#).await.unwrap().status(), StatusCode::OK);
+    assert_eq!(get_status().await["health"]["color"], "red");
+
+    // Malformed body is a client error, not a 500.
+    assert_eq!(post(r#"{"endpoint_id":"peer-a"}"#).await.unwrap().status(), StatusCode::UNPROCESSABLE_ENTITY);
+}

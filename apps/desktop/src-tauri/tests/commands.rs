@@ -162,11 +162,12 @@ async fn desktop_command_layer_end_to_end() {
     let ticket = peer.ticket().unwrap();
 
     // Desktop dials out via the sync_now command; both sides converge.
-    // Alongside the captures, device name, peer-join and version-seen events
-    // sync too; the flat feed deliberately derives only capture entries.
+    // (sent = 3 captures + this device's default-name annotation + its infra
+    // events — peer-join, version-seen — which are events and sync like everything
+    // else; the infra set grows, so the exact count is not the point here)
     let report = invoke(&webview, "sync_now", json!({"ticket": ticket})).await.unwrap();
     assert_eq!(report["received"], 1);
-    assert_eq!(report["sent"], 7);
+    assert!(report["sent"].as_u64().unwrap() >= 4, "sent {}", report["sent"]);
     let feed = invoke(&webview, "feed", json!({})).await.unwrap();
     assert_eq!(feed["entries"].as_array().unwrap().len(), 4);
     assert_eq!(
@@ -251,6 +252,24 @@ async fn desktop_command_layer_end_to_end() {
     let peers = status["peers"].as_array().unwrap();
     assert!(peers.iter().any(|p| p["device_id"] == peer.journal().device_id()));
     assert_eq!(status["net"]["relay_mode"], "default");
+
+    // Peers are required by default; marking one optional is reflected in status
+    // and in the health summary (nothing required = nothing to be late to).
+    let peer_row = peers.iter().find(|p| p["device_id"] == peer.journal().device_id()).unwrap();
+    assert_eq!(peer_row["required"], true);
+    let endpoint_id = peer_row["endpoint_id"].as_str().unwrap().to_string();
+    invoke(&webview, "set_peer_required", json!({"endpointId": endpoint_id, "required": false}))
+        .await
+        .unwrap();
+    let status = invoke(&webview, "status", json!({})).await.unwrap();
+    let row = status["peers"].as_array().unwrap().iter().find(|p| p["endpoint_id"] == endpoint_id.as_str()).unwrap();
+    assert_eq!(row["required"], false);
+    // This desktop remembers every peer it has met, so only the marked one drops out.
+    let known = status["health"]["peers"].as_u64().unwrap();
+    assert_eq!(status["health"]["required_peers"].as_u64().unwrap(), known - 1);
+    invoke(&webview, "set_peer_required", json!({"endpointId": endpoint_id, "required": true}))
+        .await
+        .unwrap();
 
     // Rename any device over IPC; net config round-trips (applies on relaunch).
     invoke(

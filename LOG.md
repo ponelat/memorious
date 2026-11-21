@@ -696,3 +696,5 @@
   visible. This also corrects the background settings header scrolling away.
 - Appearance keeps the existing per-device preference; background and peer
   controls retain their existing actions and persistence.
+- 2026-11-08: Health light judged by *required* peers only. Peers are required unless this device marks them optional (`Journal::set_peer_required`, meta `peer_optional:<peer>`; local and unsynced, never an event). `SyncHealth.required_peers` and `PeerInfo.required` added; no required peer = green. Surfaced in HTTP (`POST /api/peers/required`), Tauri (`set_peer_required`), the FFI (`set_peer_required`) and the web Peers page.
+- 2026-11-17: Canvas offset mode has a fixed bottom-right pad. Dragging it moves the marker relative to the pointer at the current zoom and leaves the stroke history untouched.

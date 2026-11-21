@@ -784,6 +784,19 @@ async fn set_device_name<R: tauri::Runtime>(
     Ok(())
 }
 
+/// Mark a peer required (default) or optional for this device's health light.
+#[tauri::command]
+async fn set_peer_required<R: tauri::Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, NodeState>,
+    endpoint_id: String,
+    required: bool,
+) -> Result<(), String> {
+    let n = node(&app, &state).await.map_err(estr)?;
+    n.journal().set_peer_required(&endpoint_id, required).map_err(estr)?;
+    Ok(())
+}
+
 /// Store the network config (relays / public lookup). Applied on relaunch.
 #[tauri::command]
 async fn set_net_config<R: tauri::Runtime>(
@@ -1099,6 +1112,7 @@ pub fn handlers<R: tauri::Runtime>(
         search,
         status,
         set_device_name,
+        set_peer_required,
         set_net_config,
         mint_agent,
         list_agents,

@@ -233,6 +233,9 @@ pub struct PeerInfo {
     pub media: Option<MediaHeld>,
     /// Referenced media the peer lacked beyond its retention policy.
     pub media_missing: Option<u64>,
+    /// Whether the health light waits on this peer (default yes; a local
+    /// per-device mark, not synced).
+    pub required: bool,
 }
 
 /// Private, loopback, or link-local — "same network" for the status UI.
@@ -991,6 +994,7 @@ impl Node {
         let mut out = Vec::new();
         for (key, value) in store.meta_scan("peer_last_ok:")? {
             let endpoint_id = key.trim_start_matches("peer_last_ok:").to_string();
+            let endpoint_id_for_required = endpoint_id.clone();
             let last_ok_ms = value
                 .as_slice()
                 .try_into()
@@ -1058,6 +1062,7 @@ impl Node {
                 events_missing,
                 media: holdings.media,
                 media_missing,
+                required: self.journal.peer_required(&endpoint_id_for_required)?,
             });
         }
         out.sort_by_key(|p| std::cmp::Reverse(p.last_ok_ms));

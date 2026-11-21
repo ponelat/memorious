@@ -295,6 +295,13 @@ impl MobileJournal {
         Ok(())
     }
 
+    /// Mark a peer required (the default) or optional: the health light only
+    /// waits on required peers. A local preference of this device, not synced.
+    pub fn set_peer_required(&self, endpoint_id: String, required: bool) -> Result<()> {
+        self.node.journal().set_peer_required(&endpoint_id, required)?;
+        Ok(())
+    }
+
     /// MCP over QUIC: mint a revocable agent ticket for a chat-client bridge.
     /// The key inside is shown only here. Answers only while the app runs.
     pub fn mint_agent_ticket(&self, name: String) -> Result<String> {
@@ -458,6 +465,18 @@ mod tests {
         assert!(status["storage"]["db_bytes"].as_u64().unwrap() > 0);
         assert_eq!(status["peers"][0]["discovery"], "ticket");
         assert_eq!(status["peers"][0]["conn"]["proxied"], false);
+
+        // Required-vs-optional peers over the FFI: default required; marking one
+        // optional shows in status and in the health summary.
+        assert_eq!(status["peers"][0]["required"], true);
+        let peer_id = status["peers"][0]["endpoint_id"].as_str().unwrap().to_string();
+        j2.set_peer_required(peer_id.clone(), false).unwrap();
+        let after: serde_json::Value = serde_json::from_str(&j2.status_json().unwrap()).unwrap();
+        assert_eq!(after["peers"][0]["required"], false);
+        let health: serde_json::Value = serde_json::from_str(&j2.sync_health().unwrap()).unwrap();
+        assert_eq!(health["required_peers"], 0);
+        assert_eq!(health["color"], "green");
+        j2.set_peer_required(peer_id, true).unwrap();
         j2.set_device_name(me.clone(), "Josh's phone".into()).unwrap();
         let status: serde_json::Value =
             serde_json::from_str(&j2.status_json().unwrap()).unwrap();

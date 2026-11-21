@@ -74,8 +74,11 @@ pub struct SyncHealth {
     pub color: String, // "green" | "yellow" | "red"
     pub pending: bool,
     pub stalest_ms: Option<i64>,
+    /// Every peer we know.
     pub peers: usize,
-    /// Known peers whose last-seen holdings fall short of ours: behind on
+    /// The ones the light waits on: peers not marked optional (the default).
+    pub required_peers: usize,
+    /// Required peers whose last-seen holdings fall short of ours: behind on
     /// events, or missing media their own retention policy does not excuse.
     pub peers_behind: usize,
 }
@@ -598,16 +601,41 @@ impl Journal {
         Ok(self.store.heads()?.values().sum())
     }
 
-    /// Traffic light for the sync status UX (UNDERSTANDING.md): red = a known
-    /// peer unheard-from for 48h (outranks all), yellow = local data no peer
-    /// has picked up yet OR a known peer last seen holding less than we do
-    /// (events, or media its retention policy doesn't excuse), green =
-    /// every peer holds everything (or solo — nowhere to push).
+    /// Whether the traffic light waits on `peer`. Every peer counts until it is
+    /// marked optional. A local preference of this device — deliberately not an
+    /// event, so it is never synced and each device chooses what it needs.
+    pub fn peer_required(&self, peer: &str) -> Result<bool> {
+        Ok(self.store.meta_get(&format!("peer_optional:{peer}"))?.is_none())
+    }
+
+    pub fn set_peer_required(&self, peer: &str, required: bool) -> Result<()> {
+        let key = format!("peer_optional:{peer}");
+        if required {
+            self.store.meta_delete(&key)
+        } else {
+            self.store.meta_set(&key, b"1")
+        }
+    }
+
+    /// Traffic light for the sync status UX (UNDERSTANDING.md), judged by the
+    /// *required* peers only (all of them unless marked optional): red = a
+    /// required peer unheard-from for 48h (outranks all), yellow = local data
+    /// no peer has picked up yet OR a required peer last seen holding less than
+    /// we do (events, or media its retention policy doesn't excuse), green =
+    /// every required peer holds everything (or none are required — solo, or
+    /// all optional: nothing to be late to).
     pub fn sync_health(&self, now_ms: i64) -> Result<SyncHealth> {
         const STALE_MS: i64 = 48 * 3600 * 1000;
-        let peers = self.store.meta_scan("peer_last_ok:")?;
+        let all = self.store.meta_scan("peer_last_ok:")?;
+        let total = all.len();
+        let mut peers = Vec::with_capacity(total);
+        for (key, value) in all {
+            if self.peer_required(key.trim_start_matches("peer_last_ok:"))? {
+                peers.push((key, value));
+            }
+        }
         if peers.is_empty() {
-            return Ok(SyncHealth { color: "green".into(), pending: false, stalest_ms: None, peers: 0, peers_behind: 0 });
+            return Ok(SyncHealth { color: "green".into(), pending: false, stalest_ms: None, peers: total, required_peers: 0, peers_behind: 0 });
         }
         let stalest = peers
             .iter()
@@ -649,7 +677,8 @@ impl Journal {
             color: color.into(),
             pending,
             stalest_ms: Some(stalest),
-            peers: peers.len(),
+            peers: total,
+            required_peers: peers.len(),
             peers_behind,
         })
     }

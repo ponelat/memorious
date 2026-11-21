@@ -92,7 +92,10 @@ meta = the heads both sides converged on) and adds a media tally to Hello/HelloA
 peers; `peer_media:` meta). Status therefore says "peer holds x of y events, media a of b",
 with a peer counted as *behind* when its last-seen heads fall short of ours or it lacks
 media its own retention policy doesn't excuse. The health light is yellow while any known
-peer is behind and green only when every peer holds everything. Caveats stay: numbers are
+required peer is behind and green only when every required peer holds everything. Peers are
+required by default; a device can mark a peer optional (a laptop that is often off) so it never
+turns the light red or yellow — a local, unsynced preference of that device, and with no required
+peer there is nothing to be late to, so the light is green. Caveats stay: numbers are
 as of the last handshake (the media tally predates that handshake's blob fetch), and heads
 say a peer *received* events, not that its disk is intact.
 

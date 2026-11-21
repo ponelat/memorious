@@ -227,6 +227,7 @@ pub fn app(state: RouterState, web_dist: Option<PathBuf>) -> Router {
         .route("/search/related", get(search_related))
         .route("/status", get(status))
         .route("/peers/ping", post(ping_peers))
+        .route("/peers/required", post(set_peer_required))
         .route("/device-name", post(set_device_name))
         .route("/agents", get(list_agents).post(mint_agent))
         .route("/agents/{id}", axum::routing::delete(revoke_agent))
@@ -723,6 +724,24 @@ async fn status(State(state): State<SharedState>) -> Response {
 struct DeviceNameBody {
     device_id: String,
     name: String,
+}
+
+#[derive(Deserialize)]
+struct PeerRequiredBody {
+    endpoint_id: String,
+    required: bool,
+}
+
+/// Mark a peer required (the default) or optional for this device's health
+/// light. A local preference — never synced.
+async fn set_peer_required(
+    State(state): State<SharedState>,
+    Json(body): Json<PeerRequiredBody>,
+) -> Response {
+    match state.journal().set_peer_required(&body.endpoint_id, body.required) {
+        Ok(()) => Json(json!({"ok": true})).into_response(),
+        Err(e) => err(StatusCode::BAD_REQUEST, &format!("{e:#}")),
+    }
 }
 
 #[derive(Deserialize)]
