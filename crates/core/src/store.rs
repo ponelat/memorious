@@ -14,6 +14,8 @@ pub type Heads = BTreeMap<String, u64>;
 
 pub struct Store {
     conn: Mutex<Connection>,
+    /// Months that just got new ink (local or from a peer) — what `subscribe_ink` listens to. Not persisted.
+    ink_tx: tokio::sync::broadcast::Sender<String>,
 }
 
 const SCHEMA: &str = "
@@ -88,6 +90,7 @@ impl Store {
         );
         Ok(Self {
             conn: Mutex::new(conn),
+            ink_tx: tokio::sync::broadcast::channel(256).0,
         })
     }
 
@@ -196,6 +199,7 @@ impl Store {
         };
         insert_event(&tx, &event)?;
         tx.commit()?;
+        self.announce(&event);
         Ok(event)
     }
 
@@ -224,6 +228,7 @@ impl Store {
         }
         insert_event(&tx, event)?;
         tx.commit()?;
+        self.announce(event);
         Ok(true)
     }
 
@@ -272,6 +277,20 @@ impl Store {
             out.push(row?);
         }
         Ok(out)
+    }
+
+    /// Tell subscribers which month a freshly stored ink op belongs to (no-op for every other event).
+    fn announce(&self, ev: &Event) {
+        if let Payload::Infra { infra_kind, target: Some(month), .. } = &ev.payload {
+            if infra_kind == "ink" {
+                let _ = self.ink_tx.send(month.clone()); // nobody listening is fine
+            }
+        }
+    }
+
+    /// A feed of month keys, one per ink op stored from now on (ours or a peer's).
+    pub fn subscribe_ink(&self) -> tokio::sync::broadcast::Receiver<String> {
+        self.ink_tx.subscribe()
     }
 
     /// Ink ops (`infra_kind: "ink"`) for one canvas month that THIS peer stored after `after` (a cursor from an

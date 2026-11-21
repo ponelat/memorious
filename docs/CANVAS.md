@@ -69,7 +69,8 @@ The canvas lives in the journal: every drawing op is an `infra` event (`infra_ki
 and syncs to every peer — design, op list, undo/redo model and the planned freeze/snapshot/compaction in
 **`docs/CANVAS-SYNC.md`**. The browser talks to its server peer over `/api/ink`: ops are applied and cached at once
 (localStorage, `memorious.canvas.ops.YYYY-MM`), pushed in batches ~0.6 s after the last one and on page hide, and
-the peer is polled every 2.5 s (current month) / 20 s (months shown underneath). Offline strokes queue and flush when
+the peer announces new ink over server-sent events (`/api/ink/stream`, so a stroke reaches another device within about the
+push debounce) with a slow poll as a safety net and the old 2.5 s / 20 s polling when the stream is down. Offline strokes queue and flush when
 the server is back; drawing made before sync existed is adopted and pushed on first load. Months are **UTC**.
 Undo/redo are per author (you undo your own ops). Hosts without `api.ink` (the desktop app, for now) keep the canvas
 on that device only.

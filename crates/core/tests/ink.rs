@@ -124,3 +124,30 @@ fn a_batch_is_all_or_nothing_for_validation() {
     assert!(j.append_ink_batch("2026-11", vec![stroke(3), json!({"no": "op"})]).is_err());
     assert_eq!(j.ink_events("2026-11", 0).unwrap().len(), 2, "the bad batch wrote nothing");
 }
+
+#[tokio::test]
+async fn subscribers_hear_about_new_ink_and_only_ink() {
+    let (_d, j) = journal();
+    let mut rx = j.subscribe_ink();
+    j.append_ink("2026-11", stroke(1)).unwrap();
+    assert_eq!(rx.recv().await.unwrap(), "2026-11");
+    j.capture_text("not ink").unwrap(); // a text capture is not announced
+    j.append_ink("2026-10", stroke(2)).unwrap();
+    assert_eq!(rx.recv().await.unwrap(), "2026-10", "the next thing heard is the next ink, for its own month");
+}
+
+#[tokio::test]
+async fn ink_that_syncs_in_from_a_peer_is_announced_too() {
+    let dir = tempdir().unwrap();
+    let ja = Journal::init(&dir.path().join("a"), "pw").unwrap();
+    let jb = Journal::init_with_secret(&dir.path().join("b"), *ja.secret(), "pw").unwrap();
+    let a = Node::spawn(ja).await.unwrap();
+    let b = Node::spawn(jb).await.unwrap();
+    let mut rx = b.journal().subscribe_ink();
+
+    a.journal().append_ink("2026-11", stroke(1)).unwrap();
+    b.sync_with(&a.addr()).await.unwrap();
+
+    let heard = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv()).await.expect("announced after the sync").unwrap();
+    assert_eq!(heard, "2026-11");
+}

@@ -39,8 +39,14 @@ byte for byte. `crates/core/src/ink.rs` validates the envelope (month, a string 
   (`Store::ink_events`, test `an_op_that_syncs_in_late_is_still_after_the_readers_cursor`).
 - **Undo/redo are per author**: you can only undo your own ops; the redo stack is derived from your own ops, so it
   survives a reload. A new op of yours ends the redo chain.
-- **Debounce**: the client queues ops locally (local-first, works offline), pushes a batch ~0.6 s after the last
-  one and on page hide, and polls ~2.5 s for new ops from other peers while the canvas is open.
+- **Debounce**: the client queues ops locally (local-first, works offline) and pushes a batch ~0.6 s after the last
+  one and on page hide.
+- **Server-sent events, not polling**: `GET /api/ink/stream` announces `{"month"}` each time ink lands on the peer — drawn
+  there or synced in from another peer (`Journal::subscribe_ink`, a broadcast fed from `Store` after the commit) — and the
+  client then pulls just that month with its cursor. `ready` (re)connect → catch-up pull of every month shown; `resync` if
+  the listener lagged. fetch streaming, not `EventSource`, because the passcode travels in a header. A slow poll (60 s)
+  stays as a safety net, the full poll (2.5 s / 20 s) takes over while the stream is down, and the stream reconnects with
+  backoff (a 45 s silence — the server sends keep-alives every 20 s — counts as down).
 
 ## Phase 2 (designed, not built): freeze, snapshot, compact
 

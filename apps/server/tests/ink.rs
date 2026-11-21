@@ -91,3 +91,36 @@ async fn months_are_listed_and_bad_input_is_refused_whole() {
     let (_, body) = send(&r, "GET", "/api/ink/2026-11", None, true).await;
     assert_eq!(body["events"].as_array().unwrap().len(), 1, "the half-good batch left no trace");
 }
+
+#[tokio::test]
+async fn the_stream_announces_ink_as_it_lands() {
+    use std::time::Duration;
+    let (_d, r) = router().await;
+    let req = Request::builder().uri("/api/ink/stream").header(header::AUTHORIZATION, "Bearer sesame").body(Body::empty()).unwrap();
+    let resp = r.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert!(resp.headers()[header::CONTENT_TYPE].to_str().unwrap().starts_with("text/event-stream"));
+    let mut body = resp.into_body();
+
+    let mut text = String::new();
+    // read until `text` contains `needle`, or give up after a few seconds
+    async fn until(body: &mut Body, text: &mut String, needle: &str) {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        while !text.contains(needle) {
+            let frame = tokio::time::timeout_at(deadline, body.frame()).await.unwrap_or_else(|_| panic!("timed out waiting for {needle:?}; got {text:?}")).expect("stream ended").unwrap();
+            if let Some(data) = frame.data_ref() {
+                text.push_str(&String::from_utf8_lossy(data));
+            }
+        }
+    }
+    until(&mut body, &mut text, "event: ready").await;
+    send(&r, "POST", "/api/ink/2026-11", Some(json!({"ops": [stroke(1)]})), true).await;
+    until(&mut body, &mut text, "event: ink").await;
+    assert!(text.contains("\"month\":\"2026-11\""), "{text}");
+}
+
+#[tokio::test]
+async fn the_stream_needs_the_passcode() {
+    let (_d, r) = router().await;
+    assert_eq!(send(&r, "GET", "/api/ink/stream", None, false).await.0, StatusCode::UNAUTHORIZED);
+}

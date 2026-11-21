@@ -220,6 +220,7 @@ pub fn app(state: RouterState, web_dist: Option<PathBuf>) -> Router {
         .route("/media/{hash}", get(media))
         .route("/redact", post(redact))
         .route("/ink", get(ink::months))
+        .route("/ink/stream", get(ink::stream))
         .route("/ink/{month}", get(ink::list).post(ink::append))
         .route("/trash", get(trash))
         .route("/search", get(search))
