@@ -1,4 +1,6 @@
-# Infinite month canvas (branch `feat/infinite-canvas`)
+# Infinite month canvas
+
+> Platform-neutral behaviour for porting (iOS, Android, …): **`docs/CANVAS-SPEC.md`**; golden vectors in `apps/web/tests/canvas-vectors/`.
 
 One infinite pannable/zoomable canvas per **calendar month**. You only ever draw on the current month's
 canvas; earlier months (the previous one by default, any other on request) show through underneath at
@@ -82,7 +84,7 @@ Image pixels do **not** sync yet (the `image` op does; other clients can't draw 
 
 ## Not done
 Rotating a selection, tilt shading, month rollover while the tab stays open, image pixels in sync, the freeze /
-snapshot / compaction phase, and the desktop (Tauri) and iOS faces of `/api/ink`.
+snapshot / compaction phase, and the desktop (Tauri) face of `/api/ink`. (The iOS face exists: UniFFI `ink_append`/`ink_list`/`ink_months`, native canvas in the mobile app.)
 
 ## Rendering cost
 Every pan / zoom settle replays the month's strokes into the ink buffers, so the work is kept to what changed:

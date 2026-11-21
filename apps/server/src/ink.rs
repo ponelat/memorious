@@ -33,11 +33,8 @@ pub(crate) async fn append(
     UrlPath(month): UrlPath<String>,
     Json(body): Json<AppendBody>,
 ) -> Response {
-    match state.journal().append_ink_batch(&month, body.ops) {
-        Ok(evs) => Json(json!({
-            "events": evs.iter().map(|e| json!({"event_id": e.event_id, "recorded_at": e.recorded_at})).collect::<Vec<_>>()
-        }))
-        .into_response(),
+    match state.journal().ink_append_json(&month, body.ops) {
+        Ok(v) => Json(v).into_response(),
         Err(e) => err(StatusCode::BAD_REQUEST, &format!("{e:#}")),
     }
 }
@@ -50,33 +47,19 @@ pub(crate) async fn list(
     UrlPath(month): UrlPath<String>,
     Query(p): Query<ListParams>,
 ) -> Response {
-    let after = p.after.unwrap_or(0);
     if !memorious_core::ink::is_month_key(&month) {
         return err(StatusCode::BAD_REQUEST, "month must be YYYY-MM");
     }
-    match state.journal().ink_events(&month, after) {
-        Ok(evs) => Json(json!({
-            "device_id": state.journal().device_id(),
-            "cursor": evs.last().map(|(r, _)| *r).unwrap_or(after),
-            "events": evs.iter().map(|(_, e)| json!({
-                "event_id": e.event_id,
-                "device_id": e.device_id,
-                "recorded_at": e.recorded_at,
-                "data": match &e.payload {
-                    memorious_core::Payload::Infra { data, .. } => data.clone(),
-                    _ => Value::Null,
-                },
-            })).collect::<Vec<_>>()
-        }))
-        .into_response(),
+    match state.journal().ink_list_json(&month, p.after.unwrap_or(0)) {
+        Ok(v) => Json(v).into_response(),
         Err(e) => internal(e),
     }
 }
 
 /// `GET /api/ink` → `{months: ["2026-09", ...]}`.
 pub(crate) async fn months(State(state): State<SharedState>) -> Response {
-    match state.journal().ink_months() {
-        Ok(m) => Json(json!({ "months": m })).into_response(),
+    match state.journal().ink_months_json() {
+        Ok(v) => Json(v).into_response(),
         Err(e) => internal(e),
     }
 }

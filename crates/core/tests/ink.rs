@@ -151,3 +151,28 @@ async fn ink_that_syncs_in_from_a_peer_is_announced_too() {
     let heard = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv()).await.expect("announced after the sync").unwrap();
     assert_eq!(heard, "2026-11");
 }
+
+/// The JSON the HTTP face and the mobile face both hand to a client — one shaper, so they can't drift.
+#[test]
+fn the_json_faces_share_one_shape() {
+    let (_d, j) = journal();
+    let out = j.ink_append_json("2026-11", vec![stroke(1), stroke(2)]).unwrap();
+    let evs = out["events"].as_array().unwrap();
+    assert_eq!(evs.len(), 2);
+    assert!(evs[0]["event_id"].is_string() && evs[0]["recorded_at"].is_i64());
+
+    let list = j.ink_list_json("2026-11", 0).unwrap();
+    assert_eq!(list["device_id"], j.device_id());
+    let got = list["events"].as_array().unwrap();
+    assert_eq!(got.len(), 2);
+    assert_eq!(got[0]["data"]["op"], "stroke");
+    assert_eq!(got[0]["device_id"], j.device_id());
+    let cursor = list["cursor"].as_i64().unwrap();
+    assert!(cursor > 0);
+    // nothing new after the cursor: it comes back unchanged, with no events
+    let again = j.ink_list_json("2026-11", cursor).unwrap();
+    assert_eq!(again["cursor"], cursor);
+    assert!(again["events"].as_array().unwrap().is_empty());
+    assert!(j.ink_list_json("nope", 0).is_err());
+    assert_eq!(j.ink_months_json().unwrap()["months"], json!(["2026-11"]));
+}

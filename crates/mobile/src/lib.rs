@@ -249,6 +249,25 @@ impl MobileJournal {
         Ok(rt().block_on(self.node.blob_bytes(&hash))?)
     }
 
+    /// Canvas ink (docs/CANVAS-SYNC.md). `ops_json` is a JSON array of op objects; returns
+    /// `{events:[{event_id,recorded_at}]}` — the same JSON as the server's `POST /api/ink/{month}`.
+    pub fn ink_append(&self, month: String, ops_json: String) -> Result<String> {
+        let ops: Vec<serde_json::Value> = serde_json::from_str(&ops_json)
+            .map_err(|e| JournalError::Failure { msg: format!("ink ops must be a JSON array: {e}") })?;
+        Ok(self.node.journal().ink_append_json(&month, ops)?.to_string())
+    }
+
+    /// `{device_id, cursor, events:[{event_id,device_id,recorded_at,data}]}` for one month, arrival order after `after`
+    /// (0 = all) — same JSON as `GET /api/ink/{month}?after=`.
+    pub fn ink_list(&self, month: String, after: i64) -> Result<String> {
+        Ok(self.node.journal().ink_list_json(&month, after)?.to_string())
+    }
+
+    /// `{months:[...]}` — months that have any ink.
+    pub fn ink_months(&self) -> Result<String> {
+        Ok(self.node.journal().ink_months_json()?.to_string())
+    }
+
     pub fn redact(&self, event_id: String) -> Result<()> {
         self.node.journal().redact(&event_id)?;
         Ok(())

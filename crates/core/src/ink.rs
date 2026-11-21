@@ -72,4 +72,39 @@ impl Journal {
     pub fn ink_months(&self) -> Result<Vec<String>> {
         self.store.ink_months()
     }
+
+    /// `{events: [{event_id, recorded_at}]}` — the JSON every face (HTTP, mobile) returns for an append.
+    pub fn ink_append_json(&self, month: &str, ops: Vec<Value>) -> Result<Value> {
+        let evs = self.append_ink_batch(month, ops)?;
+        Ok(serde_json::json!({
+            "events": evs.iter().map(|e| serde_json::json!({"event_id": e.event_id, "recorded_at": e.recorded_at})).collect::<Vec<_>>()
+        }))
+    }
+
+    /// `{device_id, cursor, events: [{event_id, device_id, recorded_at, data}]}` — arrival order after `after`.
+    /// `device_id` is this peer's own (undo/redo are per author); `cursor` is what to pass as `after` next time.
+    pub fn ink_list_json(&self, month: &str, after: i64) -> Result<Value> {
+        if !is_month_key(month) {
+            bail!("month must be YYYY-MM");
+        }
+        let evs = self.ink_events(month, after)?;
+        Ok(serde_json::json!({
+            "device_id": self.device_id(),
+            "cursor": evs.last().map(|(r, _)| *r).unwrap_or(after),
+            "events": evs.iter().map(|(_, e)| serde_json::json!({
+                "event_id": e.event_id,
+                "device_id": e.device_id,
+                "recorded_at": e.recorded_at,
+                "data": match &e.payload {
+                    crate::Payload::Infra { data, .. } => data.clone(),
+                    _ => Value::Null,
+                },
+            })).collect::<Vec<_>>()
+        }))
+    }
+
+    /// `{months: ["2026-09", ...]}`.
+    pub fn ink_months_json(&self) -> Result<Value> {
+        Ok(serde_json::json!({ "months": self.ink_months()? }))
+    }
 }
