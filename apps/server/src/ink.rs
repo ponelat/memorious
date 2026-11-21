@@ -1,12 +1,18 @@
 //! The infinite canvas over HTTP (`docs/CANVAS-SYNC.md`). Thin: the journal validates and stores
 //! ink ops (`Journal::append_ink_batch` / `ink_events`); these handlers only move JSON.
 
+use std::convert::Infallible;
+use std::time::Duration;
+
 use axum::extract::{Path as UrlPath, Query, State};
 use axum::http::StatusCode;
+use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde::Deserialize;
 use serde_json::{json, Value};
+use tokio_stream::wrappers::BroadcastStream;
+use tokio_stream::StreamExt;
 
 use crate::{err, internal, SharedState};
 
@@ -73,4 +79,19 @@ pub(crate) async fn months(State(state): State<SharedState>) -> Response {
         Ok(m) => Json(json!({ "months": m })).into_response(),
         Err(e) => internal(e),
     }
+}
+
+/// `GET /api/ink/stream` — server-sent events: `ready` once connected, then an `ink` event `{"month": "YYYY-MM"}` each time
+/// ink lands for a month (drawn here or synced in from a peer). A client then pulls that month with its cursor. If the
+/// listener falls behind it gets `resync` (pull every month you show). Replaces polling; the client keeps a slow poll as a net.
+pub(crate) async fn stream(State(state): State<SharedState>) -> Response {
+    let rx = state.journal().subscribe_ink();
+    let ready = tokio_stream::once(Ok::<_, Infallible>(Event::default().event("ready").data("{}")));
+    let updates = BroadcastStream::new(rx).map(|m| {
+        Ok::<_, Infallible>(match m {
+            Ok(month) => Event::default().event("ink").data(json!({ "month": month }).to_string()),
+            Err(_lagged) => Event::default().event("resync").data("{}"),
+        })
+    });
+    Sse::new(ready.chain(updates)).keep_alive(KeepAlive::new().interval(Duration::from_secs(20))).into_response()
 }

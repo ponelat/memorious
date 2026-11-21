@@ -62,6 +62,12 @@ impl Journal {
         self.store.ink_events(month, after)
     }
 
+    /// Be told, as it happens, which month got new ink — from this device or arriving by sync. The listener then asks
+    /// `ink_events(month, cursor)` for the detail. (The server's `/api/ink/stream` is this, as server-sent events.)
+    pub fn subscribe_ink(&self) -> tokio::sync::broadcast::Receiver<String> {
+        self.store.subscribe_ink()
+    }
+
     /// Months that have any ink, oldest first.
     pub fn ink_months(&self) -> Result<Vec<String>> {
         self.store.ink_months()

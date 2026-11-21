@@ -216,6 +216,9 @@ export interface InkApi {
   months(): Promise<string[]>
   /** Ops that arrived on the peer after `after` (a `cursor` from an earlier call; omit for all), in arrival order. */
   list(month: string, after?: number): Promise<{ device_id: string; cursor: number; events: InkRecord[] }>
+  /** Be told when ink lands (server-sent events), so the canvas needn't poll: `ready` on (re)connect, `ink` with the month
+   *  that changed, `resync` if events were missed. `onClose` fires when the stream ends. Returns a function that closes it. */
+  subscribe?(onEvent: (e: { type: 'ready' | 'ink' | 'resync'; month?: string }) => void, onClose: () => void): () => void
   /** Append a batch; resolves with the stored ids in the same order. */
   append(month: string, ops: Record<string, unknown>[]): Promise<{ event_id: string; recorded_at: number }[]>
 }

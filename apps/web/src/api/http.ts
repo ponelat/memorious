@@ -136,6 +136,60 @@ export const httpApi: JournalApi = {
     list(month: string, after?: number) {
       return json<{ device_id: string; cursor: number; events: InkRecord[] }>(`/api/ink/${month}${after ? `?after=${after}` : ''}`)
     },
+    subscribe(onEvent: (e: { type: 'ready' | 'ink' | 'resync'; month?: string }) => void, onClose: () => void) {
+      // fetch, not EventSource: the passcode has to travel in a header
+      const ctl = new AbortController()
+      // the server sends a keep-alive comment every 20 s; a proxy that dies without closing the connection leaves us listening to nothing
+      let last = Date.now()
+      const watchdog = window.setInterval(() => {
+        if (Date.now() - last > 45_000 && !ctl.signal.aborted) {
+          ctl.abort()
+          window.clearInterval(watchdog)
+          onClose()
+        }
+      }, 10_000)
+      void (async () => {
+        try {
+          const resp = await request('/api/ink/stream', { signal: ctl.signal, headers: { Accept: 'text/event-stream' } })
+          const reader = resp.body!.getReader()
+          const dec = new TextDecoder()
+          let buf = ''
+          let type = ''
+          let data = ''
+          for (;;) {
+            const { value, done } = await reader.read()
+            if (done) break
+            last = Date.now()
+            buf += dec.decode(value, { stream: true })
+            let nl: number
+            while ((nl = buf.indexOf('\n')) >= 0) {
+              const line = buf.slice(0, nl).replace(/\r$/, '')
+              buf = buf.slice(nl + 1)
+              if (line === '') {
+                if (type === 'ready' || type === 'resync') onEvent({ type })
+                else if (type === 'ink') {
+                  try {
+                    onEvent({ type: 'ink', month: (JSON.parse(data) as { month: string }).month })
+                  } catch {
+                    /* a malformed frame: ignore it */
+                  }
+                }
+                type = data = ''
+              } else if (line.startsWith('event:')) type = line.slice(6).trim()
+              else if (line.startsWith('data:')) data += line.slice(5).trim()
+            }
+          }
+        } catch {
+          /* closed or failed: the caller falls back to polling and reconnects */
+        }
+        window.clearInterval(watchdog)
+        if (!ctl.signal.aborted) onClose()
+      })()
+      return () => {
+        window.clearInterval(watchdog)
+        ctl.abort()
+      }
+    },
     async append(month: string, ops: Record<string, unknown>[]) {
       const r = await json<{ events: { event_id: string; recorded_at: number }[] }>(`/api/ink/${month}`, {
         method: 'POST',

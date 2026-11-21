@@ -13,6 +13,7 @@ const K_DEVICE = 'memorious.canvas.device'
 const PUSH_DEBOUNCE = 600
 const POLL_CURRENT = 2500
 const POLL_OTHER = 20000
+const POLL_STREAMING = 60000 // while the event stream is up, polling is just a safety net
 const BATCH = 100
 
 interface Entry {
@@ -23,6 +24,7 @@ interface Entry {
   dirtyAt: number // when the oldest unpushed op was added; 0 = nothing waiting
   failures: number
   retryAt: number // don't try again before this (backoff after a failure)
+  again: boolean // an announcement arrived while a sync was running: go round once more
 }
 
 export class CanvasData {
@@ -31,6 +33,10 @@ export class CanvasData {
   private current = ''
   private timer = 0
   private me = localStorage.getItem(K_DEVICE) ?? 'local'
+  private streaming = false
+  private closeStream: (() => void) | null = null
+  private reconnect = 0
+  private reconnectFails = 0
 
   constructor(
     private ink: InkApi | undefined,
@@ -40,6 +46,7 @@ export class CanvasData {
     this.timer = window.setInterval(() => this.tick(), 500)
     window.addEventListener('pagehide', this.onHide)
     document.addEventListener('visibilitychange', this.onHide)
+    this.connect()
   }
 
   get synced() {
@@ -48,8 +55,39 @@ export class CanvasData {
 
   dispose() {
     window.clearInterval(this.timer)
+    window.clearTimeout(this.reconnect)
+    this.closeStream?.()
     window.removeEventListener('pagehide', this.onHide)
     document.removeEventListener('visibilitychange', this.onHide)
+  }
+
+  /** Listen for ink as it lands (server-sent events) instead of polling; reconnect with backoff, polling in the meantime. */
+  private connect() {
+    if (!this.ink?.subscribe) return
+    this.closeStream = this.ink.subscribe(
+      (e) => {
+        if (e.type === 'ready') {
+          this.streaming = true
+          this.reconnectFails = 0
+          for (const m of this.watched) this.pullSoon(m) // catch up on anything missed while it was down
+        } else if (e.type === 'resync') for (const m of this.watched) this.pullSoon(m)
+        else if (e.type === 'ink' && e.month) this.pullSoon(e.month)
+      },
+      () => {
+        this.streaming = false
+        this.closeStream = null
+        this.reconnectFails++
+        window.clearTimeout(this.reconnect)
+        this.reconnect = window.setTimeout(() => this.connect(), Math.min(30000, 1000 * 2 ** Math.min(this.reconnectFails, 5)))
+      },
+    )
+  }
+  /** Pull a month now (right after a peer's ink was announced), or once more as soon as the running sync ends. */
+  private pullSoon(month: string) {
+    const e = this.entries.get(month)
+    if (!e || !this.watched.has(month)) return
+    if (e.busy) e.again = true
+    else void this.sync(month, e)
   }
 
   private onHide = () => {
@@ -70,7 +108,7 @@ export class CanvasData {
       for (const o of legacyOps(month, this.me)) log.ops.push(o)
       log.version++
     }
-    e = { log, cursor: saved?.cursor ?? 0, busy: false, lastPull: 0, dirtyAt: log.pending().length ? Date.now() : 0, failures: 0, retryAt: 0 }
+    e = { log, cursor: saved?.cursor ?? 0, busy: false, lastPull: 0, dirtyAt: log.pending().length ? Date.now() : 0, failures: 0, retryAt: 0, again: false }
     this.entries.set(month, e)
     if (!saved && log.ops.length) this.persist(month, e)
     return e
@@ -111,7 +149,7 @@ export class CanvasData {
     for (const [month, e] of this.entries) {
       if (e.busy || now < e.retryAt) continue
       const pushDue = e.dirtyAt && now - e.dirtyAt >= PUSH_DEBOUNCE
-      const poll = this.watched.has(month) ? (month === this.current ? POLL_CURRENT : POLL_OTHER) : Infinity
+      const poll = this.watched.has(month) ? (this.streaming ? POLL_STREAMING : month === this.current ? POLL_CURRENT : POLL_OTHER) : Infinity
       if (pushDue || now - e.lastPull >= poll) void this.sync(month, e)
     }
   }
@@ -134,6 +172,10 @@ export class CanvasData {
       e.retryAt = Date.now() + Math.min(30000, 2 ** Math.min(e.failures, 5) * 1000) // back off
     } finally {
       e.busy = false
+      if (e.again) {
+        e.again = false
+        void this.sync(month, e)
+      }
     }
   }
 
