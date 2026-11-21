@@ -118,6 +118,6 @@ export const tauriApi: JournalApi = {
   },
   ptt: {
     status: () => invoke<PttStatus>('ptt_status'),
-    configure: (config: PttConfig) => invoke('set_ptt_config', config),
+    configure: (config: PttConfig) => invoke('set_ptt_config', { ...config }),
   },
 }
