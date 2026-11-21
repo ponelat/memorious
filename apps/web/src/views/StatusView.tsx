@@ -133,6 +133,22 @@ function transportLabel(peer: PeerInfo): string {
 }
 
 /** The probe verdict, spelled out: reachable (with round trip) or not (why). */
+/** Whether the health light waits on this peer. Required is the default; an
+ * optional peer (a laptop that is often off) never turns the light red or yellow. */
+function RequiredToggle({ peer, onSaved }: { peer: PeerInfo; onSaved: () => void }) {
+  const required = peer.required !== false
+  return (
+    <button
+      className={`ghost req ${required ? 'on' : 'off'}`}
+      aria-pressed={required}
+      title={required ? 'required — the health light waits on this peer' : 'optional — the health light ignores this peer'}
+      onClick={() => api.setPeerRequired(peer.endpoint_id, !required).then(onSaved)}
+    >
+      {required ? 'required' : 'optional'}
+    </button>
+  )
+}
+
 function PingLine({ ping }: { ping: PeerPing }) {
   if (ping.ok) {
     return <span className="ping-ok">ping: reachable · {ping.rtt_ms} ms — able to sync</span>
@@ -733,13 +749,15 @@ export function StatusView() {
         peers
         {health && (
           <span className={`health-dot ${health.color}`} title={
-            health.color === 'green' ? 'every peer holds everything' :
+            health.color === 'green' ? (
+              health.required_peers === 0 && health.peers > 0 ? 'no peer is required' : 'every required peer holds everything'
+            ) :
             health.color === 'yellow' ? (
               (health.peers_behind ?? 0) > 0
-                ? `${health.peers_behind} peer${health.peers_behind === 1 ? '' : 's'} behind (events or media)`
+                ? `${health.peers_behind} required peer${health.peers_behind === 1 ? '' : 's'} behind (events or media)`
                 : 'local entries not yet picked up by any peer'
             ) :
-            'a peer has been out of touch for 48h+'
+            'a required peer has been out of touch for 48h+'
           } />
         )}
       </h2>
@@ -782,6 +800,7 @@ export function StatusView() {
               ) : (
                 <span className="mono">{shortId(row.key)}</span>
               )}
+              {!row.isSelf && row.peer && <RequiredToggle peer={row.peer} onSaved={refresh} />}
             </span>
             <span className="device-meta hint">
               {row.deviceId && status.joins?.[row.deviceId] !== undefined && (

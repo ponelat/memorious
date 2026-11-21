@@ -91,6 +91,8 @@ export interface PeerInfo {
   media?: MediaHeld | null
   /** Referenced media it lacked beyond its retention policy. */
   media_missing?: number | null
+  /** Whether the health light waits on this peer (default true; a local mark of this device). */
+  required?: boolean
 }
 
 export interface TimelineStats {
@@ -108,8 +110,11 @@ export interface SyncHealth {
   color: 'green' | 'yellow' | 'red' | string
   pending: boolean
   stalest_ms: number | null
+  /** Every peer we know. */
   peers: number
-  /** Peers last seen holding less than we do (events, or unexcused media). */
+  /** The ones the light waits on (peers not marked optional). */
+  required_peers?: number
+  /** Required peers last seen holding less than we do (events, or unexcused media). */
   peers_behind?: number
 }
 
@@ -268,6 +273,9 @@ export interface JournalApi {
   setNetConfig(net: NetConfig): Promise<void>
   /** Probe every known peer; resolves when all answered or timed out (~4s). */
   pingPeers(): Promise<PeerPing[]>
+  /** Mark a peer required (default) or optional: the health light only waits on
+   * required peers. A local preference of this device — not synced. */
+  setPeerRequired(endpointId: string, required: boolean): Promise<void>
   /** Originate a master-password change on this device: re-wraps existing
    * media, re-keys the local database, and starts using it immediately.
    * Every other device must separately call `adoptMasterPassword` once

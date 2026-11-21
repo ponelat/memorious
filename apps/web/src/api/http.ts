@@ -80,6 +80,14 @@ export const httpApi: JournalApi = {
     return r.pings
   },
 
+  async setPeerRequired(endpointId: string, required: boolean) {
+    await request('/api/peers/required', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ endpoint_id: endpointId, required }),
+    })
+  },
+
   feed(before?: number) {
     const q = before ? `?before=${before}` : ''
     return json<FeedPage>(`/api/feed${q}`)
