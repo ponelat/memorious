@@ -6,7 +6,7 @@
 //! `Unknown` fallback stores and forwards ink it can't interpret, ink is never an entry in the
 //! feed, and the canvas is just a fold over these ops in log order (`recorded_at`, `event_id`).
 //! The core only validates the envelope and stores/serves it; what an op *means* (and how a
-//! month is folded and later snapshotted) is the canvas's business, not this module's.
+//! period is folded into an `ink_fold`) is the canvas's business, not this module's.
 
 use anyhow::{bail, Result};
 use serde_json::Value;
@@ -17,25 +17,117 @@ use crate::journal::Journal;
 /// One op is a stroke's points, an image's rect, a lasso polygon: kilobytes. A megabyte of it
 /// is a bug, not a drawing.
 const MAX_OP_BYTES: usize = 512 * 1024;
+/// An `ink_fold` op holds a whole canvas period's surviving strokes in one event, so it gets a far larger limit (still under the
+/// 16 MB sync frame).
+const MAX_FOLD_BYTES: usize = 12 * 1024 * 1024;
 
-/// `YYYY-MM`, month 01–12.
-pub fn is_month_key(s: &str) -> bool {
+/// A canvas period key: a UTC ISO week `YYYY-Www` (W01-W53, new) or a legacy UTC month `YYYY-MM` (01-12).
+pub fn is_period_key(s: &str) -> bool {
     let b = s.as_bytes();
-    if b.len() != 7 || b[4] != b'-' || !b[..4].iter().all(u8::is_ascii_digit) || !b[5..].iter().all(u8::is_ascii_digit) {
+    if b.len() < 7 || !b[..4].iter().all(u8::is_ascii_digit) || b[4] != b'-' {
         return false;
     }
-    matches!(s[5..].parse::<u32>(), Ok(1..=12))
+    if b[5] == b'W' {
+        return b.len() == 8 && b[6].is_ascii_digit() && b[7].is_ascii_digit() && matches!(s[6..].parse::<u32>(), Ok(1..=53));
+    }
+    b.len() == 7 && b[5].is_ascii_digit() && b[6].is_ascii_digit() && matches!(s[5..].parse::<u32>(), Ok(1..=12))
 }
 
-fn check_op(month: &str, data: &Value) -> Result<()> {
-    if !is_month_key(month) {
-        bail!("ink month must be YYYY-MM, got {month:?}");
+/// Legacy name for [`is_period_key`].
+pub fn is_month_key(s: &str) -> bool {
+    is_period_key(s)
+}
+
+// ---- UTC calendar maths (days from civil / civil from days, Howard Hinnant) ----
+
+fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
+}
+
+fn civil_from_days(z: i64) -> (i64, i64, i64) {
+    let z = z + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    (if m <= 2 { y + 1 } else { y }, m, d)
+}
+
+const DAY_MS: i64 = 86_400_000;
+
+/// Unix ms of a UTC date and time.
+pub fn utc_ms(y: i64, m: i64, d: i64, h: i64, min: i64, s: i64) -> i64 {
+    days_from_civil(y, m, d) * DAY_MS + (h * 3600 + min * 60 + s) * 1000
+}
+
+/// The canvas week an instant belongs to: a UTC ISO week, Monday 00:00 to Sunday 24:00, keyed `YYYY-Www` by the ISO year.
+pub fn week_key(ms: i64) -> String {
+    let days = ms.div_euclid(DAY_MS);
+    let weekday = (days + 3).rem_euclid(7); // Monday = 0 (1970-01-01 was a Thursday)
+    let thursday = days - weekday + 3; // the Thursday of this ISO week decides the ISO year
+    let (iso_year, _, _) = civil_from_days(thursday);
+    let week = (thursday - days_from_civil(iso_year, 1, 1)) / 7 + 1;
+    format!("{iso_year:04}-W{week:02}")
+}
+
+/// Start (inclusive) of a period, unix ms.
+pub fn period_start_ms(key: &str) -> Option<i64> {
+    if !is_period_key(key) {
+        return None;
     }
-    if !data.get("op").is_some_and(Value::is_string) {
+    let year: i64 = key[..4].parse().ok()?;
+    if key.as_bytes()[5] == b'W' {
+        let week: i64 = key[6..].parse().ok()?;
+        // ISO week 1 is the one containing January 4th
+        let jan4 = days_from_civil(year, 1, 4);
+        let week1_monday = jan4 - (jan4 + 3).rem_euclid(7);
+        Some((week1_monday + (week - 1) * 7) * DAY_MS)
+    } else {
+        Some(utc_ms(year, key[5..].parse().ok()?, 1, 0, 0, 0))
+    }
+}
+
+/// End (exclusive) of a period, unix ms: the instant the next one starts. For a week that is Sunday midnight = Monday 00:00 UTC.
+pub fn period_end_ms(key: &str) -> Option<i64> {
+    let start = period_start_ms(key)?;
+    if key.as_bytes()[5] == b'W' {
+        Some(start + 7 * DAY_MS)
+    } else {
+        let (year, month): (i64, i64) = (key[..4].parse().ok()?, key[5..].parse().ok()?);
+        Some(if month == 12 { utc_ms(year + 1, 1, 1, 0, 0, 0) } else { utc_ms(year, month + 1, 1, 0, 0, 0) })
+    }
+}
+
+/// The period just before `key` (same kind: the previous week, or the previous month).
+pub fn previous_period(key: &str) -> Option<String> {
+    let start = period_start_ms(key)?;
+    Some(if key.as_bytes()[5] == b'W' {
+        week_key(start - 1)
+    } else {
+        let (y, m): (i64, i64) = (key[..4].parse().ok()?, key[5..].parse().ok()?);
+        if m == 1 { format!("{:04}-12", y - 1) } else { format!("{y:04}-{:02}", m - 1) }
+    })
+}
+
+fn check_op(period: &str, data: &Value) -> Result<()> {
+    if !is_period_key(period) {
+        bail!("ink period must be YYYY-Www or YYYY-MM, got {period:?}");
+    }
+    let Some(op) = data.get("op").and_then(Value::as_str) else {
         bail!("an ink event is an object with a string \"op\"");
-    }
-    if serde_json::to_vec(data)?.len() > MAX_OP_BYTES {
-        bail!("ink op too large (max {MAX_OP_BYTES} bytes)");
+    };
+    let max = if op == "ink_fold" { MAX_FOLD_BYTES } else { MAX_OP_BYTES };
+    if serde_json::to_vec(data)?.len() > max {
+        bail!("ink op too large (max {max} bytes)");
     }
     Ok(())
 }
@@ -62,7 +154,7 @@ impl Journal {
             Some(Value::String(op)) => op,
             _ => bail!("an ink event is an object with a string \"op\""),
         };
-        self.store.append_local(self.device_id(), crate::EventKind::Ink, crate::Payload::Ink { month: month.into(), op, fields }, false)
+        self.store.append_local(self.device_id(), crate::EventKind::Ink, crate::Payload::Ink { period: month.into(), op, fields }, false)
     }
 
     /// Rewrite the legacy `infra`/`ink` events as first-class `ink` events, in place (ids, authors, sequence numbers and
@@ -99,8 +191,8 @@ impl Journal {
     /// `{device_id, cursor, events: [{event_id, device_id, recorded_at, data}]}` — arrival order after `after`.
     /// `device_id` is this peer's own (undo/redo are per author); `cursor` is what to pass as `after` next time.
     pub fn ink_list_json(&self, month: &str, after: i64) -> Result<Value> {
-        if !is_month_key(month) {
-            bail!("month must be YYYY-MM");
+        if !is_period_key(month) {
+            bail!("period must be YYYY-Www or YYYY-MM");
         }
         let evs = self.ink_events(month, after)?;
         Ok(serde_json::json!({
@@ -109,6 +201,7 @@ impl Journal {
             "events": evs.iter().filter(|(_, e)| !matches!(&e.payload, crate::Payload::Unknown { type_tag, .. } if type_tag == "collected")).map(|(_, e)| serde_json::json!({
                 "event_id": e.event_id,
                 "device_id": e.device_id,
+                "seq": e.seq,
                 "recorded_at": e.recorded_at,
                 "data": ink_data(e),
             })).collect::<Vec<_>>()

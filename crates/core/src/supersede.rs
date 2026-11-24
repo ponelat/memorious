@@ -1,7 +1,7 @@
 //! Superseding, collection, and the stub bookkeeping — the *facts* side. The *decision* (does this device keep or collect what is
 //! superseded, and when) is `retention.rs` rule 3; this module reads the log and applies it.
 //!
-//! An event may **supersede** earlier ones: it lists them in a `supersedes` property (today: an `ink` snapshot op). That is a
+//! An event may **supersede** earlier ones: it lists them in a `supersedes` property (today: an `ink_fold` op). That is a
 //! statement about the data, never an instruction to delete. Each device's own retention policy decides whether it keeps
 //! the superseded events (a backup: `superseded: Forever`) or **collects** them down to a stub (an active peer: after a window
 //! counted from when it received the superseding event). A stub keeps the event's envelope (`event_id`, `device_id`, `seq`,
@@ -15,7 +15,7 @@
 //!
 //! ```text
 //! { "id": "<event_id>" }                          one event
-//! { "select": "ink", "month": "2026-10",
+//! { "select": "ink", "period": "2026-W44",
 //!   "up_to": { "<device_id>": <max seq>, ... } }  a month's canvas ops by per-device seq bound; an op above the bound
 //!                                                 (drawn offline, synced late) is NOT superseded
 //! ```
@@ -90,7 +90,7 @@ impl Journal {
                 if let Some(id) = r.get("id").and_then(Value::as_str) {
                     consider(id.to_string());
                 } else if r.get("select").and_then(Value::as_str) == Some("ink") {
-                    let (Some(month), Some(up_to)) = (r.get("month").and_then(Value::as_str), r.get("up_to").and_then(Value::as_object)) else { continue };
+                    let (Some(month), Some(up_to)) = (r.get("period").or_else(|| r.get("month")).and_then(Value::as_str), r.get("up_to").and_then(Value::as_object)) else { continue };
                     for (_, e) in self.store.ink_events(month, 0)? {
                         if up_to.get(&e.device_id).and_then(Value::as_u64).is_some_and(|bound| e.seq <= bound) {
                             consider(e.event_id);
@@ -174,26 +174,34 @@ impl Journal {
     /// Announce, with a `peer_policy` infra event (target = this device), whether this device keeps revisions. Idempotent: only
     /// writes when the answer differs from the last announcement. Called when the policy changes and on launch.
     pub fn ensure_peer_policy(&self) -> Result<()> {
-        let keeps = self.retention_policy()?.keeps_revisions();
-        let last = self.peer_policies()?.get(self.device_id()).copied();
-        if last != Some(keeps) {
-            self.append_infra("peer_policy", Some(self.device_id()), json!({ "keeps_revisions": keeps }))?;
+        // a write-only peer holds nothing of other devices', so it is never a backup whatever its retention says
+        let receives = !self.is_write_only()?;
+        let keeps = receives && self.retention_policy()?.keeps_revisions();
+        let last = self.peer_declarations()?.get(self.device_id()).copied();
+        if last != Some((keeps, receives)) {
+            self.append_infra("peer_policy", Some(self.device_id()), json!({ "keeps_revisions": keeps, "receives": receives }))?;
         }
         Ok(())
     }
 
-    /// Latest announcement per device: does it keep revisions? (Latest by `(recorded_at, event_id)`.)
-    pub fn peer_policies(&self) -> Result<BTreeMap<String, bool>> {
-        let mut latest: BTreeMap<String, ((i64, String), bool)> = BTreeMap::new();
+    /// Latest `(keeps_revisions, receives)` announced per device. `receives` is additive: absent (older announcements) = true.
+    fn peer_declarations(&self) -> Result<BTreeMap<String, (bool, bool)>> {
+        let mut latest: BTreeMap<String, ((i64, String), (bool, bool))> = BTreeMap::new();
         for e in self.infra_events("peer_policy")? {
             let Payload::Infra { target: Some(dev), data, .. } = &e.payload else { continue };
             let Some(keeps) = data.get("keeps_revisions").and_then(Value::as_bool) else { continue };
+            let receives = data.get("receives").and_then(Value::as_bool).unwrap_or(true);
             let k = (e.recorded_at, e.event_id.clone());
             if latest.get(dev).is_none_or(|(old, _)| *old < k) {
-                latest.insert(dev.clone(), (k, keeps));
+                latest.insert(dev.clone(), (k, (keeps, receives)));
             }
         }
-        Ok(latest.into_iter().map(|(d, (_, k))| (d, k)).collect())
+        Ok(latest.into_iter().map(|(d, (_, v))| (d, v)).collect())
+    }
+
+    /// Latest announcement per device: does it keep revisions? (Latest by `(recorded_at, event_id)`.)
+    pub fn peer_policies(&self) -> Result<BTreeMap<String, bool>> {
+        Ok(self.peer_declarations()?.into_iter().map(|(d, (keeps, _))| (d, keeps)).collect())
     }
 
     /// Has some OTHER device announced that it keeps revisions?

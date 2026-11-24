@@ -128,7 +128,7 @@
     },
     "ink_op": {
       "type": "object",
-      "description": "One canvas drawing op (see docs/CANVAS-SPEC.md). The op fields sit flat in the payload beside `type` and `month`. (Legacy: the same object under payload.data of an `infra` event with infra_kind \"ink\".) A `snapshot` op carries a month's folded canvas and may list the events it `supersedes`. `op` values not listed here are ops from a newer client: keep, ignore.",
+      "description": "One canvas drawing op (see docs/CANVAS-SPEC.md). The op fields sit flat in the payload beside `type` and `month`. (Legacy: the same object under payload.data of an `infra` event with infra_kind \"ink\".) An `ink_fold` op carries a period's folded canvas and may list the events it `supersedes`. `op` values not listed here are ops from a newer client: keep, ignore.",
       "required": [
         "op"
       ],
@@ -347,7 +347,7 @@
           "if": {
             "properties": {
               "op": {
-                "const": "snapshot"
+                "const": "ink_fold"
               }
             },
             "required": [
@@ -358,7 +358,7 @@
             "properties": {
               "items": {
                 "type": "array",
-                "description": "The month's folded canvas (the strokes as the fold leaves them), all layers in one event."
+                "description": "The period's canvas as the fold leaves it: surviving stroke runs (tool, size, opacity, seed, points) and placed images, in draw order, all layers in one event. No eraser strokes and no undo/redo history."
               },
               "supersedes": {
                 "$ref": "#/$defs/supersedes"
@@ -669,14 +669,29 @@
           "then": {
             "$ref": "#/$defs/ink_op",
             "required": [
-              "month",
               "op"
             ],
+            "anyOf": [
+              {
+                "required": [
+                  "period"
+                ]
+              },
+              {
+                "required": [
+                  "month"
+                ]
+              }
+            ],
             "properties": {
+              "period": {
+                "type": "string",
+                "pattern": "^[0-9]{4}-(W(0[1-9]|[1-4][0-9]|5[0-3])|(0[1-9]|1[0-2]))$",
+                "description": "UTC canvas period: an ISO week YYYY-Www (new) or a legacy month YYYY-MM"
+              },
               "month": {
                 "type": "string",
-                "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])$",
-                "description": "UTC canvas month YYYY-MM"
+                "description": "LEGACY name of `period` in ink events written before the rename"
               }
             }
           }
@@ -727,7 +742,8 @@
             "description": "\"ink\" = a month's canvas ops"
           },
           "month": {
-            "type": "string"
+            "type": "string",
+            "description": "legacy name of `period`"
           },
           "up_to": {
             "type": "object",
@@ -735,6 +751,10 @@
             "additionalProperties": {
               "type": "integer"
             }
+          },
+          "period": {
+            "type": "string",
+            "description": "canvas period (week YYYY-Www or legacy month YYYY-MM)"
           }
         }
       }

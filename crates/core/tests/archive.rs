@@ -36,7 +36,7 @@ async fn the_archive_is_valid_complete_and_checksummed() {
     // a snapshot that supersedes the stroke, collected on a device that doesn't keep revisions: the archive then holds a
     // snapshot, a collected stub and a peer_policy announcement
     j.set_retention_policy(&memorious_core::retention::RetentionPolicy { collect_without_backup: true, ..memorious_core::retention::RetentionPolicy::PHONE }).unwrap();
-    j.append_ink("2026-11", json!({ "op": "snapshot", "cid": "s1", "items": [], "supersedes": [{ "id": ink1.event_id }] })).unwrap();
+    j.append_ink("2026-11", json!({ "op": "ink_fold", "cid": "s1", "items": [], "supersedes": [{ "id": ink1.event_id }] })).unwrap();
     assert_eq!(j.collect_superseded_at(memorious_core::store::now_ms() + 31 * 86_400_000).unwrap().events_collected, 1);
     j.ensure_version_seen().unwrap();
     j.ensure_peer_join().unwrap();
@@ -61,7 +61,7 @@ async fn the_archive_is_valid_complete_and_checksummed() {
     for k in ["capture", "redact", "annotation", "infra", "ink"] {
         assert!(kinds.contains(k), "missing {k}");
     }
-    assert!(lines.iter().any(|l| l["kind"] == "ink" && l["payload"]["op"] == "undo" && l["payload"]["month"] == "2026-11"));
+    assert!(lines.iter().any(|l| l["kind"] == "ink" && l["payload"]["op"] == "undo" && l["payload"]["period"] == "2026-11"));
     assert!(lines.iter().any(|l| l["payload"]["type"] == "collected" && l["payload"]["was"] == "ink"), "the collected stub is exported as a stub");
     assert!(lines.iter().any(|l| l["event_id"] == text.event_id.as_str() && l["payload"]["text"] == "hello\nworld"));
 

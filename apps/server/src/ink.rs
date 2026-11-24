@@ -47,8 +47,8 @@ pub(crate) async fn list(
     UrlPath(month): UrlPath<String>,
     Query(p): Query<ListParams>,
 ) -> Response {
-    if !memorious_core::ink::is_month_key(&month) {
-        return err(StatusCode::BAD_REQUEST, "month must be YYYY-MM");
+    if !memorious_core::ink::is_period_key(&month) {
+        return err(StatusCode::BAD_REQUEST, "period must be YYYY-Www or YYYY-MM");
     }
     match state.journal().ink_list_json(&month, p.after.unwrap_or(0)) {
         Ok(v) => Json(v).into_response(),

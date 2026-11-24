@@ -94,3 +94,21 @@ impl Journal {
         keys
     }
 }
+
+const WRITE_ONLY: &str = "write_only";
+
+impl Journal {
+    /// Is this a write-only peer? A full peer in code that does not pull events from others: it keeps and pushes its own, and
+    /// receives nothing. Meant to be brought up briefly (capture, sync, throw away) or kept as a light capture surface.
+    pub fn is_write_only(&self) -> Result<bool> {
+        Ok(self.store.meta_get(WRITE_ONLY)?.is_some())
+    }
+
+    pub fn set_write_only(&self, on: bool) -> Result<()> {
+        if on {
+            self.store.meta_set(WRITE_ONLY, b"1")
+        } else {
+            self.store.meta_delete(WRITE_ONLY)
+        }
+    }
+}

@@ -234,10 +234,12 @@ pub enum Payload {
     },
     /// A payload `type` this build doesn't recognize. `data` is the full,
     /// original JSON object — see the type-level doc comment above.
-    /// A canvas drawing op: `{type:"ink", month, op, ...op fields}` — the op fields sit flat beside `op`
+    /// A canvas drawing op: `{type:"ink", period, op, ...op fields}` — the op fields sit flat beside `op`
     /// (see docs/CANVAS-SPEC.md), kept as an open map so a newer client's op properties survive.
     Ink {
-        month: String,
+        /// The canvas period: a UTC ISO week (`YYYY-Www`, new) or a legacy UTC month (`YYYY-MM`). Stored as `period`; events
+        /// written before the rename carry it as `month` and are still read.
+        period: String,
         op: String,
         fields: Map<String, Value>,
     },
@@ -307,10 +309,10 @@ impl Serialize for Payload {
             // comment on `Payload` for why this must not re-nest the fields.
             None => match self {
                 Payload::Unknown { data, .. } => data.serialize(serializer),
-                Payload::Ink { month, op, fields } => {
+                Payload::Ink { period, op, fields } => {
                     let mut m = fields.clone();
                     m.insert("type".into(), "ink".into());
-                    m.insert("month".into(), month.clone().into());
+                    m.insert("period".into(), period.clone().into());
                     m.insert("op".into(), op.clone().into());
                     m.serialize(serializer)
                 }
@@ -325,9 +327,10 @@ impl<'de> Deserialize<'de> for Payload {
         let value = serde_json::Value::deserialize(deserializer)?;
         if let Value::Object(m) = &value {
             if m.get("type").and_then(Value::as_str) == Some("ink") {
-                if let (Some(month), Some(op)) = (m.get("month").and_then(Value::as_str), m.get("op").and_then(Value::as_str)) {
-                    let fields = m.iter().filter(|(k, _)| !matches!(k.as_str(), "type" | "month" | "op")).map(|(k, v)| (k.clone(), v.clone())).collect();
-                    return Ok(Payload::Ink { month: month.into(), op: op.into(), fields });
+                let period = m.get("period").or_else(|| m.get("month")).and_then(Value::as_str);
+                if let (Some(period), Some(op)) = (period, m.get("op").and_then(Value::as_str)) {
+                    let fields = m.iter().filter(|(k, _)| !matches!(k.as_str(), "type" | "period" | "month" | "op")).map(|(k, v)| (k.clone(), v.clone())).collect();
+                    return Ok(Payload::Ink { period: period.into(), op: op.into(), fields });
                 }
             }
         }

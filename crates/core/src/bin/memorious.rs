@@ -88,8 +88,13 @@ enum Cmd {
     Serve,
     /// Print a pairing ticket and keep serving until Ctrl-C.
     Ticket,
-    /// Create a new journal from a pairing ticket and pull everything.
-    Join { ticket: String },
+    /// Create a new journal from a pairing ticket and pull everything. With `--write-only` it pulls NOTHING: a throwaway capture
+    /// peer that keeps and pushes only its own events (capture, `sync <ticket>`, then delete the data dir).
+    Join {
+        ticket: String,
+        #[arg(long)]
+        write_only: bool,
+    },
     /// Sync once with the peer in the ticket.
     Sync { ticket: String },
     /// Per-device heads and journal facts.
@@ -253,11 +258,17 @@ async fn main() -> Result<()> {
             tokio::signal::ctrl_c().await?;
             node.shutdown().await;
         }
-        Cmd::Join { ticket } => {
+        Cmd::Join { ticket, write_only } => {
             if data.join("db.sqlite").exists() {
                 bail!("journal already exists at {} — use `sync`", data.display());
             }
             let password = resolve_password(&pw, true)?;
+            if write_only {
+                let node = Node::join_write_only(&data, &ticket, &password).await?;
+                println!("write-only peer ready at {}: capture with `add`, push with `sync <ticket>`; it pulls nothing", data.display());
+                node.shutdown().await;
+                return Ok(());
+            }
             let (node, report) = Node::join_from_ticket(&data, &ticket, &password).await?;
             println!(
                 "joined: received {} events, {} blobs",

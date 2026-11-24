@@ -6,22 +6,8 @@ import type { Op } from './oplog'
 
 const OPS_PREFIX = 'memorious.canvas.ops.'
 const LEGACY_PREFIX = 'memorious.canvas.events.' // before ink synced: Ev[] with `active` flags, per local month
-const monthRe = /^\d{4}-\d{2}$/
-
-/** Canvas months are UTC calendar months — the same month on every peer, whatever its time zone. */
-export const monthKey = (d = new Date()) => d.toISOString().slice(0, 7)
-
-export function prevMonth(key: string): string {
-  const [y, m] = key.split('-').map(Number)
-  return m === 1 ? `${y - 1}-12` : `${y}-${String(m - 1).padStart(2, '0')}`
-}
-
-export function monthLabel(key: string): string {
-  const [y, m] = key.split('-').map(Number)
-  return new Date(y, m - 1, 1).toLocaleDateString(undefined, { month: 'short', year: 'numeric' })
-}
-
-export const isMonthKey = (s: string) => monthRe.test(s) && +s.slice(5) >= 1 && +s.slice(5) <= 12
+export { isMonthKey, monthKey, monthLabel, prevMonth, weekKey } from './period'
+import { isMonthKey } from './period'
 
 export interface SavedLog {
   v: 1
@@ -67,7 +53,7 @@ export function legacyOps(month: string, me: string): Op[] {
   }
 }
 
-/** Months with a cached log here, newest first. */
+/** Periods (weeks and legacy months) with a cached log here, newest first. */
 export function monthsWithContent(): string[] {
   const out: string[] = []
   for (let i = 0; i < localStorage.length; i++) {

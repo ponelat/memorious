@@ -23,12 +23,12 @@ fn stroke(n: u32) -> Value {
     json!({ "op": "stroke", "cid": format!("c{n}"), "tool": "pen", "seed": n, "size": 5, "pts": [[n, n, 0.5, 0]] })
 }
 
-/// `n` strokes in a month, then a snapshot op that supersedes exactly those (by per-device seq bound).
+/// `n` strokes in a month, then an ink_fold op that supersedes exactly those (by per-device seq bound).
 fn month_with_snapshot(j: &Journal, month: &str, n: u32) -> (Vec<Event>, Event) {
     let ops: Vec<Event> = (0..n).map(|i| j.append_ink(month, stroke(i)).unwrap()).collect();
     let bound = ops.last().unwrap().seq;
     let snap = j
-        .append_ink(month, json!({ "op": "snapshot", "cid": "snap", "items": [], "supersedes": [{ "select": "ink", "month": month, "up_to": { j.device_id(): bound } }] }))
+        .append_ink(month, json!({ "op": "ink_fold", "cid": "snap", "items": [], "supersedes": [{ "select": "ink", "period": month, "up_to": { j.device_id(): bound } }] }))
         .unwrap();
     (ops, snap)
 }
@@ -108,7 +108,7 @@ fn only_ink_can_be_collected_whatever_an_event_claims_to_supersede() {
     j.set_retention_policy(&phone()).unwrap();
     let text = j.capture_text("precious").unwrap();
     let note = j.annotate(&text.event_id, "a note").unwrap();
-    j.append_ink("2026-10", json!({ "op": "snapshot", "cid": "bad", "supersedes": [{ "id": text.event_id }, { "id": note.event_id }] })).unwrap();
+    j.append_ink("2026-10", json!({ "op": "ink_fold", "cid": "bad", "supersedes": [{ "id": text.event_id }, { "id": note.event_id }] })).unwrap();
     assert_eq!(j.collect_superseded_at(now_ms() + 365 * DAY).unwrap().events_collected, 0);
     assert!(!is_stub(&by_id(&j, &text.event_id)) && !is_stub(&by_id(&j, &note.event_id)));
 }
@@ -119,7 +119,7 @@ fn the_latest_snapshot_wins_and_a_replaced_snapshot_is_collected_too() {
     j.set_retention_policy(&phone()).unwrap();
     let (ops, s1) = month_with_snapshot(&j, "2026-10", 2);
     // a re-snapshot (e.g. after an erase) supersedes the old snapshot as well
-    let s2 = j.append_ink("2026-10", json!({ "op": "snapshot", "cid": "snap2", "items": [], "supersedes": [{ "id": s1.event_id }] })).unwrap();
+    let s2 = j.append_ink("2026-10", json!({ "op": "ink_fold", "cid": "snap2", "items": [], "supersedes": [{ "id": s1.event_id }] })).unwrap();
     let n = j.collect_superseded_at(now_ms() + 31 * DAY).unwrap().events_collected;
     assert_eq!(n, 3, "the two ops and the old snapshot");
     assert!(is_stub(&by_id(&j, &s1.event_id)) && is_stub(&by_id(&j, &ops[0].event_id)));

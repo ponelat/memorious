@@ -237,6 +237,7 @@ pub fn app(state: RouterState, web_dist: Option<PathBuf>) -> Router {
         .route("/peers/required", post(set_peer_required))
         .route("/isolate", post(isolate))
         .route("/migrate-ink", post(migrate_ink))
+        .route("/ink/fold", post(fold_ink))
         .route("/retention", get(get_retention).post(set_retention))
         .route("/device-name", post(set_device_name))
         .route("/agents", get(list_agents).post(mint_agent))
@@ -988,6 +989,16 @@ async fn set_retention(State(state): State<SharedState>, Json(body): Json<Retent
         return internal(e);
     }
     get_retention(State(state)).await
+}
+
+/// `POST /api/ink/fold` → `{folded: [{period, event_id}]}`: fold every canvas period that has ended (and its grace) into an
+/// `ink_fold` event now, instead of waiting for the periodic pass. Safe to call repeatedly.
+async fn fold_ink(State(state): State<SharedState>) -> Response {
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0);
+    match state.journal().fold_due_periods(now, 15 * 60 * 1000) {
+        Ok(evs) => Json(json!({ "folded": evs.iter().map(|e| json!({ "event_id": e.event_id, "seq": e.seq })).collect::<Vec<_>>() })).into_response(),
+        Err(e) => internal(e),
+    }
 }
 
 /// `POST /api/migrate-ink` → `{migrated: n}`: rewrite this peer's legacy `infra`/`ink` canvas events as first-class `ink`

@@ -10,8 +10,8 @@ three files; the shared **golden vectors** (§9) keep the ports honest.
 
 ## 1. Concept
 
-- One **infinite canvas per UTC calendar month** (`YYYY-MM`). Only the *current* month is drawable; earlier months are shown
-  underneath, dimmed to **30 %** opacity, read-only. A client MAY let the user pick any other month to show.
+- One **infinite canvas per period**: a **UTC ISO week** (`YYYY-Www`, Monday 00:00 to Sunday 24:00 UTC, keyed by the ISO year; new) or, for canvases made before weekly canvases, a **UTC calendar month** (`YYYY-MM`, legacy, read-only history). Only the *current* week is drawable; earlier periods are shown
+  underneath, dimmed to **30 %** opacity, read-only. A client MAY let the user pick any other period to show. Every device must agree which week an op belongs to, hence UTC.
 - A canvas is **the fold of an append-only log of ops** (§4). Nothing is ever stored as pixels except placed images.
 - World coordinates are a plane in "CSS-pixel-like" units, unbounded, origin arbitrary. A **view** is `{x, y, z}`: the world
   point at the viewport's top-left and a zoom (screen px per world unit). Zoom MUST be clamped to **0.1 … 20**.
@@ -68,8 +68,7 @@ settles or the ops change, then converted to RGBA:
 
 ## 4. The op log
 
-Every drawing action is one **op**, stored as an `infra` journal event: `infra_kind: "ink"`, `target: "YYYY-MM"`,
-`data: { op, cid, … }` (≤ 512 KB). Ops never appear in the feed.
+Every drawing action is one **op**, stored as a journal event of kind `ink`: `payload: { type: "ink", period: "YYYY-Www", op, cid, … }` (op fields flat beside `op`; ≤ 512 KB, except `ink_fold`: ≤ 12 MB). Ops never appear in the feed. (Legacy: `infra` events with `infra_kind: "ink"`, `target` = the month, the op under `data`; and `ink` events that carry `month` instead of `period`. All three mean the same.)
 
 | `op` | fields |
 |---|---|
@@ -78,6 +77,7 @@ Every drawing action is one **op**, stored as an `infra` journal event: `infra_k
 | `move` | `poly: [[x,y],…]`, `xf: {dx,dy,s,cx,cy}`, `copy?`, `only?`, `ids?` |
 | `delete` | `poly`, `only?`, `ids?` |
 | `undo` / `redo` | `target` = the `cid` of the op toggled |
+| `ink_fold` | `items: [...]` (surviving strokes/images in draw order), `supersedes: [{select:"ink", period, up_to:{device: seq}}, {id}...]` — see *Folding* |
 
 - **`cid`**: a client-generated unique id (UUID) on every op. Undo/redo refer to it (the event id is unknown until stored), and a
   retried push is recognised by it, so nothing applies twice. Ops from older clients without a `cid` use the `event_id`.
@@ -88,6 +88,14 @@ Every drawing action is one **op**, stored as an `infra` journal event: `infra_k
   reload. An op is **active** unless a later `undo` of it isn't matched by a later `redo`. Undo/redo ops themselves sync.
 - Unknown `op` values MUST be ignored (not an error) and forwarded untouched.
 - Eraser strokes are ordinary `stroke` ops with `tool: "eraser"`.
+
+### Folding (`ink_fold`)
+
+Once a period has ended (plus a grace of ~15 minutes for late-syncing peers) any device may write an **`ink_fold`** op: the period's canvas as the fold leaves it, in one event. `items` are the **surviving strokes and images in draw order**, each stroke with `tool`, `size`, `opacity?`, `seed` and `pts` (clients regenerate the dots, so a fold stays compact). It holds **no eraser strokes** (points an eraser wiped are cut out of the stroke; lightly faded points keep full opacity), **no undo/redo history** and **no per-item times** — anyone who needs the history asks a peer that keeps revisions.
+
+`supersedes` names what the fold makes redundant: the period's ops up to a per-device `seq` bound (`up_to`), and any earlier fold. An op above the bound (drawn offline, synced late) stays live and is folded into the *next* fold, which uses the earlier fold as its base. **Superseding never deletes anything**; each device's retention policy decides whether it keeps the superseded ops or collects them down to stubs (the status page counts them). A reader that has a fold for a period shows the fold's items, then applies only the ops *not* covered by its bound.
+
+Several devices may fold the same period concurrently; the latest fold (by `recorded_at`, then `event_id`) wins and the others are superseded by it.
 
 ## 5. Selection (lasso, rect)
 
@@ -157,10 +165,10 @@ Layers and months live together in their own control (chips: pencil / pen / imag
   (1 s … 30 s). Where the engine runs in-process (mobile), poll the local journal at ≈ 2.5 s while the canvas is visible and pull
   immediately after each journal sync.
 - **Device id:** an author's id is the journal's `device_id`; ops made before it was known are claimed by it once learned.
-- Months are **UTC**. Phase 2 (designed, not built): frozen months → snapshot + compaction (see `docs/CANVAS-SYNC.md`).
+- Periods are **UTC**. Folding, supersession and stubs: see *Folding* above and `docs/CANVAS-SYNC.md`.
 
 **Engine interface** (identical JSON on every face): `append(month, ops[]) → {events:[{event_id, recorded_at}]}`,
-`list(month, after) → {device_id, cursor, events:[{event_id, device_id, recorded_at, data}]}`, `months() → {months:[…]}`.
+`list(period, after) → {device_id, cursor, events:[{event_id, device_id, seq, recorded_at, data}]}`, `months() → {months:[…]}`.
 HTTP: `POST /api/ink/{month}`, `GET /api/ink/{month}?after=`, `GET /api/ink`, `GET /api/ink/stream` (SSE). Mobile (UniFFI):
 `ink_append`, `ink_list`, `ink_months`.
 

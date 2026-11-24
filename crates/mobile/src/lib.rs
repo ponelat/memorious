@@ -71,6 +71,8 @@ fn ensure_phone_retention(journal: &Journal) -> Result<()> {
     if journal.retention_policy_if_set()?.is_none() {
         journal.set_retention_policy(&RetentionPolicy::PHONE)?;
     }
+    // announce whether this device keeps revisions (a phone does not); idempotent, after the policy is settled
+    journal.ensure_peer_policy()?;
     Ok(())
 }
 
@@ -467,13 +469,15 @@ mod tests {
         let feed2: serde_json::Value = serde_json::from_str(&j2.feed(None, 50).unwrap()).unwrap();
         assert_eq!(feed2["entries"], feed["entries"]);
         // and sync_now uses the remembered ticket
-        // (4 sent: the "reply" capture, this device's default-name
-        // annotation, its peer-join infra event, and its version-seen
-        // infra event — all events, all sync like everything else)
+        // (5 sent: the "reply" capture, this device's default-name
+        // annotation, its peer-join infra event, its peer-policy infra
+        // event (the phone announces that it does not keep revisions), and
+        // its version-seen infra event — all events, all sync like
+        // everything else)
         j2.capture_text("reply".into()).unwrap();
         let report: serde_json::Value =
             serde_json::from_str(&j2.sync_now(None).unwrap()).unwrap();
-        assert_eq!(report["sent"], 4);
+        assert_eq!(report["sent"], 5);
 
         // Status carries the sync-page surface; the default name is set and
         // editable over the FFI.

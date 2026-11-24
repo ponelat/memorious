@@ -190,7 +190,7 @@ fn ink_is_a_first_class_kind_not_infra() {
     let v = as_json(&e);
     assert_eq!(v["kind"], "ink");
     assert_eq!(v["payload"]["type"], "ink");
-    assert_eq!(v["payload"]["month"], "2026-11");
+    assert_eq!(v["payload"]["period"], "2026-11");
     assert_eq!(v["payload"]["op"], "stroke");
     assert_eq!(v["payload"]["cid"], "c1", "op fields sit flat in the payload");
     assert_eq!(v["payload"]["tool"], "pen");
@@ -239,4 +239,67 @@ fn migrate_ink_rewrites_legacy_events_in_place_and_changes_nothing_else() {
     assert_eq!(migrated, 3);
     assert!(after.iter().any(|e| e["kind"] == "infra" && e["payload"]["infra_kind"] == "peer_join"));
     assert_eq!(j.ink_list_json("2026-09", 0).unwrap()["events"], before_list["events"], "served identically before and after");
+}
+
+// ---- canvases are per PERIOD: a UTC ISO week (new, `YYYY-Www`) or a legacy UTC month (`YYYY-MM`) ----
+
+#[test]
+fn week_keys_are_utc_iso_weeks_starting_monday() {
+    use memorious_core::ink::{period_end_ms, period_start_ms, previous_period, week_key};
+    let ms = |y: i64, m: i64, d: i64, h: i64| memorious_core::ink::utc_ms(y, m, d, h, 0, 0);
+    assert_eq!(week_key(ms(2026, 11, 24, 7)), "2026-W48"); // a Tuesday
+    assert_eq!(week_key(ms(2026, 11, 23, 0)), "2026-W48", "Monday 00:00 UTC starts the week");
+    assert_eq!(week_key(ms(2026, 11, 22, 23)), "2026-W47", "Sunday 23:59 is the last hour of the previous week");
+    assert_eq!(week_key(ms(2026, 1, 1, 12)), "2026-W01", "2026-01-01 is a Thursday: ISO week 1");
+    assert_eq!(week_key(ms(2025, 12, 29, 0)), "2026-W01", "...which starts Monday 2025-12-29");
+    assert_eq!(week_key(ms(2027, 1, 1, 0)), "2026-W53", "Friday 2027-01-01 still belongs to 2026's week 53");
+    assert_eq!(period_start_ms("2026-W48").unwrap(), ms(2026, 11, 23, 0));
+    assert_eq!(period_end_ms("2026-W48").unwrap(), ms(2026, 11, 30, 0), "the fold boundary: Sunday midnight = Monday 00:00 UTC");
+    assert_eq!(period_start_ms("2026-10").unwrap(), ms(2026, 10, 1, 0));
+    assert_eq!(period_end_ms("2026-12").unwrap(), ms(2027, 1, 1, 0));
+    assert_eq!(previous_period("2026-W01").as_deref(), Some("2025-W52"));
+    assert_eq!(previous_period("2026-W48").as_deref(), Some("2026-W47"));
+    assert_eq!(previous_period("2026-01").as_deref(), Some("2025-12"));
+}
+
+#[test]
+fn ink_accepts_week_and_month_periods_and_refuses_anything_else() {
+    use memorious_core::ink::is_period_key;
+    for ok in ["2026-W48", "2026-W01", "2026-W53", "2026-11", "2026-01"] {
+        assert!(is_period_key(ok), "{ok}");
+    }
+    for bad in ["2026-W00", "2026-W54", "2026-13", "2026-00", "2026-w48", "26-W48", "2026-W4", "", "2026-11-01"] {
+        assert!(!is_period_key(bad), "{bad}");
+    }
+    let (_d, j) = journal();
+    let e = j.append_ink("2026-W48", stroke(1)).unwrap();
+    let v = as_json(&e);
+    assert_eq!(v["payload"]["period"], "2026-W48", "stored as `period`");
+    assert!(v["payload"].get("month").is_none());
+    assert_eq!(j.ink_list_json("2026-W48", 0).unwrap()["events"].as_array().unwrap().len(), 1);
+    assert_eq!(j.ink_months().unwrap(), vec!["2026-W48"]);
+    assert!(j.append_ink("2026-W99", stroke(2)).is_err());
+}
+
+#[test]
+fn legacy_month_field_is_still_read_as_the_period() {
+    let (_d, j) = journal();
+    // an `ink` event written before the rename carried `month`
+    let e: memorious_core::Event = serde_json::from_value(json!({
+        "event_id": "ev-old-month", "device_id": "dev-x", "seq": 1, "recorded_at": 1, "kind": "ink",
+        "payload": { "type": "ink", "month": "2026-10", "op": "stroke", "cid": "c", "tool": "pen", "seed": 1, "size": 5, "pts": [[0, 0, 0.5, 0]] }
+    })).unwrap();
+    j.store_insert_remote_for_test(&e);
+    assert_eq!(j.ink_list_json("2026-10", 0).unwrap()["events"].as_array().unwrap().len(), 1);
+    assert_eq!(j.ink_months().unwrap(), vec!["2026-10"]);
+}
+
+#[test]
+fn an_ink_fold_op_may_be_far_bigger_than_an_ordinary_op() {
+    let (_d, j) = journal();
+    let big = "x".repeat(600 * 1024); // over the 512 KB ordinary cap
+    assert!(j.append_ink("2026-W48", json!({ "op": "stroke", "cid": "c", "tool": "pen", "seed": 1, "size": 5, "pts": [], "pad": big.clone() })).is_err());
+    assert!(j.append_ink("2026-W48", json!({ "op": "ink_fold", "cid": "f", "items": [], "pad": big })).is_ok());
+    let huge = "x".repeat(13 * 1024 * 1024);
+    assert!(j.append_ink("2026-W48", json!({ "op": "ink_fold", "cid": "g", "items": [], "pad": huge })).is_err(), "even a fold has a limit (12 MB)");
 }

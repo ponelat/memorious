@@ -105,6 +105,10 @@ enum Msg {
         /// revisions asks). Optional for wire compat: an older peer ignores it and simply serves nothing extra.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         stubs: Option<Vec<StubRange>>,
+        /// `Some(false)`: the sender is a write-only peer and wants no events sent to it. Optional for wire compat (an older
+        /// peer ignores it and sends anyway; a write-only peer discards what it didn't ask for).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        receive: Option<bool>,
     },
     HelloAck {
         heads: Heads,
@@ -114,6 +118,8 @@ enum Msg {
         media: Option<MediaHeld>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         stubs: Option<Vec<StubRange>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        receive: Option<bool>,
     },
     Event(Event),
     EndEvents,
@@ -469,7 +475,11 @@ impl Node {
             let cb: iroh_blobs::store::ProtectCb = Arc::new(move |live: &mut HashSet<Hash>| {
                 let journal = protect_journal.clone();
                 Box::pin(async move {
-                    // collection rides the GC pass: superseded canvas events past this device's window become stubs (supersede.rs)
+                    // fold ended canvas periods into one `ink_fold` event each (a fresh fold supersedes the ops it folded) ...
+                    if let Err(err) = journal.fold_due_periods(unix_now_ms(), 15 * 60 * 1000) {
+                        tracing::warn!("ink fold skipped: {err:#}");
+                    }
+                    // ... then collect: superseded canvas events past this device's window become stubs (supersede.rs)
                     if let Err(err) = journal.collect_superseded() {
                         tracing::warn!("superseded: collection skipped: {err:#}");
                     }
@@ -611,6 +621,18 @@ impl Node {
             );
         }
         Ok(report)
+    }
+
+    /// Join a network as a **write-only** peer: a full peer in code that pulls nothing. It takes the ticket's journal secret (and
+    /// the master password for its own storage and media keys), keeps its own events, and pushes them when it syncs. Bring it up,
+    /// capture, `sync_events_with` the ticket's address, then throw the data directory away: the events live on in the network.
+    /// Unlike a normal join it does not verify the password against the network's proofs (that would mean pulling).
+    pub async fn join_write_only(root: &Path, ticket: &str, password: &str) -> Result<Self> {
+        let ticket = JournalTicket::decode(ticket)?;
+        let journal = Journal::init_with_secret(root, ticket.secret, password)?;
+        journal.set_write_only(true)?;
+        journal.ensure_peer_policy()?;
+        Self::spawn(journal).await
     }
 
     /// [`Self::pair_from_ticket`] plus the full media fetch, for callers that
@@ -918,6 +940,9 @@ impl Node {
             anyhow::bail!("this peer is isolated: end isolation before syncing");
         }
         let mut report = self.sync_events_with(addr).await?;
+        if self.journal.is_write_only()? {
+            return Ok(report); // nothing to fetch: a write-only peer references no one else's media
+        }
         report.blobs_fetched = fetch_missing_blobs(
             &self.endpoint,
             &self.blobs,
@@ -953,20 +978,24 @@ impl Node {
                 device: Some(self.journal.device_id().to_string()),
                 media: self.media_held().await.ok(),
                 stubs: self.journal.wanted_stub_ranges()?,
+                receive: self.journal.is_write_only()?.then_some(false),
             },
         )
         .await?;
 
-        let (peer_heads, peer_device, peer_media, peer_stubs) = match read_msg(&mut recv).await? {
-            Some(Msg::HelloAck { heads, device, media, stubs }) => (heads, device, media, stubs),
+        let (peer_heads, peer_device, peer_media, peer_stubs, peer_receive) = match read_msg(&mut recv).await? {
+            Some(Msg::HelloAck { heads, device, media, stubs, receive }) => (heads, device, media, stubs, receive),
             Some(other) => bail!("protocol violation: expected HelloAck, got {other:?}"),
             None => bail!("peer closed during handshake (bad journal secret?)"),
         };
 
         // Receive what we're missing.
+        let write_only = self.journal.is_write_only()?;
         let mut report = SyncReport::default();
         loop {
             match read_msg(&mut recv).await? {
+                // a write-only peer takes nothing in, even from a peer that sends anyway
+                Some(Msg::Event(_)) if write_only => {}
                 Some(Msg::Event(ev)) => match self.journal.store.insert_remote_outcome(&ev)? {
                     crate::store::RemoteOutcome::New => report.received += 1,
                     crate::store::RemoteOutcome::Filled => report.stubs_filled += 1,
@@ -979,8 +1008,8 @@ impl Node {
         }
 
         // Send what the peer is missing.
-        let mut to_send = self.journal.store.events_missing_from(&peer_heads)?;
-        if let Some(ranges) = &peer_stubs {
+        let mut to_send = if peer_receive == Some(false) { Vec::new() } else { self.journal.store.events_missing_from(&peer_heads)? };
+        if let Some(ranges) = peer_stubs.as_ref().filter(|_| peer_receive != Some(false)) {
             // the peer keeps revisions and holds stubs: give it the full events we still have for them
             to_send.extend(self.journal.store.full_events_in_ranges(ranges, crate::supersede::FILL_CAP)?);
         }
@@ -1112,6 +1141,7 @@ impl Node {
         let mut v = serde_json::json!({
             "device_id": journal.device_id(),
             "isolated": journal.is_isolated()?,
+            "write_only": journal.is_write_only()?,
             "stubs": journal.stub_counts()?,
             "retention": journal.retention_policy()?,
             "keeps_revisions": journal.retention_policy()?.keeps_revisions(),
@@ -1560,16 +1590,16 @@ impl ProtocolHandler for SyncProto {
         }
         let (mut send, mut recv) = connection.accept_bi().await?;
 
-        let (heads, initiator_addr, initiator_device, initiator_media, initiator_stubs) =
+        let (heads, initiator_addr, initiator_device, initiator_media, initiator_stubs, initiator_receive) =
             match read_msg(&mut recv).await.map_err(acc)? {
-                Some(Msg::Hello { auth, heads, addr, device, media, stubs }) => {
+                Some(Msg::Hello { auth, heads, addr, device, media, stubs, receive }) => {
                     if auth != auth_token(self.journal.secret()) {
                         connection.close(VarInt::from(CLOSE_BAD_AUTH), b"bad auth");
                         return Err(AcceptError::from_err(std::io::Error::other(
                             "peer failed journal auth",
                         )));
                     }
-                    (heads, addr.to_addr().map_err(acc)?, device, media, stubs)
+                    (heads, addr.to_addr().map_err(acc)?, device, media, stubs, receive)
                 }
                 _ => {
                     return Err(AcceptError::from_err(std::io::Error::other(
@@ -1587,18 +1617,20 @@ impl ProtocolHandler for SyncProto {
                 device: Some(self.journal.device_id().to_string()),
                 media: my_media,
                 stubs: self.journal.wanted_stub_ranges().map_err(acc)?,
+                receive: self.journal.is_write_only().map_err(acc)?.then_some(false),
             },
         )
         .await
         .map_err(acc)?;
+        let i_am_write_only = self.journal.is_write_only().map_err(acc)?;
 
         // Send the initiator what it's missing (plus full events for any stubs it asked to have filled).
-        let mut to_send = self
-            .journal
-            .store
-            .events_missing_from(&heads)
-            .map_err(acc)?;
-        if let Some(ranges) = &initiator_stubs {
+        let mut to_send = if initiator_receive == Some(false) {
+            Vec::new() // the initiator is write-only
+        } else {
+            self.journal.store.events_missing_from(&heads).map_err(acc)?
+        };
+        if let Some(ranges) = initiator_stubs.as_ref().filter(|_| initiator_receive != Some(false)) {
             to_send.extend(self.journal.store.full_events_in_ranges(ranges, crate::supersede::FILL_CAP).map_err(acc)?);
         }
         for ev in to_send {
@@ -1614,6 +1646,7 @@ impl ProtocolHandler for SyncProto {
         let mut filled = 0usize;
         loop {
             match read_msg(&mut recv).await.map_err(acc)? {
+                Some(Msg::Event(_)) if i_am_write_only => {} // a write-only peer takes nothing in
                 Some(Msg::Event(ev)) => {
                     if self.journal.store.insert_remote_outcome(&ev).map_err(acc)? == crate::store::RemoteOutcome::Filled {
                         filled += 1;

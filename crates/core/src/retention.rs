@@ -48,9 +48,9 @@
 //!    be undone before the bytes go; it counts from local receipt of the
 //!    redact event.
 //!
-//! 3. **Superseded canvas events** (2026-11-24). An `ink` snapshot op may list, in `supersedes`, the ops it makes redundant (a
+//! 3. **Superseded canvas events** (2026-11-24). An `ink_fold` op may list, in `supersedes`, the ops it makes redundant (a
 //!    statement about the data, never an instruction to delete). A device whose `policy.superseded` is `AfterDays(n)` collects
-//!    those events `n` days after it received the snapshot, down to a **stub** (same envelope, payload `{type:"collected", by,
+//!    those events `n` days after it received the fold, down to a **stub** (same envelope, payload `{type:"collected", by,
 //!    was}`; see `supersede.rs`); `Forever` means this device keeps revisions (a backup). Only canvas events can ever be
 //!    collected, whatever an event claims to supersede. Unlike rules 1-2 this drops *events*, not blob bytes, so a device
 //!    announces its choice with a `peer_policy` infra event (`ensure_peer_policy`) and, unless `collect_without_backup`, waits
@@ -125,8 +125,8 @@ pub struct RetentionPolicy {
     pub voice_audio: Retain,
     /// Rule 2: media of redacted entries.
     pub redacted: Retain,
-    /// Rule 3: canvas ops (and older snapshots) that a later snapshot supersedes. `Forever` = this device keeps revisions
-    /// (a backup); `AfterDays(n)` = it collects them down to stubs `n` days after it received the superseding snapshot.
+    /// Rule 3: canvas ops (and older folds) that a later fold supersedes. `Forever` = this device keeps revisions
+    /// (a backup); `AfterDays(n)` = it collects them down to stubs `n` days after it received the superseding fold.
     /// Absent in policies saved before this rule existed, which read as `Forever`.
     #[serde(default = "forever")]
     pub superseded: Retain,
@@ -219,8 +219,8 @@ impl Disposition {
     }
 }
 
-/// Rule 3, for one canvas event that a snapshot supersedes: `superseder_local_ms` is when THIS device received the winning
-/// superseding event (local receipt, like every other rule: a snapshot that synced late must not arrive pre-expired).
+/// Rule 3, for one canvas event that a fold supersedes: `superseder_local_ms` is when THIS device received the winning
+/// superseding event (local receipt, like every other rule: a fold that synced late must not arrive pre-expired).
 pub fn superseded_disposition(superseder_local_ms: i64, policy: &RetentionPolicy, now_ms: i64) -> Disposition {
     if policy.superseded.elapsed(superseder_local_ms, now_ms) {
         Disposition::Evictable(EvictReason::SupersededInk)

@@ -289,7 +289,7 @@ impl Store {
     /// Tell subscribers which month a freshly stored ink op belongs to (no-op for every other event).
     fn announce(&self, ev: &Event) {
         let month = match &ev.payload {
-            Payload::Ink { month, .. } => Some(month),
+            Payload::Ink { period, .. } => Some(period),
             // legacy home of canvas ops, until migrated
             Payload::Infra { infra_kind, target: Some(month), .. } if infra_kind == "ink" => Some(month),
             _ => None,
@@ -317,7 +317,7 @@ impl Store {
             let Some(op) = data.get("op").and_then(|o| o.as_str()) else { continue };
             let mut m = data.clone();
             m.insert("type".into(), "ink".into());
-            m.insert("month".into(), month.into());
+            m.insert("period".into(), month.into());
             m.insert("op".into(), op.into());
             tx.execute("UPDATE events SET kind = 'ink', payload = ?2 WHERE event_id = ?1", params![id, serde_json::to_string(&m)?])?;
             n += 1;
@@ -448,7 +448,7 @@ impl Store {
             "SELECT rowid, event_id, device_id, seq, recorded_at, kind, payload, will_enrich, extra
              FROM events
              WHERE rowid > ?2
-               AND ((kind = 'ink' AND json_extract(payload, '$.month') = ?1)
+               AND ((kind = 'ink' AND COALESCE(json_extract(payload, '$.period'), json_extract(payload, '$.month')) = ?1)
                  OR (kind = 'infra' AND json_extract(payload, '$.infra_kind') = 'ink'
                      AND json_extract(payload, '$.target') = ?1))
              ORDER BY rowid",
@@ -477,7 +477,7 @@ impl Store {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT DISTINCT m FROM (
-               SELECT json_extract(payload, '$.month') AS m FROM events WHERE kind = 'ink'
+               SELECT COALESCE(json_extract(payload, '$.period'), json_extract(payload, '$.month')) AS m FROM events WHERE kind = 'ink'
                UNION ALL
                SELECT json_extract(payload, '$.target') AS m FROM events
                  WHERE kind = 'infra' AND json_extract(payload, '$.infra_kind') = 'ink'
