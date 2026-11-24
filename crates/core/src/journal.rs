@@ -728,7 +728,7 @@ impl Journal {
         let redacted = self.store.redacted_ids()?;
         Ok(self
             .store
-            .all_events()?
+            .events_of_kind("capture")?
             .into_iter()
             .filter(|e| e.kind == EventKind::Capture && !redacted.contains(&e.event_id))
             .collect())
@@ -739,7 +739,7 @@ impl Journal {
         let redacted = self.store.redacted_ids()?;
         Ok(self
             .store
-            .all_events()?
+            .events_of_kind("capture")?
             .into_iter()
             .filter(|e| e.kind == EventKind::Capture && redacted.contains(&e.event_id))
             .collect())

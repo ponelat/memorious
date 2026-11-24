@@ -476,6 +476,23 @@ impl Store {
         Ok(out)
     }
 
+    /// Every infra event of one `infra_kind`, oldest first. Narrower than `events_of_kind("infra")`: the legacy canvas ops are
+    /// infra events too (until migrated), and they are by far the biggest, so asking for `peer_join` must not decode them.
+    pub fn infra_events_of(&self, infra_kind: &str) -> Result<Vec<Event>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT event_id, device_id, seq, recorded_at, kind, payload, will_enrich, extra
+             FROM events WHERE kind = 'infra' AND json_extract(payload, '$.infra_kind') = ?1
+             ORDER BY recorded_at, event_id",
+        )?;
+        let rows = stmt.query_map([infra_kind], row_to_event)?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
+
     /// A feed of month keys, one per ink op stored from now on (ours or a peer's).
     pub fn subscribe_ink(&self) -> tokio::sync::broadcast::Receiver<String> {
         self.ink_tx.subscribe()

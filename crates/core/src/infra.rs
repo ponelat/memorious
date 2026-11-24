@@ -31,7 +31,7 @@ impl Journal {
     pub fn infra_events(&self, infra_kind: &str) -> Result<Vec<Event>> {
         let mut out: Vec<Event> = self
             .store
-            .all_events()?
+            .infra_events_of(infra_kind)?
             .into_iter()
             .filter(|e| matches!(&e.payload, Payload::Infra { infra_kind: k, .. } if k == infra_kind))
             .collect();

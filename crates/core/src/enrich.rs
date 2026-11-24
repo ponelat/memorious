@@ -32,7 +32,7 @@ impl Journal {
     /// Winning annotation per target: latest `recorded_at`, event id as tie-break.
     pub fn annotations(&self) -> Result<HashMap<String, String>> {
         let mut winners: HashMap<String, (i64, String, String)> = HashMap::new();
-        for e in self.store.all_events()? {
+        for e in self.store.events_of_kind("annotation")? {
             if let Payload::Annotation { target, text } = &e.payload {
                 let key = (e.recorded_at, e.event_id.clone());
                 match winners.get(target) {
