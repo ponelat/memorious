@@ -53,10 +53,10 @@ async fn the_archive_is_valid_complete_and_checksummed() {
     }
     // every kind we wrote is there, including infra and the redact itself (the log is lossless)
     let kinds: std::collections::BTreeSet<&str> = lines.iter().map(|l| l["kind"].as_str().unwrap()).collect();
-    for k in ["capture", "redact", "annotation", "infra"] {
+    for k in ["capture", "redact", "annotation", "infra", "ink"] {
         assert!(kinds.contains(k), "missing {k}");
     }
-    assert!(lines.iter().any(|l| l["payload"]["infra_kind"] == "ink" && l["payload"]["data"]["op"] == "undo"));
+    assert!(lines.iter().any(|l| l["kind"] == "ink" && l["payload"]["op"] == "undo" && l["payload"]["month"] == "2026-11"));
     assert!(lines.iter().any(|l| l["event_id"] == text.event_id.as_str() && l["payload"]["text"] == "hello\nworld"));
 
     // manifest validates, its checksums hold, media is decrypted and byte-identical

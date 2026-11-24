@@ -277,11 +277,42 @@ impl Store {
 
     /// Tell subscribers which month a freshly stored ink op belongs to (no-op for every other event).
     fn announce(&self, ev: &Event) {
-        if let Payload::Infra { infra_kind, target: Some(month), .. } = &ev.payload {
-            if infra_kind == "ink" {
-                let _ = self.ink_tx.send(month.clone()); // nobody listening is fine
-            }
+        let month = match &ev.payload {
+            Payload::Ink { month, .. } => Some(month),
+            // legacy home of canvas ops, until migrated
+            Payload::Infra { infra_kind, target: Some(month), .. } if infra_kind == "ink" => Some(month),
+            _ => None,
+        };
+        if let Some(month) = month {
+            let _ = self.ink_tx.send(month.clone()); // nobody listening is fine
         }
+    }
+
+    /// Rewrite legacy `infra`/`ink` events as `ink` events, in place: same event_id, device_id, seq and recorded_at, only the
+    /// stored kind + payload representation change (`{type:infra, infra_kind:ink, target, data}` -> `{type:ink, month, op, ...}`).
+    /// Idempotent; returns how many were rewritten.
+    pub fn migrate_ink(&self) -> Result<usize> {
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        let rows: Vec<(String, String)> = {
+            let mut stmt = tx.prepare("SELECT event_id, payload FROM events WHERE kind = 'infra' AND json_extract(payload, '$.infra_kind') = 'ink'")?;
+            let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+            rows.collect::<std::result::Result<_, _>>()?
+        };
+        let mut n = 0;
+        for (id, payload) in rows {
+            let v: serde_json::Value = serde_json::from_str(&payload)?;
+            let (Some(month), Some(data)) = (v.get("target").and_then(|t| t.as_str()), v.get("data").and_then(|d| d.as_object())) else { continue };
+            let Some(op) = data.get("op").and_then(|o| o.as_str()) else { continue };
+            let mut m = data.clone();
+            m.insert("type".into(), "ink".into());
+            m.insert("month".into(), month.into());
+            m.insert("op".into(), op.into());
+            tx.execute("UPDATE events SET kind = 'ink', payload = ?2 WHERE event_id = ?1", params![id, serde_json::to_string(&m)?])?;
+            n += 1;
+        }
+        tx.commit()?;
+        Ok(n)
     }
 
     /// A feed of month keys, one per ink op stored from now on (ours or a peer's).
@@ -302,9 +333,9 @@ impl Store {
             "SELECT rowid, event_id, device_id, seq, recorded_at, kind, payload, will_enrich, extra
              FROM events
              WHERE rowid > ?2
-               AND kind = 'infra'
-               AND json_extract(payload, '$.infra_kind') = 'ink'
-               AND json_extract(payload, '$.target') = ?1
+               AND ((kind = 'ink' AND json_extract(payload, '$.month') = ?1)
+                 OR (kind = 'infra' AND json_extract(payload, '$.infra_kind') = 'ink'
+                     AND json_extract(payload, '$.target') = ?1))
              ORDER BY rowid",
         )?;
         let rows = stmt.query_map(rusqlite::params![month, after], |r| {
@@ -330,10 +361,12 @@ impl Store {
     pub fn ink_months(&self) -> Result<Vec<String>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT DISTINCT json_extract(payload, '$.target') AS m
-             FROM events
-             WHERE kind = 'infra' AND json_extract(payload, '$.infra_kind') = 'ink' AND m IS NOT NULL
-             ORDER BY m",
+            "SELECT DISTINCT m FROM (
+               SELECT json_extract(payload, '$.month') AS m FROM events WHERE kind = 'ink'
+               UNION ALL
+               SELECT json_extract(payload, '$.target') AS m FROM events
+                 WHERE kind = 'infra' AND json_extract(payload, '$.infra_kind') = 'ink'
+             ) WHERE m IS NOT NULL ORDER BY m",
         )?;
         let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
         let mut out = Vec::new();

@@ -105,6 +105,9 @@ enum Cmd {
     ExportMd { out: PathBuf },
     /// Encrypt a pre-encryption journal in place (old dir kept as backup).
     MigrateEncrypt,
+    /// Rewrite legacy canvas events (`infra`/`ink`) as first-class `ink` events, in place (ids, authors, seq, timestamps unchanged).
+    /// Take an archive (the web status page's "archive" row) first. Idempotent.
+    MigrateInk,
     /// Serve a peer's MCP tools to a chat client over stdio, dialing the peer
     /// over QUIC. Needs no journal: the agent ticket comes from the peer's
     /// Agents page. Point Claude Desktop/Code at `memorious mcp-bridge <ticket>`.
@@ -326,6 +329,11 @@ async fn main() -> Result<()> {
             );
             println!("old journal kept at {}", report.backup_dir.display());
             println!("other devices must re-pair (delete their data dir, then `join`)");
+        }
+        Cmd::MigrateInk => {
+            let j = open(&pw)?;
+            let n = j.migrate_ink()?;
+            println!("rewrote {n} legacy canvas event(s) as first-class ink events");
         }
         Cmd::Status => {
             if let Some(socket) = &socket {

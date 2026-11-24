@@ -18,6 +18,8 @@ pub enum EventKind {
     TokenSet,
     Annotation,
     Infra,
+    /// Canvas drawing ops (2026-11-24): first class, no longer `infra`. See `ink.rs`.
+    Ink,
     Unknown(String),
 }
 
@@ -29,6 +31,7 @@ impl EventKind {
             EventKind::TokenSet => "token_set",
             EventKind::Annotation => "annotation",
             EventKind::Infra => "infra",
+            EventKind::Ink => "ink",
             EventKind::Unknown(s) => s,
         }
     }
@@ -48,6 +51,7 @@ impl<'de> Deserialize<'de> for EventKind {
             "token_set" => EventKind::TokenSet,
             "annotation" => EventKind::Annotation,
             "infra" => EventKind::Infra,
+            "ink" => EventKind::Ink,
             other => EventKind::Unknown(other.to_string()),
         })
     }
@@ -230,6 +234,13 @@ pub enum Payload {
     },
     /// A payload `type` this build doesn't recognize. `data` is the full,
     /// original JSON object — see the type-level doc comment above.
+    /// A canvas drawing op: `{type:"ink", month, op, ...op fields}` — the op fields sit flat beside `op`
+    /// (see docs/CANVAS-SPEC.md), kept as an open map so a newer client's op properties survive.
+    Ink {
+        month: String,
+        op: String,
+        fields: Map<String, Value>,
+    },
     Unknown {
         type_tag: String,
         data: serde_json::Value,
@@ -283,7 +294,7 @@ impl Payload {
                 target: target.clone(),
                 data: data.clone(),
             },
-            Payload::Unknown { .. } => return None,
+            Payload::Ink { .. } | Payload::Unknown { .. } => return None,
         })
     }
 }
@@ -296,7 +307,14 @@ impl Serialize for Payload {
             // comment on `Payload` for why this must not re-nest the fields.
             None => match self {
                 Payload::Unknown { data, .. } => data.serialize(serializer),
-                _ => unreachable!("as_known() returns None only for Unknown"),
+                Payload::Ink { month, op, fields } => {
+                    let mut m = fields.clone();
+                    m.insert("type".into(), "ink".into());
+                    m.insert("month".into(), month.clone().into());
+                    m.insert("op".into(), op.clone().into());
+                    m.serialize(serializer)
+                }
+                _ => unreachable!("as_known() returns None only for Ink and Unknown"),
             },
         }
     }
@@ -305,6 +323,14 @@ impl Serialize for Payload {
 impl<'de> Deserialize<'de> for Payload {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let value = serde_json::Value::deserialize(deserializer)?;
+        if let Value::Object(m) = &value {
+            if m.get("type").and_then(Value::as_str) == Some("ink") {
+                if let (Some(month), Some(op)) = (m.get("month").and_then(Value::as_str), m.get("op").and_then(Value::as_str)) {
+                    let fields = m.iter().filter(|(k, _)| !matches!(k.as_str(), "type" | "month" | "op")).map(|(k, v)| (k.clone(), v.clone())).collect();
+                    return Ok(Payload::Ink { month: month.into(), op: op.into(), fields });
+                }
+            }
+        }
         match serde_json::from_value::<PayloadKnown>(value.clone()) {
             Ok(known) => Ok(known.into()),
             Err(_) => {
@@ -367,7 +393,7 @@ pub fn split_payload(v: Value) -> (Payload, Map<String, Value>) {
         }
     };
     let mut extra = Map::new();
-    if !matches!(payload, Payload::Unknown { .. }) {
+    if !matches!(payload, Payload::Unknown { .. } | Payload::Ink { .. }) {
         if let (Value::Object(orig), Ok(Value::Object(again))) = (&v, serde_json::to_value(&payload)) {
             for (k, x) in orig {
                 if !again.contains_key(k) {

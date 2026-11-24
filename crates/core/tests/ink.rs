@@ -176,3 +176,67 @@ fn the_json_faces_share_one_shape() {
     assert!(j.ink_list_json("nope", 0).is_err());
     assert_eq!(j.ink_months_json().unwrap()["months"], json!(["2026-11"]));
 }
+
+// ---- ink is its own event kind (2026-11-24); `infra`/`ink` is the legacy home, still read, migrated explicitly ----
+
+fn as_json(e: &memorious_core::Event) -> serde_json::Value {
+    serde_json::to_value(e).unwrap()
+}
+
+#[test]
+fn ink_is_a_first_class_kind_not_infra() {
+    let (_d, j) = journal();
+    let e = j.append_ink("2026-11", json!({ "op": "stroke", "cid": "c1", "tool": "pen", "seed": 1, "size": 5, "pts": [[0, 0, 0.5, 0]] })).unwrap();
+    let v = as_json(&e);
+    assert_eq!(v["kind"], "ink");
+    assert_eq!(v["payload"]["type"], "ink");
+    assert_eq!(v["payload"]["month"], "2026-11");
+    assert_eq!(v["payload"]["op"], "stroke");
+    assert_eq!(v["payload"]["cid"], "c1", "op fields sit flat in the payload");
+    assert_eq!(v["payload"]["tool"], "pen");
+    assert!(j.infra_events("ink").unwrap().is_empty(), "no longer plumbing");
+    // and it is served exactly as before: the same {op, cid, ...} data object
+    let list = j.ink_list_json("2026-11", 0).unwrap();
+    assert_eq!(list["events"][0]["data"], json!({ "op": "stroke", "cid": "c1", "tool": "pen", "seed": 1, "size": 5, "pts": [[0, 0, 0.5, 0]] }));
+    assert_eq!(j.ink_months().unwrap(), vec!["2026-11"]);
+}
+
+#[test]
+fn legacy_infra_ink_is_still_read() {
+    let (_d, j) = journal();
+    let data = json!({ "op": "stroke", "cid": "old", "tool": "pencil", "seed": 9, "size": 4.5, "pts": [[1, 2, 0.5, 0]] });
+    j.append_infra("ink", Some("2026-10"), data.clone()).unwrap();
+    j.append_ink("2026-10", json!({ "op": "undo", "target": "old", "cid": "new" })).unwrap();
+    let list = j.ink_list_json("2026-10", 0).unwrap();
+    let evs = list["events"].as_array().unwrap();
+    assert_eq!(evs.len(), 2, "legacy and new ink are one stream");
+    assert_eq!(evs[0]["data"], data);
+    assert_eq!(evs[1]["data"]["op"], "undo");
+    assert_eq!(j.ink_months().unwrap(), vec!["2026-10"]);
+}
+
+#[test]
+fn migrate_ink_rewrites_legacy_events_in_place_and_changes_nothing_else() {
+    let (_d, j) = journal();
+    for n in 0..3u32 {
+        j.append_infra("ink", Some("2026-09"), json!({ "op": "stroke", "cid": format!("c{n}"), "tool": "pen", "seed": n, "size": 5, "pts": [[n, n, 0.5, 0]] })).unwrap();
+    }
+    j.append_infra("peer_join", Some(j.device_id()), json!({})).unwrap(); // unrelated infra stays infra
+    let before_list = j.ink_list_json("2026-09", 0).unwrap();
+    let before: Vec<_> = j.store_events_for_test().iter().map(as_json).collect();
+
+    assert_eq!(j.migrate_ink().unwrap(), 3);
+    assert_eq!(j.migrate_ink().unwrap(), 0, "idempotent");
+
+    let after: Vec<_> = j.store_events_for_test().iter().map(as_json).collect();
+    assert_eq!(before.len(), after.len());
+    for (b, a) in before.iter().zip(&after) {
+        for k in ["event_id", "device_id", "seq", "recorded_at"] {
+            assert_eq!(b[k], a[k], "{k} unchanged");
+        }
+    }
+    let migrated = after.iter().filter(|e| e["kind"] == "ink").count();
+    assert_eq!(migrated, 3);
+    assert!(after.iter().any(|e| e["kind"] == "infra" && e["payload"]["infra_kind"] == "peer_join"));
+    assert_eq!(j.ink_list_json("2026-09", 0).unwrap()["events"], before_list["events"], "served identically before and after");
+}

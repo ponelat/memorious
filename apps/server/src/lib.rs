@@ -236,6 +236,7 @@ pub fn app(state: RouterState, web_dist: Option<PathBuf>) -> Router {
         .route("/peers/ping", post(ping_peers))
         .route("/peers/required", post(set_peer_required))
         .route("/isolate", post(isolate))
+        .route("/migrate-ink", post(migrate_ink))
         .route("/device-name", post(set_device_name))
         .route("/agents", get(list_agents).post(mint_agent))
         .route("/agents/{id}", axum::routing::delete(revoke_agent))
@@ -931,6 +932,15 @@ pub async fn reset_journal(state: &AppState) -> Result<Node> {
     journal.ensure_peer_join()?;
     journal.ensure_version_seen()?;
     Node::spawn(journal).await
+}
+
+/// `POST /api/migrate-ink` → `{migrated: n}`: rewrite this peer's legacy `infra`/`ink` canvas events as first-class `ink`
+/// events, in place (ids, authors, seq, timestamps unchanged). Idempotent; take an archive first.
+async fn migrate_ink(State(state): State<SharedState>) -> Response {
+    match state.journal().migrate_ink() {
+        Ok(n) => Json(json!({ "migrated": n })).into_response(),
+        Err(e) => internal(e),
+    }
 }
 
 #[derive(Deserialize)]

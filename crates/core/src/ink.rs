@@ -44,7 +44,7 @@ impl Journal {
     /// Append one ink op to a month's canvas. `data` must be an object with a string `op`.
     pub fn append_ink(&self, month: &str, data: Value) -> Result<Event> {
         check_op(month, &data)?;
-        self.append_infra("ink", Some(month), data)
+        self.append_ink_payload(month, data)
     }
 
     /// Append several ops in order, all or nothing as far as validation goes: every op is checked
@@ -53,7 +53,22 @@ impl Journal {
         for op in &ops {
             check_op(month, op)?;
         }
-        ops.into_iter().map(|op| self.append_infra("ink", Some(month), op)).collect()
+        ops.into_iter().map(|op| self.append_ink_payload(month, op)).collect()
+    }
+
+    fn append_ink_payload(&self, month: &str, data: Value) -> Result<Event> {
+        let Value::Object(mut fields) = data else { bail!("an ink event is an object") };
+        let op = match fields.remove("op") {
+            Some(Value::String(op)) => op,
+            _ => bail!("an ink event is an object with a string \"op\""),
+        };
+        self.store.append_local(self.device_id(), crate::EventKind::Ink, crate::Payload::Ink { month: month.into(), op, fields }, false)
+    }
+
+    /// Rewrite the legacy `infra`/`ink` events as first-class `ink` events, in place (ids, authors, sequence numbers and
+    /// timestamps untouched). Idempotent. Readers handle both forms, so this is only about leaving the legacy form behind.
+    pub fn migrate_ink(&self) -> Result<usize> {
+        self.store.migrate_ink()
     }
 
     /// Ink ops for one month that arrived on this peer after `after` (0 = all), each with its arrival cursor.
@@ -95,10 +110,7 @@ impl Journal {
                 "event_id": e.event_id,
                 "device_id": e.device_id,
                 "recorded_at": e.recorded_at,
-                "data": match &e.payload {
-                    crate::Payload::Infra { data, .. } => data.clone(),
-                    _ => Value::Null,
-                },
+                "data": ink_data(e),
             })).collect::<Vec<_>>()
         }))
     }
@@ -106,5 +118,19 @@ impl Journal {
     /// `{months: ["2026-09", ...]}`.
     pub fn ink_months_json(&self) -> Result<Value> {
         Ok(serde_json::json!({ "months": self.ink_months()? }))
+    }
+}
+
+/// An ink event's op as the `{op, cid, ...}` object every face serves: new `ink` events carry it flat in the payload; legacy
+/// `infra`/`ink` events carry it under `data`.
+pub fn ink_data(e: &Event) -> Value {
+    match &e.payload {
+        crate::Payload::Ink { op, fields, .. } => {
+            let mut m = fields.clone();
+            m.insert("op".into(), op.clone().into());
+            Value::Object(m)
+        }
+        crate::Payload::Infra { data, .. } => data.clone(),
+        _ => Value::Null,
     }
 }
