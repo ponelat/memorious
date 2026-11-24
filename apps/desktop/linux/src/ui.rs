@@ -1,3 +1,5 @@
+#[path = "canvas.rs"]
+mod canvas;
 #[path = "settings.rs"]
 mod settings;
 #[path = "stream.rs"]
@@ -111,11 +113,24 @@ pub fn run() -> glib::ExitCode {
             last_entries: RefCell::new(Value::Null),
             photo_cache: RefCell::new(HashMap::new()),
             settings_panel: RefCell::new(None),
+            canvas: RefCell::new(None),
         });
         ui.build();
         let closing = Rc::new(Cell::new(false));
         let ui_close = ui.clone();
         ui.window.connect_close_request(move |window| {
+            if ui_close
+                .canvas
+                .borrow()
+                .as_ref()
+                .is_some_and(|c| c.has_pending())
+            {
+                ui_close.error("Wait for canvas ink to save before closing.");
+                return glib::Propagation::Stop;
+            }
+            if let Some(canvas) = ui_close.canvas.borrow_mut().take() {
+                canvas.window.destroy();
+            }
             if ui_close.recording_busy.get()
                 || ui_close.recording.borrow().is_some()
                 || ui_close.pending_audio.borrow().is_some()
@@ -151,13 +166,20 @@ pub fn run() -> glib::ExitCode {
             assert_eq!(ui.stack.visible_child_name().as_deref(), Some("setup"));
             if matches!(
                 std::env::var("MEMORIOUS_UI_SMOKE").as_deref(),
-                Ok("capture" | "verify" | "settings" | "peers" | "recording" | "audio-verify")
+                Ok("capture"
+                    | "verify"
+                    | "settings"
+                    | "peers"
+                    | "recording"
+                    | "audio-verify"
+                    | "canvas"
+                    | "canvas-verify")
             ) {
                 smoke_capture(
                     ui.clone(),
                     matches!(
                         std::env::var("MEMORIOUS_UI_SMOKE").as_deref(),
-                        Ok("verify" | "audio-verify")
+                        Ok("verify" | "audio-verify" | "canvas-verify")
                     ),
                 );
             } else {
@@ -226,6 +248,7 @@ struct Ui {
     last_entries: RefCell<Value>,
     photo_cache: RefCell<HashMap<String, gtk::gdk::Texture>>,
     settings_panel: RefCell<Option<settings::WeakPanel>>,
+    canvas: RefCell<Option<Rc<canvas::Canvas>>>,
 }
 impl Ui {
     fn error(&self, error: &str) {
@@ -264,6 +287,11 @@ impl Ui {
         form.append(&password);
         form.append(&confirm);
         form.append(&ticket);
+        let write_only =
+            gtk::CheckButton::with_label("Write-only peer (join without pulling history)");
+        write_only.set_visible(!exists);
+        write_only.set_tooltip_text(Some("Push new captures only. This mode cannot verify the network's master password; enter the same password as the other peers."));
+        form.append(&write_only);
         let open = gtk::Button::with_label(if exists {
             "Unlock"
         } else {
@@ -292,6 +320,13 @@ impl Ui {
             button.set_sensitive(false);
             error.set_text("Opening journal…");
             let join = ticket.text().to_string();
+            let capture_only = write_only.is_active();
+            if capture_only && join.trim().is_empty() {
+                error.set_text("Enter a ticket to join as a write-only peer.");
+                button.set_sensitive(true);
+                return;
+            }
+
             let dir = data_dir();
             let ui2 = ui.clone();
             let button = button.clone();
@@ -306,6 +341,8 @@ impl Ui {
                             DesktopJournal::open(&dir, &pw).await
                         } else if join.trim().is_empty() {
                             DesktopJournal::create(&dir, &pw).await
+                        } else if capture_only {
+                            DesktopJournal::join_write_only(&dir, join.trim(), &pw).await
                         } else {
                             DesktopJournal::join(&dir, join.trim(), &pw).await
                         }
@@ -422,6 +459,11 @@ impl Ui {
                 },
             );
         });
+        let canvas = gtk::Button::with_label("Canvas");
+        canvas.set_tooltip_text(Some("Open the canvas"));
+        header.pack_start(&canvas);
+        let ui = self.clone();
+        canvas.connect_clicked(move |_| ui.open_canvas());
         header.pack_start(&self.trash);
         body.append(&header);
         self.search
@@ -1156,6 +1198,18 @@ impl Ui {
         window.set_content(Some(&body));
         window.present();
     }
+    fn open_canvas(self: &Rc<Self>) {
+        if let Some(canvas) = self
+            .canvas
+            .borrow()
+            .as_ref()
+            .filter(|c| c.window.is_visible())
+        {
+            canvas.window.present();
+            return;
+        }
+        *self.canvas.borrow_mut() = Some(canvas::Canvas::new(&self.window, self.worker.clone()));
+    }
     fn settings(self: &Rc<Self>, section: &str) {
         if let Some(panel) = self
             .settings_panel
@@ -1436,10 +1490,180 @@ impl Ui {
         self.worker.call(
             move |rt, state| rt.block_on(state.as_ref().context("Journal is locked")?.status()),
             move |result| match result {
-                Ok(value) => render_peer_status(&summary, &own_ticket, &peers, &value),
+                Ok(value) => render_peer_status(&ui.worker, &summary, &own_ticket, &peers, &value),
                 Err(error) => ui.error(&error),
             },
         );
+    }
+    fn history_controls(self: &Rc<Self>, body: &gtk::Box) {
+        body.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+        body.append(&label("History on this device"));
+        let policy =
+            gtk::DropDown::from_strings(&["Keep everything", "Phone retention", "Custom policy"]);
+        policy.set_widget_name("history-retention-policy");
+        policy.set_sensitive(false);
+        body.append(&policy);
+        let note = label("Loading retention policy…");
+        body.append(&note);
+        body.append(&label("Keep everything retains canvas revisions and media. Phone retention collects superseded canvas history after 30 days, transcribed voice after 7 days, and redacted media after 30 days. Canvas history collection waits for a peer that keeps revisions."));
+        let save = gtk::Button::with_label("Save retention policy");
+        save.set_sensitive(false);
+        body.append(&save);
+        let select = policy.clone();
+        let note2 = note.clone();
+        let save2 = save.clone();
+        self.worker.call(
+            move |rt, state| {
+                rt.block_on(
+                    state
+                        .as_ref()
+                        .context("Journal is locked")?
+                        .request("get_retention", json!({})),
+                )
+            },
+            move |result| match result {
+                Ok(v) => {
+                    select.set_selected(if v["policy"] == v["presets"]["keep_everything"] {
+                        0
+                    } else if v["policy"] == v["presets"]["phone"] {
+                        1
+                    } else {
+                        2
+                    });
+                    select.set_sensitive(true);
+                    save2.set_sensitive(select.selected() < 2);
+                    note2.set_text(&format!(
+                        "{} collected events · backup peer: {}",
+                        v["stubs"]["total"],
+                        if v["has_backup_peer"] == true {
+                            "available"
+                        } else {
+                            "not yet announced"
+                        }
+                    ));
+                }
+                Err(e) => note2.set_text(&e),
+            },
+        );
+        let save2 = save.clone();
+        policy.connect_selected_notify(move |p| {
+            save2.set_sensitive(p.is_sensitive() && p.selected() < 2)
+        });
+        let ui = self.clone();
+        save.connect_clicked(move |b| {
+            let preset = if policy.selected() == 0 {
+                "keep_everything"
+            } else {
+                "phone"
+            };
+            let b = b.clone();
+            b.set_sensitive(false);
+            let note = note.clone();
+            ui.worker.call(
+                move |rt, state| {
+                    rt.block_on(
+                        state
+                            .as_ref()
+                            .context("Journal is locked")?
+                            .request("set_retention", json!({"preset":preset})),
+                    )
+                },
+                move |r| {
+                    b.set_sensitive(true);
+                    note.set_text(&match r {
+                        Ok(_) => "Retention policy saved".into(),
+                        Err(e) => e,
+                    });
+                },
+            );
+        });
+        let export = gtk::Button::with_label("Export lossless archive…");
+        body.append(&export);
+        body.append(&label("The archive contains plain event JSON, the current schema and decrypted media. Keep it somewhere private."));
+        let ui = self.clone();
+        export.connect_clicked(move |_| {
+            let dialog = gtk::FileDialog::builder()
+                .title("Export journal archive")
+                .initial_name("memorious.zip")
+                .build();
+            let ui = ui.clone();
+            let parent = ui.window.clone();
+            dialog.save(Some(&parent), gio::Cancellable::NONE, move |result| {
+                let Ok(file) = result else {
+                    return;
+                };
+                let Some(path) = file.path() else {
+                    ui.error("Choose a local destination");
+                    return;
+                };
+                let ui2 = ui.clone();
+                ui.toast.add_toast(adw::Toast::new("Exporting archive…"));
+                ui.worker.call(
+                    move |rt, state| {
+                        rt.block_on(
+                            state
+                                .as_ref()
+                                .context("Journal is locked")?
+                                .request("export_archive", json!({"out":path})),
+                        )
+                    },
+                    move |result| match result {
+                        Ok(report) => ui2.error(&format!(
+                            "Archive saved: {} events, {} media files, {} unavailable",
+                            report["events"], report["media"], report["media_unavailable"]
+                        )),
+                        Err(error) => ui2.error(&error),
+                    },
+                );
+            });
+        });
+        let isolate = gtk::Button::with_label("Isolate this device");
+        isolate.add_css_class("destructive-action");
+        body.append(&isolate);
+        let end = gtk::Button::with_label("End isolation");
+        body.append(&end);
+        let ui = self.clone();
+        isolate.connect_clicked(move |_| {
+            let dialog=adw::AlertDialog::builder()
+                .heading("Isolate this device?")
+                .body("Sync stops and remembered peers are forgotten. Your entries stay here. Restart this journal for its new address to take effect; pair again after ending isolation.")
+                .build();
+            dialog.add_responses(&[("cancel","Cancel"),("isolate","Isolate")]);
+            dialog.set_close_response("cancel");
+            dialog.set_response_appearance("isolate",adw::ResponseAppearance::Destructive);
+            let parent=ui.window.clone();
+            let ui=ui.clone();
+            dialog.connect_response(None,move |_,response| {
+                if response!="isolate" {return;}
+                let ui2=ui.clone();
+                ui.worker.call(
+                    move |rt,state| rt.block_on(state.as_ref().context("Journal is locked")?.request("isolate",json!({}))),
+                    move |result| match result {
+                        Ok(_)=>ui2.error("Isolated. Restart this journal before ending isolation. In background mode, stop it from the tray first."),
+                        Err(error)=>ui2.error(&error),
+                    },
+                );
+            });
+            dialog.present(Some(&parent));
+        });
+        let ui = self.clone();
+        end.connect_clicked(move |_| {
+            let ui2 = ui.clone();
+            ui.worker.call(
+                move |rt, state| {
+                    rt.block_on(
+                        state
+                            .as_ref()
+                            .context("Journal is locked")?
+                            .request("end_isolation", json!({})),
+                    )
+                },
+                move |r| match r {
+                    Ok(_) => ui2.error("Isolation ended. Pair with another peer to reconnect."),
+                    Err(e) => ui2.error(&e),
+                },
+            );
+        });
     }
     fn peers_page(self: &Rc<Self>) -> gtk::Widget {
         let body = gtk::Box::new(gtk::Orientation::Vertical, 12);
@@ -1471,6 +1695,7 @@ impl Ui {
         body.append(&result_status);
         let peer_list = gtk::Box::new(gtk::Orientation::Vertical, 12);
         body.append(&peer_list);
+        self.history_controls(&body);
         body.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
         body.append(&label("Network settings"));
         let relay = gtk::DropDown::from_strings(&[
@@ -1478,6 +1703,7 @@ impl Ui {
             "Custom relays",
             "Direct connections only",
         ]);
+        relay.set_widget_name("peer-relay-mode");
         let relay_urls = gtk::TextView::builder()
             .height_request(70)
             .wrap_mode(gtk::WrapMode::WordChar)
@@ -1511,7 +1737,7 @@ impl Ui {
             move |rt, state| rt.block_on(state.as_ref().context("Journal is locked")?.status()),
             move |result| match result {
                 Ok(value) => {
-                    render_peer_status(&summary2, &own2, &peers2, &value);
+                    render_peer_status(&ui.worker, &summary2, &own2, &peers2, &value);
                     relay2.set_selected(match value["net"]["relay_mode"].as_str() {
                         Some("disabled") => 2, Some("custom") => 1, _ => 0,
                     });
@@ -1648,14 +1874,15 @@ fn anonymous_media_file(bytes: &glib::Bytes) -> anyhow::Result<std::fs::File> {
 }
 
 fn render_peer_status(
+    worker: &Worker,
     summary: &gtk::Label,
     own_ticket: &gtk::Entry,
     peers: &gtk::Box,
     value: &Value,
 ) {
     summary.set_text(&format!(
-        "{} entries · {} events\nPeer holdings reflect the last successful contact.",
-        value["entries"], value["events_total"]
+        "{} entries · {} events · {} collected\n{}\nPeer holdings reflect the last successful contact.",
+        value["entries"], value["events_total"], value["stubs"]["total"], if value["isolated"] == true {"Isolated: sync is disabled."} else if value["write_only"] == true {"Write-only peer: captures push; other entries are not pulled."} else {"Required peers determine sync health."}
     ));
     own_ticket.set_text(value["ticket"].as_str().unwrap_or(""));
     while let Some(child) = peers.first_child() {
@@ -1677,9 +1904,37 @@ fn render_peer_status(
                 .map(|s| s.to_string())
                 .unwrap_or_else(|| "No successful sync".into());
             peers.append(&label(&format!(
-                "{}\nLast sync: {}\nEvents held: {} · missing: {}",
-                name, last, peer["events_held"], peer["events_missing"]
+                "{}\nLast sync: {}\nEvents held: {} · missing: {} · media missing: {}",
+                name, last, peer["events_held"], peer["events_missing"], peer["media_missing"]
             )));
+            let required = gtk::CheckButton::with_label("Required for sync health");
+            required.set_active(peer["required"].as_bool().unwrap_or(true));
+            let endpoint = peer["endpoint_id"].as_str().unwrap_or("").to_owned();
+            let worker = worker.clone();
+            let summary = summary.clone();
+            required.connect_toggled(move |button| {
+                button.set_sensitive(false);
+                let enabled = button.is_active();
+                let endpoint = endpoint.clone();
+                let button = button.clone();
+                let summary = summary.clone();
+                worker.call(
+                    move |rt, state| {
+                        rt.block_on(state.as_ref().context("Journal is locked")?.request(
+                            "set_peer_required",
+                            json!({"endpoint_id":endpoint,"required":enabled}),
+                        ))
+                    },
+                    move |result| {
+                        button.set_sensitive(true);
+                        button.set_inconsistent(result.is_err());
+                        if let Err(error) = result {
+                            summary.set_text(&error);
+                        }
+                    },
+                );
+            });
+            peers.append(&required);
         }
     }
 }
@@ -1722,6 +1977,17 @@ fn smoke_capture(ui: Rc<Ui>, verify: bool) {
         if ui.stack.visible_child_name().as_deref() != Some("journal") {
             return glib::ControlFlow::Continue;
         }
+        if matches!(
+            std::env::var("MEMORIOUS_UI_SMOKE").as_deref(),
+            Ok("canvas" | "canvas-verify")
+        ) {
+            ui.open_canvas();
+            let verify = std::env::var("MEMORIOUS_UI_SMOKE").as_deref() == Ok("canvas-verify");
+            let canvas = ui.canvas.borrow().as_ref().unwrap().clone();
+            let ui2 = ui.clone();
+            canvas.smoke(verify, move || ui2.window.close());
+            return glib::ControlFlow::Break;
+        }
         if std::env::var("MEMORIOUS_UI_SMOKE").as_deref() == Ok("recording") {
             smoke_recording(ui.clone());
             return glib::ControlFlow::Break;
@@ -1760,7 +2026,11 @@ fn smoke_capture(ui: Rc<Ui>, verify: bool) {
                     let widgets = descendants(ui.window.upcast_ref());
                     let relay = widgets
                         .iter()
-                        .find_map(|widget| widget.downcast_ref::<gtk::DropDown>())
+                        .find_map(|widget| {
+                            widget
+                                .downcast_ref::<gtk::DropDown>()
+                                .filter(|d| d.widget_name() == "peer-relay-mode")
+                        })
                         .expect("native network settings must expose relay mode");
                     assert_eq!(relay.selected(), 0, "fresh journals use default relays");
                     assert!(
@@ -1770,7 +2040,49 @@ fn smoke_capture(ui: Rc<Ui>, verify: bool) {
                             .any(|button| button.label().as_deref() == Some("Check connections")),
                         "peer diagnostics control is missing"
                     );
-                    smoke_close_settings(ui, ".native-peers-tested");
+                    for title in [
+                        "Save retention policy",
+                        "Export lossless archive…",
+                        "Isolate this device",
+                        "End isolation",
+                    ] {
+                        assert!(
+                            widgets
+                                .iter()
+                                .filter_map(|w| w.downcast_ref::<gtk::Button>())
+                                .any(|b| b.label().as_deref() == Some(title)),
+                            "missing native control: {title}"
+                        );
+                    }
+                    let policy = widgets
+                        .iter()
+                        .find_map(|w| {
+                            w.downcast_ref::<gtk::DropDown>()
+                                .filter(|d| d.widget_name() == "history-retention-policy")
+                        })
+                        .unwrap();
+                    policy.set_selected(1);
+                    widgets
+                        .iter()
+                        .find_map(|w| {
+                            w.downcast_ref::<gtk::Button>()
+                                .filter(|b| b.label().as_deref() == Some("Save retention policy"))
+                        })
+                        .unwrap()
+                        .emit_clicked();
+                    let ui2 = ui.clone();
+                    ui.worker.call(
+                        move |rt, state| {
+                            rt.block_on(state.as_ref().unwrap().request("get_retention", json!({})))
+                        },
+                        move |r| {
+                            assert_eq!(r.unwrap()["keeps_revisions"], false);
+                            glib::timeout_add_local_once(
+                                std::time::Duration::from_millis(250),
+                                move || smoke_close_settings(ui2, ".native-peers-tested"),
+                            );
+                        },
+                    );
                 });
             } else if std::env::var("MEMORIOUS_UI_SMOKE").as_deref() == Ok("settings") {
                 ui.settings("background");

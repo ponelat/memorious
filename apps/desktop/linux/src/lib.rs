@@ -31,6 +31,7 @@ impl DesktopJournal {
         journal.ensure_device_name("desktop (Linux)")?;
         journal.ensure_peer_join()?;
         journal.ensure_version_seen()?;
+        journal.ensure_peer_policy()?;
         Ok(Self {
             node: Arc::new(Node::spawn(journal).await?),
             _lock: lock,
@@ -40,6 +41,23 @@ impl DesktopJournal {
     pub async fn join(dir: &Path, ticket: &str, password: &str) -> Result<Self> {
         let lock = JournalLock::acquire(dir)?;
         let (node, _) = Node::pair_from_ticket(dir, ticket, password).await?;
+        node.journal().ensure_device_name("desktop (Linux)")?;
+        node.journal().ensure_peer_join()?;
+        node.journal().ensure_version_seen()?;
+        node.journal().ensure_peer_policy()?;
+        node.journal()
+            .store
+            .meta_set("last_peer_ticket", ticket.trim().as_bytes())?;
+        Ok(Self {
+            node: Arc::new(node),
+            _lock: lock,
+            sync_tasks: Default::default(),
+        })
+    }
+    /// A capture-only peer uses the same journal and protocol but never pulls history.
+    pub async fn join_write_only(dir: &Path, ticket: &str, password: &str) -> Result<Self> {
+        let lock = JournalLock::acquire(dir)?;
+        let node = Node::join_write_only(dir, ticket, password).await?;
         node.journal().ensure_device_name("desktop (Linux)")?;
         node.journal().ensure_peer_join()?;
         node.journal().ensure_version_seen()?;
@@ -112,7 +130,12 @@ impl DesktopJournal {
         let value = memorious_core::local::request(&self.node, method, params).await?;
         if matches!(
             method,
-            "capture_text" | "capture_media" | "redact" | "annotate_voice"
+            "capture_text"
+                | "capture_media"
+                | "redact"
+                | "annotate_voice"
+                | "ink_append"
+                | "set_retention"
         ) {
             self.sync_after_capture();
         }

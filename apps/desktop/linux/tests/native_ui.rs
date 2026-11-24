@@ -148,3 +148,25 @@ fn microphone_button_saves_audio_and_cancel_discards_it_without_ptt() {
         b"SQLite format 3\0"
     );
 }
+
+#[test]
+#[ignore = "requires a graphical display"]
+fn native_canvas_draws_selects_undoes_and_reopens_from_the_encrypted_journal() {
+    let dir = tempfile::tempdir().unwrap();
+    for mode in ["canvas", "canvas-verify"] {
+        let result = std::process::Command::new("dbus-run-session")
+            .arg("--")
+            .arg(env!("CARGO_BIN_EXE_memorious-desktop"))
+            .env("MEMORIOUS_DATA_DIR", dir.path().join("journal"))
+            .env("XDG_CONFIG_HOME", dir.path().join("config"))
+            .env("MEMORIOUS_NO_KEYRING", "1")
+            .env("MEMORIOUS_UI_SMOKE", mode)
+            .env("GDK_DEBUG", "no-portals")
+            .env("GTK_A11Y", "none")
+            .status()
+            .unwrap();
+        assert!(result.success());
+    }
+    assert!(dir.path().join("journal/.native-canvas-tested").exists());
+    assert!(dir.path().join("journal/.native-canvas-verified").exists());
+}

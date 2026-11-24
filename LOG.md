@@ -698,3 +698,20 @@
   controls retain their existing actions and persistence.
 - 2026-11-08: Health light judged by *required* peers only. Peers are required unless this device marks them optional (`Journal::set_peer_required`, meta `peer_optional:<peer>`; local and unsynced, never an event). `SyncHealth.required_peers` and `PeerInfo.required` added; no required peer = green. Surfaced in HTTP (`POST /api/peers/required`), Tauri (`set_peer_required`), the FFI (`set_peer_required`) and the web Peers page.
 - 2026-11-17: Canvas offset mode has a fixed bottom-right pad. Dragging it moves the marker relative to the pointer at the current zoom and leaves the stroke history untouched.
+
+## 2026-11-24 — Native canvas and desktop schema parity
+
+- Linux renders the current weekly canvas and legacy months through shared Rust
+  folding, selection, capture simplification and coverage replay. Completed gestures
+  persist in the encrypted journal; embedded and daemon clients share the ink API.
+- The common canvas reader understands compacted folds and their sequence bounds,
+  including late arrivals, legacy records and undo of folded items. Coverage is
+  checked against fixtures from the browser renderer; selection tests guard held
+  piece identities and timeline duplication.
+- Native peer settings expose required peers, revision/media retention, collected
+  history and isolation. Desktop startup announces its revision policy.
+- First-run pairing also supports a write-only capture peer; lossless ZIP exports
+  include ink and the event schema through the shared archive implementation.
+- Validation: 131 core checks, native journal/recording/background suites and all
+  eight graphical checks pass. The native canvas fixture covers save/reopen,
+  selection, vertical scaling, duplication and undo/redo.

@@ -61,3 +61,6 @@ pub const BUILD_INFO: &str = concat!(
     env!("MEMORIOUS_BUILD_DATE"),
     ")"
 );
+pub mod canvas_render;
+pub mod canvas_input;
+pub mod canvas_session;

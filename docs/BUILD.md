@@ -269,3 +269,43 @@ For repeatable checks independent of the live desktop, use an isolated display:
 GDK_BACKEND=x11 GSK_RENDERER=cairo xvfb-run -a \
   cargo test -p memorious-linux --test native_ui -- --ignored --test-threads=1
 ```
+
+### Native canvas and current event schema
+
+The header's **Canvas** button opens a native GTK drawing surface. Pencil, pen,
+eraser, lasso, rectangle and timeline edits use the shared Rust canvas model and
+coverage renderer. Mouse/stylus drawing, pressure, pan, scroll/pinch zoom, layers,
+weekly periods and legacy months use the same operation JSON as the browser.
+Completed gestures are written straight into the encrypted journal; the ordinary
+peer sync sends them. The canvas polls the local journal while visible, including
+when the owner is a background daemon. Saving failures retain the pending gestures
+in memory and retry; closing waits for them to save. Current-week undo/redo is per
+author. Timeline edits may reach visible earlier periods; deleting there asks for
+confirmation. Image ops without locally available pixels show neutral rectangles.
+
+The shared reader applies the latest `ink_fold` base, skips operations covered by
+its per-device sequence bounds, and keeps late arrivals above those bounds. Unknown
+ops are ignored by the renderer and preserved by the journal. No migration is
+needed to read legacy ink events. The coverage fixture is generated from the web
+renderer and checks pencil, pen, opacity stacking and layer-specific erasure.
+
+**Settings → Peers & sync** also exposes required/optional peers, retention presets,
+collected-history counts and isolation. Isolation immediately stops sync and forgets
+peers; restart the journal for its new address, then end isolation and pair again.
+In background mode, stop the journal from the tray before reopening it.
+
+```bash
+cargo test -p memorious-core --test canvas_vectors --test canvas_render \
+  --test canvas_input --test canvas_session
+cargo test -p memorious-linux --no-default-features --test features --test canvas
+cargo test -p memorious-linux --test background
+ADW_DISABLE_PORTAL=1 GDK_DEBUG=no-portals GDK_BACKEND=x11 GSK_RENDERER=cairo xvfb-run -a \
+  cargo test -p memorious-linux --test native_ui -- --ignored --test-threads=1
+```
+
+First-run pairing offers **Write-only peer** for a capture surface that pushes its
+own notes without pulling history. Like the CLI's write-only join, it cannot check
+the network's password proof without pulling: use the same password as the other
+peers. **Export lossless archive…** writes a new ZIP containing event JSONL, schemas,
+a manifest and locally available decrypted media; choosing an existing filename
+fails rather than overwriting it.

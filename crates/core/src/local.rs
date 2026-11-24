@@ -176,7 +176,12 @@ async fn serve_connection(
                 let id = request.id;
                 let captured = matches!(
                     request.method.as_str(),
-                    "capture_text" | "capture_media" | "redact" | "annotate_voice"
+                    "capture_text"
+                        | "capture_media"
+                        | "redact"
+                        | "annotate_voice"
+                        | "ink_append"
+                        | "set_retention"
                 );
                 match dispatch(&node, request, &shutdown_tx).await {
                     Ok(value) => {
@@ -367,6 +372,61 @@ async fn dispatch(
             )?;
             Ok(json!({}))
         }
+        "ink_months" => node.journal().ink_months_json(),
+        "ink_list" => node.journal().ink_list_json(
+            request.params["period"]
+                .as_str()
+                .context("missing ink period")?,
+            request.params["after"].as_i64().unwrap_or(0),
+        ),
+        "ink_append" => {
+            let period = request.params["period"]
+                .as_str()
+                .context("missing ink period")?;
+            let ops = request.params["ops"]
+                .as_array()
+                .context("missing ink ops")?;
+            if ops.len() > 100 {
+                bail!("at most 100 ink ops per batch");
+            }
+            node.journal().ink_append_json(period, ops.clone())
+        }
+        "set_peer_required" => {
+            node.journal().set_peer_required(
+                request.params["endpoint_id"]
+                    .as_str()
+                    .context("missing endpoint id")?,
+                request.params["required"]
+                    .as_bool()
+                    .context("missing required flag")?,
+            )?;
+            Ok(json!({"ok":true}))
+        }
+        "get_retention" | "set_retention" => {
+            use crate::retention::RetentionPolicy;
+            let j = node.journal();
+            if request.method == "set_retention" {
+                let policy = match request.params["preset"].as_str() {
+                    Some("keep_everything") => RetentionPolicy::KEEP_EVERYTHING,
+                    Some("phone") => RetentionPolicy::PHONE,
+                    Some(other) => bail!("unknown retention preset {other:?}"),
+                    None => serde_json::from_value(request.params["policy"].clone())
+                        .context("send a retention preset or policy")?,
+                };
+                j.set_retention_policy(&policy)?;
+            }
+            Ok(
+                json!({"policy":j.retention_policy()?,"keeps_revisions":j.retention_policy()?.keeps_revisions(),"has_backup_peer":j.has_backup_peer()?,"stubs":j.stub_counts()?,"presets":{"keep_everything":RetentionPolicy::KEEP_EVERYTHING,"phone":RetentionPolicy::PHONE}}),
+            )
+        }
+        "isolate" => {
+            let report = node.journal().isolate()?;
+            Ok(json!({"peers_removed":report.peers_removed,"restart_required":true}))
+        }
+        "end_isolation" => {
+            node.journal().end_isolation()?;
+            Ok(json!({}))
+        }
         "set_net_config" => {
             let net = serde_json::from_value(request.params["net"].clone())
                 .context("invalid network config")?;
@@ -399,6 +459,53 @@ async fn dispatch(
             node.journal()
                 .adopt_master_password(request.params["password"].as_str().unwrap_or(""))?;
             Ok(json!({}))
+        }
+        "export_archive" => {
+            use crate::export_archive::{ArchiveOpts, EventsEncoding, ZipSink};
+            use std::os::unix::fs::OpenOptionsExt;
+            let out = PathBuf::from(
+                request.params["out"]
+                    .as_str()
+                    .context("missing export destination")?,
+            );
+            if out.as_os_str().is_empty() {
+                bail!("missing export destination");
+            }
+            let file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(&out)
+                .context("create archive (choose a new filename)")?;
+            let mut sink = ZipSink::new(file, "memorious");
+            let opts = ArchiveOpts {
+                media: request.params["media"].as_bool().unwrap_or(true),
+                events: EventsEncoding::Jsonl,
+                progress: None,
+            };
+            let exported = crate::export_archive::export_archive(
+                node,
+                &mut sink,
+                opts,
+                crate::store::now_ms(),
+            )
+            .await;
+            let result = match exported {
+                Ok(report) => (|| {
+                    sink.finish()?.sync_all()?;
+                    Ok(
+                        json!({"path":out,"events":report.events,"media":report.media_included,"media_unavailable":report.media_unavailable}),
+                    )
+                })(),
+                Err(error) => {
+                    drop(sink);
+                    Err(error)
+                }
+            };
+            if result.is_err() {
+                let _ = std::fs::remove_file(&out);
+            }
+            result
         }
         "export_markdown" => {
             let out = PathBuf::from(request.params["out"].as_str().unwrap_or(""));

@@ -23,8 +23,25 @@ async fn background_handoff_preserves_identity_and_releases_ownership_on_stop() 
         )
         .await
         .unwrap();
+    let ink=session.request("ink_append",serde_json::json!({"period":"2026-W48","ops":[{"op":"stroke","cid":"daemon-stroke","tool":"pen","size":5,"seed":1,"pts":[[10,10,0.5,0]]}]})).await.unwrap();
+    session
+        .request("set_retention", serde_json::json!({"preset":"phone"}))
+        .await
+        .unwrap();
     session.close().await;
     let mut session = Session::attach(dir.path()).await.unwrap();
+    let page = session
+        .request("ink_list", serde_json::json!({"period":"2026-W48"}))
+        .await
+        .unwrap();
+    assert_eq!(page["events"][0]["event_id"], ink["events"][0]["event_id"]);
+    assert_eq!(
+        session
+            .request("get_retention", serde_json::json!({}))
+            .await
+            .unwrap()["keeps_revisions"],
+        false
+    );
     assert_eq!(
         session
             .request("status", serde_json::json!({}))
