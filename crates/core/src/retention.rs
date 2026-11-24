@@ -261,7 +261,19 @@ impl Journal {
     /// Blob hashes this device may drop right now under `policy`: gathers the
     /// facts for every media capture, asks `disposition`, and keeps a hash only
     /// if *every* capture referencing it says evictable. Sorted, deduplicated.
+    /// What the blob GC may drop: whatever this device's retention policy allows, plus the bytes a `derived` event has made
+    /// disposable (`derived.rs`) once its lease is over.
     pub fn evictable_blob_hashes(&self, policy: &RetentionPolicy, now_ms: i64) -> Result<Vec<String>> {
+        let mut out = self.policy_evictable_blob_hashes(policy, now_ms)?;
+        for h in self.derived_collectable_blob_hashes(now_ms)? {
+            if !out.contains(&h) {
+                out.push(h);
+            }
+        }
+        Ok(out)
+    }
+
+    fn policy_evictable_blob_hashes(&self, policy: &RetentionPolicy, now_ms: i64) -> Result<Vec<String>> {
         if *policy == RetentionPolicy::KEEP_EVERYTHING {
             return Ok(Vec::new());
         }

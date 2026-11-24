@@ -20,6 +20,9 @@ pub enum EventKind {
     Infra,
     /// Canvas drawing ops (2026-11-24): first class, no longer `infra`. See `ink.rs`.
     Ink,
+    /// An event derived from others (2026-11-24): carries derived content, says what it came from and, optionally,
+    /// which earlier events it makes outdated. See `derived.rs`.
+    Derived,
     Unknown(String),
 }
 
@@ -32,6 +35,7 @@ impl EventKind {
             EventKind::Annotation => "annotation",
             EventKind::Infra => "infra",
             EventKind::Ink => "ink",
+            EventKind::Derived => "derived",
             EventKind::Unknown(s) => s,
         }
     }
@@ -52,6 +56,7 @@ impl<'de> Deserialize<'de> for EventKind {
             "annotation" => EventKind::Annotation,
             "infra" => EventKind::Infra,
             "ink" => EventKind::Ink,
+            "derived" => EventKind::Derived,
             other => EventKind::Unknown(other.to_string()),
         })
     }
@@ -241,6 +246,16 @@ pub enum Payload {
         op: String,
         fields: Map<String, Value>,
     },
+    /// Content derived from other events (kind `derived`). `what` is the payload `type` (`transcript`, `ink_snapshot`, ...,
+    /// an open string); `from` / `replaces` are lists of refs (kept as raw JSON: open world), `lease_ms` how long what it
+    /// replaces is held after this event; everything else is the content, in `fields`. See `derived.rs`.
+    Derived {
+        what: String,
+        from: Option<Vec<Value>>,
+        replaces: Option<Vec<Value>>,
+        lease_ms: Option<u64>,
+        fields: Map<String, Value>,
+    },
     Unknown {
         type_tag: String,
         data: serde_json::Value,
@@ -294,7 +309,7 @@ impl Payload {
                 target: target.clone(),
                 data: data.clone(),
             },
-            Payload::Ink { .. } | Payload::Unknown { .. } => return None,
+            Payload::Ink { .. } | Payload::Derived { .. } | Payload::Unknown { .. } => return None,
         })
     }
 }
@@ -314,7 +329,21 @@ impl Serialize for Payload {
                     m.insert("op".into(), op.clone().into());
                     m.serialize(serializer)
                 }
-                _ => unreachable!("as_known() returns None only for Ink and Unknown"),
+                Payload::Derived { what, from, replaces, lease_ms, fields } => {
+                    let mut m = fields.clone();
+                    m.insert("type".into(), what.clone().into());
+                    if let Some(f) = from {
+                        m.insert("from".into(), Value::Array(f.clone()));
+                    }
+                    if let Some(r) = replaces {
+                        m.insert("replaces".into(), Value::Array(r.clone()));
+                    }
+                    if let Some(l) = lease_ms {
+                        m.insert("lease_ms".into(), (*l).into());
+                    }
+                    m.serialize(serializer)
+                }
+                _ => unreachable!("as_known() returns None only for Ink, Derived and Unknown"),
             },
         }
     }
@@ -384,7 +413,17 @@ struct EventRepr {
 
 /// Parse a stored/received payload object: the typed view plus whatever properties it carried that the typed view does not
 /// re-emit (unknown properties, and defaults a newer client spelled out).
-pub fn split_payload(v: Value) -> (Payload, Map<String, Value>) {
+pub fn split_payload(kind: &EventKind, v: Value) -> (Payload, Map<String, Value>) {
+    if *kind == EventKind::Derived {
+        if let Value::Object(m) = &v {
+            // a collected stub keeps its kind but is no longer derived content
+            if let Some(what) = m.get("type").and_then(Value::as_str).filter(|t| *t != "collected") {
+                let list = |k: &str| m.get(k).and_then(Value::as_array).cloned();
+                let fields = m.iter().filter(|(k, _)| !matches!(k.as_str(), "type" | "from" | "replaces" | "lease_ms")).map(|(k, x)| (k.clone(), x.clone())).collect();
+                return (Payload::Derived { what: what.into(), from: list("from"), replaces: list("replaces"), lease_ms: m.get("lease_ms").and_then(Value::as_u64), fields }, Map::new());
+            }
+        }
+    }
     let payload: Payload = match serde_json::from_value(v.clone()) {
         Ok(p) => p,
         Err(_) => {
@@ -393,7 +432,7 @@ pub fn split_payload(v: Value) -> (Payload, Map<String, Value>) {
         }
     };
     let mut extra = Map::new();
-    if !matches!(payload, Payload::Unknown { .. } | Payload::Ink { .. }) {
+    if !matches!(payload, Payload::Unknown { .. } | Payload::Ink { .. } | Payload::Derived { .. }) {
         if let (Value::Object(orig), Ok(Value::Object(again))) = (&v, serde_json::to_value(&payload)) {
             for (k, x) in orig {
                 if !again.contains_key(k) {
@@ -424,7 +463,7 @@ impl Event {
 
     /// Build an event from stored columns.
     pub fn from_stored(event_id: String, device_id: String, seq: u64, recorded_at: i64, kind: EventKind, payload_json: &str, will_enrich: bool, extra_json: Option<&str>) -> serde_json::Result<Self> {
-        let (payload, payload_extra) = split_payload(serde_json::from_str(payload_json)?);
+        let (payload, payload_extra) = split_payload(&kind, serde_json::from_str(payload_json)?);
         let extra = match extra_json {
             Some(s) => serde_json::from_str(s)?,
             None => Map::new(),
@@ -452,7 +491,7 @@ impl Serialize for Event {
 impl<'de> Deserialize<'de> for Event {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let r = EventRepr::deserialize(deserializer)?;
-        let (payload, payload_extra) = split_payload(r.payload);
+        let (payload, payload_extra) = split_payload(&r.kind, r.payload);
         Ok(Event {
             event_id: r.event_id,
             device_id: r.device_id,

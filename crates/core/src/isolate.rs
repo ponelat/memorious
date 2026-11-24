@@ -77,6 +77,9 @@ impl Journal {
     pub fn store_insert_remote_for_test(&self, e: &crate::event::Event) {
         self.store.insert_remote(e).unwrap();
     }
+    pub fn store_heads_for_test(&self) -> std::collections::BTreeMap<String, u64> {
+        self.store.heads().unwrap()
+    }
     pub fn store_meta_for_test(&self, key: &str, value: &[u8]) {
         self.store.meta_set(key, value).unwrap()
     }

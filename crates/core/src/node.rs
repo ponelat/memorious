@@ -458,6 +458,10 @@ impl Node {
             let cb: iroh_blobs::store::ProtectCb = Arc::new(move |live: &mut HashSet<Hash>| {
                 let journal = protect_journal.clone();
                 Box::pin(async move {
+                    // compaction rides the GC pass: turn superseded-and-past-lease events into stubs (derived.rs)
+                    if let Err(err) = journal.collect() {
+                        tracing::warn!("derived: collection skipped: {err:#}");
+                    }
                     match live_blob_hashes(&journal) {
                         Ok(hashes) => {
                             live.extend(hashes);

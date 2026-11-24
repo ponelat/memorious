@@ -315,6 +315,30 @@ impl Store {
         Ok(n)
     }
 
+    /// Every event of one kind, oldest first.
+    pub fn events_of_kind(&self, kind: &str) -> Result<Vec<Event>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT event_id, device_id, seq, recorded_at, kind, payload, will_enrich, extra
+             FROM events WHERE kind = ?1 ORDER BY recorded_at, event_id",
+        )?;
+        let rows = stmt.query_map([kind], row_to_event)?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
+
+    /// Replace an event's payload with a collected-stub (see `derived.rs`); the envelope (event_id, device_id, seq,
+    /// recorded_at, kind) is untouched. The full-text row is dropped with the content.
+    pub fn stub_event(&self, event_id: &str, stub: &serde_json::Value) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("UPDATE events SET payload = ?2, extra = NULL WHERE event_id = ?1", params![event_id, serde_json::to_string(stub)?])?;
+        conn.execute("DELETE FROM events_fts WHERE event_id = ?1", [event_id])?;
+        Ok(())
+    }
+
     /// A feed of month keys, one per ink op stored from now on (ours or a peer's).
     pub fn subscribe_ink(&self) -> tokio::sync::broadcast::Receiver<String> {
         self.ink_tx.subscribe()

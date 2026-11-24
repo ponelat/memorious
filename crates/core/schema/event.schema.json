@@ -32,14 +32,15 @@
     },
     "kind": {
       "type": "string",
-      "description": "Known: capture, redact, token_set, annotation, infra, ink. Any other string is a kind introduced after this schema; keep it, don't interpret it.",
+      "description": "Known: capture, redact, token_set, annotation, infra, ink, derived. Any other string is a kind introduced after this schema; keep it, don't interpret it.",
       "examples": [
         "capture",
         "redact",
         "token_set",
         "annotation",
         "infra",
-        "ink"
+        "ink",
+        "derived"
       ]
     },
     "payload": {
@@ -626,9 +627,119 @@
               }
             }
           }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "collected"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "description": "A collected stub: the event kept its envelope but its payload was replaced after a `derived` event superseded it and the lease ran out.",
+            "required": [
+              "by"
+            ],
+            "properties": {
+              "by": {
+                "type": "string",
+                "description": "event_id of the derived event that superseded it"
+              },
+              "was": {
+                "type": "string",
+                "description": "the original payload type"
+              }
+            }
+          }
         }
       ],
       "additionalProperties": true
+    },
+    "ref": {
+      "description": "A reference used by `from` / `replaces` of a derived event. Shapes not listed here are from a newer client: keep, ignore.",
+      "type": "object",
+      "anyOf": [
+        {
+          "required": [
+            "id"
+          ],
+          "properties": {
+            "id": {
+              "type": "string",
+              "description": "event_id"
+            },
+            "part": {
+              "type": "string",
+              "description": "absent = the whole event; \"blob\" = just its media bytes"
+            }
+          }
+        },
+        {
+          "required": [
+            "select"
+          ],
+          "properties": {
+            "select": {
+              "type": "string",
+              "description": "\"ink\" = a month's canvas ops"
+            },
+            "month": {
+              "type": "string"
+            },
+            "up_to": {
+              "type": "object",
+              "description": "per device_id: highest seq covered",
+              "additionalProperties": {
+                "type": "integer"
+              }
+            }
+          }
+        },
+        {}
+      ]
     }
-  }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "derived"
+          }
+        },
+        "required": [
+          "kind"
+        ]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "description": "Derived content. `type` names what it is (transcript, ink_snapshot, ...: open). `from`: provenance. `replaces`: what it makes outdated (absent = nothing). `lease_ms`: how long what it replaces is kept after this event (default 30 days). A replaced event may later appear as a collected stub, see the `collected` payload type.",
+            "properties": {
+              "from": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/ref"
+                }
+              },
+              "replaces": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/ref"
+                }
+              },
+              "lease_ms": {
+                "type": "integer",
+                "minimum": 0
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
 }

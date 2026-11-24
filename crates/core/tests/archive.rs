@@ -31,8 +31,11 @@ async fn the_archive_is_valid_complete_and_checksummed() {
     let secret = node.capture_blob(MediaKind::Photo, vec![7, 7, 7]).await.unwrap();
     j.redact(&secret.event_id).unwrap();
     j.set_device_name(j.device_id(), "test box").unwrap();
-    j.append_ink("2026-11", json!({ "op": "stroke", "tool": "pen", "seed": 1, "size": 5, "cid": "c1", "pts": [[0, 0, 0.5, 0], [10, 10, 0.5, 0]] })).unwrap();
+    let ink1 = j.append_ink("2026-11", json!({ "op": "stroke", "tool": "pen", "seed": 1, "size": 5, "cid": "c1", "pts": [[0, 0, 0.5, 0], [10, 10, 0.5, 0]] })).unwrap();
     j.append_ink("2026-11", json!({ "op": "undo", "target": "c1", "cid": "c2" })).unwrap();
+    // a snapshot that replaces the stroke, collected: the archive then holds a derived event and a collected stub
+    j.append_derived_at("ink_snapshot", json!([]), json!([{ "id": ink1.event_id }]), Some(1), json!({ "items": [] }), 1_000).unwrap();
+    assert_eq!(j.collect_at(10_000).unwrap().events_collected, 1);
     j.ensure_version_seen().unwrap();
     j.ensure_peer_join().unwrap();
 
@@ -53,10 +56,11 @@ async fn the_archive_is_valid_complete_and_checksummed() {
     }
     // every kind we wrote is there, including infra and the redact itself (the log is lossless)
     let kinds: std::collections::BTreeSet<&str> = lines.iter().map(|l| l["kind"].as_str().unwrap()).collect();
-    for k in ["capture", "redact", "annotation", "infra", "ink"] {
+    for k in ["capture", "redact", "annotation", "infra", "ink", "derived"] {
         assert!(kinds.contains(k), "missing {k}");
     }
     assert!(lines.iter().any(|l| l["kind"] == "ink" && l["payload"]["op"] == "undo" && l["payload"]["month"] == "2026-11"));
+    assert!(lines.iter().any(|l| l["payload"]["type"] == "collected" && l["payload"]["was"] == "ink"), "the collected stub is exported as a stub");
     assert!(lines.iter().any(|l| l["event_id"] == text.event_id.as_str() && l["payload"]["text"] == "hello\nworld"));
 
     // manifest validates, its checksums hold, media is decrypted and byte-identical
