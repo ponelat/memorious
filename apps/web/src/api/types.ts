@@ -133,6 +133,8 @@ export interface AgentKey {
 
 export interface Status {
   device_id: string
+  /** This peer is out of the network: no sync in or out (see isolate). */
+  isolated?: boolean
   entries: number
   trash: number
   heads: Record<string, number>
@@ -320,6 +322,8 @@ export interface JournalApi {
   syncNow?(ticket?: string): Promise<SyncReport>
   /** Mirror the journal as markdown by day plus media into a folder (desktop only). */
   exportJournal?(): Promise<ExportReport>
+  /** Isolate this peer (new address, forget every peer, refuse all sync; events untouched) or end isolation. Web only for now. */
+  setIsolated?(on: boolean): Promise<void>
   /** Download the lossless archive (events as JSON/JSONL, JSON Schemas, decrypted media) as a zip. Web only for now. */
   exportArchive?(opts: ArchiveOptions): Promise<string>
   /** Build an archive in the background and get a secret, expiring, resumable download link. */

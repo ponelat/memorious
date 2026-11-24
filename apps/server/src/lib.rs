@@ -235,6 +235,7 @@ pub fn app(state: RouterState, web_dist: Option<PathBuf>) -> Router {
         .route("/status", get(status))
         .route("/peers/ping", post(ping_peers))
         .route("/peers/required", post(set_peer_required))
+        .route("/isolate", post(isolate))
         .route("/device-name", post(set_device_name))
         .route("/agents", get(list_agents).post(mint_agent))
         .route("/agents/{id}", axum::routing::delete(revoke_agent))
@@ -929,6 +930,55 @@ pub async fn reset_journal(state: &AppState) -> Result<Node> {
     journal.ensure_device_name("web")?;
     journal.ensure_peer_join()?;
     journal.ensure_version_seen()?;
+    Node::spawn(journal).await
+}
+
+#[derive(Deserialize)]
+struct IsolateBody {
+    /// `true` = isolate (new address, forget every peer, refuse all sync); `false` = end isolation (allow sync again).
+    isolate: bool,
+}
+
+/// `POST /api/isolate {isolate: bool}` — take this peer out of the network without touching an event
+/// (`memorious_core::isolate`). Isolating also restarts the node *in this process* so it comes back at a new address (the
+/// endpoint key can't change in place); the browser keeps working and the journal keeps capturing, alone.
+/// Ending isolation just lifts the block; pair with the network again afterwards to exchange what each side lacks.
+async fn isolate(State(router_state): State<RouterState>, Json(body): Json<IsolateBody>) -> Response {
+    let current = router_state.0.read().unwrap().clone();
+    if !body.isolate {
+        return match current.node.journal().end_isolation() {
+            Ok(()) => Json(json!({"ok": true, "isolated": false})).into_response(),
+            Err(e) => internal(e),
+        };
+    }
+    let report = match current.node.journal().isolate() {
+        Ok(r) => r,
+        Err(e) => return internal(e),
+    };
+    let node = match restart_node(&current).await {
+        Ok(n) => n,
+        Err(e) => return internal(e),
+    };
+    let mut new_state = AppState::new(node, current.downloads_dir.clone(), current.data_dir.clone());
+    new_state.embedder = current.embedder.clone();
+    *router_state.0.write().unwrap() = Arc::new(new_state);
+    Json(json!({
+        "ok": true,
+        "isolated": true,
+        "peers_removed": report.peers_removed,
+        "address_reset": report.address_reset,
+    }))
+    .into_response()
+}
+
+/// Stop the node and start it again on the same journal (a fresh endpoint key is generated if none is stored).
+async fn restart_node(state: &AppState) -> Result<Node> {
+    state.node.shutdown_ref().await;
+    let password = std::env::var("MEMORIOUS_PASSWORD")
+        .ok()
+        .filter(|p| !p.is_empty())
+        .context("MEMORIOUS_PASSWORD not set in this process's environment")?;
+    let journal = Journal::open(&state.data_dir, &password)?;
     Node::spawn(journal).await
 }
 

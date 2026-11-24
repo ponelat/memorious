@@ -3,6 +3,7 @@ pub mod crypto;
 pub mod enrich;
 pub mod event;
 pub mod export_archive;
+pub mod isolate;
 pub mod export_md;
 pub mod import_v1;
 pub mod infra;

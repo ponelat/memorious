@@ -46,6 +46,7 @@ pub const SYNC_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const AUTH_CONTEXT: &[u8; 32] = b"memorious auth v0 context key 32";
 /// Close code used when the peer fails journal-secret auth.
 const CLOSE_BAD_AUTH: u32 = 1;
+const CLOSE_ISOLATED: u32 = 2;
 const MAX_FRAME: usize = 16 * 1024 * 1024;
 
 /// Postcard-friendly form of `EndpointAddr` (iroh's own serde impl needs
@@ -528,7 +529,7 @@ impl Node {
             endpoint: endpoint.clone(),
             fetch_gate: fetch_gate.clone(),
         };
-        let blobs_proto = BlobsProtocol::new(&blobs, None);
+        let blobs_proto = Gated { inner: BlobsProtocol::new(&blobs, None), journal: journal.clone() };
         let embedder: crate::mcp_quic::SharedEmbedder = Arc::default();
         let router = Router::builder(endpoint.clone())
             .accept(SYNC_ALPN, proto)
@@ -898,6 +899,9 @@ impl Node {
 
     /// One full sync round-trip with the peer at `addr`: events, then media.
     pub async fn sync_with(&self, addr: &EndpointAddr) -> Result<SyncReport> {
+        if self.journal.is_isolated()? {
+            anyhow::bail!("this peer is isolated: end isolation before syncing");
+        }
         let mut report = self.sync_events_with(addr).await?;
         report.blobs_fetched = fetch_missing_blobs(
             &self.endpoint,
@@ -913,6 +917,9 @@ impl Node {
 
     /// Event-log-only round-trip: timelines converge, media stays deferred.
     pub async fn sync_events_with(&self, addr: &EndpointAddr) -> Result<SyncReport> {
+        if self.journal.is_isolated()? {
+            anyhow::bail!("this peer is isolated: end isolation before syncing");
+        }
         let conn = tokio::time::timeout(SYNC_CONNECT_TIMEOUT, self.endpoint.connect(addr.clone(), SYNC_ALPN))
             .await
             .map_err(|_| {
@@ -1081,6 +1088,7 @@ impl Node {
         }
         let mut v = serde_json::json!({
             "device_id": journal.device_id(),
+            "isolated": journal.is_isolated()?,
             "entries": timeline.entries,
             "trash": journal.trash()?.len(),
             "heads": journal.store.heads()?,
@@ -1394,6 +1402,9 @@ impl Node {
     /// Probe every known peer concurrently. Order matches `peers()`
     /// (most recently heard from first).
     pub async fn ping_peers(&self, timeout: Duration) -> Result<Vec<PeerPing>> {
+        if self.journal.is_isolated()? {
+            return Ok(Vec::new());
+        }
         let peers = self.peers().await?;
         let probes = peers
             .into_iter()
@@ -1491,8 +1502,35 @@ impl std::fmt::Debug for SyncProto {
     }
 }
 
+/// Wraps a protocol so an isolated peer refuses its connections (see `isolate.rs`).
+#[derive(Clone)]
+struct Gated<P> {
+    inner: P,
+    journal: Arc<Journal>,
+}
+
+impl<P> std::fmt::Debug for Gated<P> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Gated").finish_non_exhaustive()
+    }
+}
+
+impl<P: ProtocolHandler> ProtocolHandler for Gated<P> {
+    async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
+        if self.journal.is_isolated().unwrap_or(false) {
+            connection.close(VarInt::from(CLOSE_ISOLATED), b"isolated");
+            return Err(AcceptError::from_err(std::io::Error::other("this peer is isolated")));
+        }
+        self.inner.accept(connection).await
+    }
+}
+
 impl ProtocolHandler for SyncProto {
     async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
+        if self.journal.is_isolated().unwrap_or(false) {
+            connection.close(VarInt::from(CLOSE_ISOLATED), b"isolated");
+            return Err(AcceptError::from_err(std::io::Error::other("this peer is isolated")));
+        }
         let (mut send, mut recv) = connection.accept_bi().await?;
 
         let (heads, initiator_addr, initiator_device, initiator_media) =

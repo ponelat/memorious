@@ -481,6 +481,35 @@ function AgentsRow() {
   )
 }
 
+/** Keep this peer out of the network for a while: new address, no peers, no sync in or out. Nothing it has written or
+ *  received is touched; it carries on alone, and can pair with the network again later. */
+function IsolationRow({ isolated, onChange }: { isolated: boolean; onChange: () => void }) {
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
+  async function set(on: boolean) {
+    if (on && !window.confirm('Isolate this peer? It gets a new address and forgets every peer, and syncs with nobody until you end isolation. Its events are not changed.')) return
+    setBusy(true)
+    setErr(null)
+    try {
+      await api.setIsolated!(on)
+      onChange()
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+  return (
+    <>
+      {isolated && <p className="hint">isolated — not syncing with anyone. new events stay on this peer.</p>}
+      <button className="ghost" disabled={busy} onClick={() => void set(!isolated)}>
+        {busy ? '…' : isolated ? 'end isolation' : 'isolate this peer…'}
+      </button>
+      {err && <p className="error">{err}</p>}
+    </>
+  )
+}
+
 const fmtBytes = (n: number) => (n >= 1e9 ? `${(n / 1e9).toFixed(1)} GB` : n >= 1e6 ? `${(n / 1e6).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1e3))} KB`)
 const fmtLeft = (ms: number) => {
   const m = Math.max(0, Math.round((ms - Date.now()) / 60000))
@@ -1011,6 +1040,14 @@ export function StatusView() {
               >
                 {copied ? 'ticket copied' : 'copy pairing ticket'}
               </button>
+            </dd>
+          </>
+        )}
+        {api.setIsolated && (
+          <>
+            <dt>isolation</dt>
+            <dd>
+              <IsolationRow isolated={!!status.isolated} onChange={refresh} />
             </dd>
           </>
         )}

@@ -1049,3 +1049,46 @@ async fn peers_can_be_marked_optional_and_health_follows() {
     // Malformed body is a client error, not a 500.
     assert_eq!(post(r#"{"endpoint_id":"peer-a"}"#).await.unwrap().status(), StatusCode::UNPROCESSABLE_ENTITY);
 }
+
+#[tokio::test]
+async fn isolate_over_http_resets_the_node_in_place_and_keeps_the_journal() {
+    let _env_guard = lock_env();
+    std::env::set_var("MEMORIOUS_PASSWORD", "pw");
+    let (_dir, state) = test_state().await;
+    state.node.journal().capture_text("stays").unwrap();
+    state.node.journal().store_meta_for_test("peer_last_ok:abc", &1i64.to_le_bytes());
+    let before = state.node.status_json().await.unwrap();
+    assert_eq!(before["isolated"], false);
+    let ticket_before = state.node.ticket().unwrap();
+    let events_before = before["events_total"].as_u64().unwrap();
+    let router = app(wrap(state), None);
+
+    let post = |on: bool| {
+        authed(Request::post("/api/isolate"))
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(format!("{{\"isolate\":{on}}}")))
+            .unwrap()
+    };
+    let resp = router.clone().oneshot(post(true)).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let out = body_json(resp).await;
+    assert_eq!(out["isolated"], true);
+    assert_eq!(out["peers_removed"], 1);
+    assert_eq!(out["address_reset"], true);
+
+    // same server, same passcode, same journal: isolated, no peers, every event still there
+    let resp = router.clone().oneshot(authed(Request::get("/api/status")).body(Body::empty()).unwrap()).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let status = body_json(resp).await;
+    assert_eq!(status["isolated"], true);
+    assert_eq!(status["peers"].as_array().unwrap().len(), 0);
+    assert_eq!(status["events_total"].as_u64().unwrap(), events_before);
+
+    // and ending isolation lifts the block
+    let resp = router.clone().oneshot(post(false)).await.unwrap();
+    assert_eq!(body_json(resp).await["isolated"], false);
+    let resp = router.oneshot(authed(Request::get("/api/status")).body(Body::empty()).unwrap()).await.unwrap();
+    assert_eq!(body_json(resp).await["isolated"], false);
+    let _ = ticket_before;
+    std::env::remove_var("MEMORIOUS_PASSWORD");
+}

@@ -71,6 +71,9 @@ async function saveResponse(resp: Response, filename: string): Promise<void> {
 }
 
 export const httpApi: JournalApi = {
+  async setIsolated(on: boolean) {
+    await request('/api/isolate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ isolate: on }) })
+  },
   async createArchiveLink(opts) {
     const r = await json<{ export: ArchiveExport }>('/api/exports', {
       method: 'POST',
