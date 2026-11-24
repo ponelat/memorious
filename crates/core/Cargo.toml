@@ -44,9 +44,12 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["v7", "serde"] }
 zeroize = { version = "1", features = ["derive"] }
+zip = { version = "9.8.2", default-features = false, features = ["deflate"] }
+sha2 = "0.11.1"
 
 [dev-dependencies]
 iroh = "1"
+jsonschema = { version = "0.63.1", default-features = false }
 tempfile = "3"
 
 # RSS guards (tests/blob_fetch.rs, tests/media_rss.rs) read Mach task_info on macOS.

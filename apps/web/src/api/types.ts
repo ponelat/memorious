@@ -183,6 +183,13 @@ export interface SyncReport {
 }
 
 /** A markdown mirror written by a desktop export: where, and how much. */
+export interface ArchiveOptions {
+  /** `jsonl` = one event per line (default); `json` = one array. */
+  format: 'jsonl' | 'json'
+  /** Include the media files. */
+  media: boolean
+}
+
 export interface ExportReport {
   path: string
   days: number
@@ -298,6 +305,8 @@ export interface JournalApi {
   syncNow?(ticket?: string): Promise<SyncReport>
   /** Mirror the journal as markdown by day plus media into a folder (desktop only). */
   exportJournal?(): Promise<ExportReport>
+  /** Download the lossless archive (events as JSON/JSONL, JSON Schemas, decrypted media) as a zip. Web only for now. */
+  exportArchive?(opts: ArchiveOptions): Promise<string>
   /** Delete this device's (or, over the browser, this server's) copy of the
    * journal and its identity; other devices keep theirs. On the browser
    * this also ends the server process — it takes longer to come back than

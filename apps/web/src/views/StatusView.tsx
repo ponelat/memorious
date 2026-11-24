@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { api, AgentKey, DownloadFile, ExportReport, NetConfig, PeerBuild, PeerInfo, PeerPing, Status } from '../api'
+import { api, ArchiveOptions, AgentKey, DownloadFile, ExportReport, NetConfig, PeerBuild, PeerInfo, PeerPing, Status } from '../api'
 import { agoLabel, edgeKind, MapPeer, PeerMap } from '../components/PeerMap'
 import { Appearance, onAppearanceChange, readAppearance, setAppearance } from '../appearance'
 
@@ -481,6 +481,43 @@ function AgentsRow() {
   )
 }
 
+/** Download the lossless archive: every event as JSON, the JSON Schemas, and the media in plain formats. */
+function ArchiveRow() {
+  const [busy, setBusy] = useState(false)
+  const [opts, setOpts] = useState<ArchiveOptions>({ format: 'jsonl', media: true })
+  const [done, setDone] = useState<string | null>(null)
+  const [err, setErr] = useState<string | null>(null)
+
+  async function run() {
+    setBusy(true)
+    setErr(null)
+    setDone(null)
+    try {
+      setDone(await api.exportArchive!(opts))
+    } catch (e) {
+      if (!(e instanceof DOMException && e.name === 'AbortError')) setErr(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <>
+      <button className="ghost" disabled={busy} onClick={run}>
+        {busy ? 'preparing archive…' : 'download archive…'}
+      </button>
+      <label className="row">
+        <input type="checkbox" checked={opts.media} onChange={(e) => setOpts({ ...opts, media: e.target.checked })} /> media
+      </label>
+      <label className="row">
+        <input type="checkbox" checked={opts.format === 'json'} onChange={(e) => setOpts({ ...opts, format: e.target.checked ? 'json' : 'jsonl' })} /> one json array (not jsonl)
+      </label>
+      {done && <p className="hint mono">{done}</p>}
+      {err && <p className="error">{err}</p>}
+    </>
+  )
+}
+
 /** Export the journal as a folder of markdown by day plus media (desktop). */
 function ExportRow() {
   const [busy, setBusy] = useState(false)
@@ -920,6 +957,14 @@ export function StatusView() {
         <dd>
           <AppearancePicker />
         </dd>
+        {api.exportArchive && (
+          <>
+            <dt>archive</dt>
+            <dd>
+              <ArchiveRow />
+            </dd>
+          </>
+        )}
         {api.exportJournal && (
           <>
             <dt>export</dt>

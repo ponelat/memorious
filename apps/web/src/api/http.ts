@@ -1,4 +1,4 @@
-import type { AgentKey, Entry, FeedPage, InkRecord, JournalApi, MediaRef, NetConfig, Status, SyncReport } from './types'
+import type { AgentKey, ArchiveOptions, Entry, FeedPage, InkRecord, JournalApi, MediaRef, NetConfig, Status, SyncReport } from './types'
 
 const TOKEN_KEY = 'memorious.passcode'
 
@@ -47,7 +47,37 @@ function upload(path: string, file: Blob): Promise<Entry> {
   return json<Entry>(path, { method: 'POST', body: form })
 }
 
+/** Save a response body to disk: streamed straight to a file where the browser allows it (no copy in memory), else as a blob. */
+async function saveResponse(resp: Response, filename: string): Promise<void> {
+  const w = window as unknown as { showSaveFilePicker?: (o: unknown) => Promise<{ createWritable(): Promise<WritableStream> }> }
+  if (w.showSaveFilePicker && resp.body) {
+    try {
+      const handle = await w.showSaveFilePicker({ suggestedName: filename, types: [{ description: 'zip', accept: { 'application/zip': ['.zip'] } }] })
+      await resp.body.pipeTo(await handle.createWritable())
+      return
+    } catch (e) {
+      if (e instanceof DOMException && e.name === 'AbortError') throw e // the person cancelled the dialog
+      // fall through to the blob route
+    }
+  }
+  const url = URL.createObjectURL(await resp.blob())
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  setTimeout(() => URL.revokeObjectURL(url), 60_000)
+}
+
 export const httpApi: JournalApi = {
+  async exportArchive(opts: ArchiveOptions) {
+    const resp = await request(`/api/export?format=${opts.format}&media=${opts.media ? 1 : 0}`)
+    const cd = resp.headers.get('content-disposition') ?? ''
+    const name = /filename="([^"]+)"/.exec(cd)?.[1] ?? 'memorious-archive.zip'
+    await saveResponse(resp, name)
+    return name
+  },
   needsAuth: true,
 
   async checkPasscode(passcode: string) {

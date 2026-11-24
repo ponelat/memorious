@@ -218,6 +218,7 @@ pub fn app(state: RouterState, web_dist: Option<PathBuf>) -> Router {
         .route("/capture/video", post(capture_video))
         .route("/feed", get(feed))
         .route("/media/{hash}", get(media))
+        .route("/export", get(export_archive))
         .route("/redact", post(redact))
         .route("/ink", get(ink::months))
         .route("/ink/stream", get(ink::stream))
@@ -653,6 +654,52 @@ async fn media(State(state): State<SharedState>, UrlPath(hash): UrlPath<String>)
         .header(header::CACHE_CONTROL, "private, max-age=31536000, immutable")
         .body(Body::from_stream(opened.plaintext))
         .expect("media response")
+}
+
+#[derive(Deserialize)]
+struct ExportParams {
+    /// `jsonl` (default) or `json`.
+    format: Option<String>,
+    /// `0` leaves the media out (events + schema + manifest only).
+    media: Option<String>,
+}
+
+/// `GET /api/export?format=jsonl|json&media=1|0` — the lossless archive (`memorious_core::export_archive`) as a zip:
+/// every event as JSON, the JSON Schemas, decrypted media. Built into an anonymous temp file (media is streamed through,
+/// never held in memory) and then streamed back, so a big journal costs disk, not RSS.
+async fn export_archive(State(state): State<SharedState>, Query(p): Query<ExportParams>) -> Response {
+    use memorious_core::export_archive::{export_archive, stamp, ArchiveOpts, EventsEncoding, ZipSink};
+    use std::io::{Seek, SeekFrom};
+    let events = match p.format.as_deref() {
+        None | Some("jsonl") => EventsEncoding::Jsonl,
+        Some("json") => EventsEncoding::Json,
+        Some(other) => return err(StatusCode::BAD_REQUEST, &format!("format must be jsonl or json, got {other:?}")),
+    };
+    let media = !matches!(p.media.as_deref(), Some("0" | "false"));
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0);
+    let name = format!("memorious-archive-{}", stamp(now));
+    let result: anyhow::Result<std::fs::File> = async {
+        let file = tempfile::tempfile()?;
+        let mut sink = ZipSink::new(file, &name);
+        export_archive(&state.node, &mut sink, ArchiveOpts { events, media }, now).await?;
+        let mut file = sink.finish()?;
+        file.seek(SeekFrom::Start(0))?;
+        Ok(file)
+    }
+    .await;
+    let file = match result {
+        Ok(f) => f,
+        Err(e) => return internal(e),
+    };
+    let len = file.metadata().map(|m| m.len()).unwrap_or(0);
+    let stream = tokio_util::io::ReaderStream::new(tokio::fs::File::from_std(file));
+    Response::builder()
+        .header(header::CONTENT_TYPE, "application/zip")
+        .header(header::CONTENT_LENGTH, len.to_string())
+        .header(header::CONTENT_DISPOSITION, format!("attachment; filename=\"{name}.zip\""))
+        .header(header::CACHE_CONTROL, "no-store")
+        .body(Body::from_stream(stream))
+        .expect("export response")
 }
 
 #[derive(Deserialize)]

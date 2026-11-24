@@ -1,0 +1,163 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://memorious.app/schema/archive/v1/event.schema.json",
+  "title": "Memorious event (one line of events.jsonl, or one element of events.json)",
+  "description": "An append-only journal event. OPEN WORLD: every object allows extra properties, `kind` and `payload.type` may be values this schema has never heard of, and a reader must ignore what it does not understand and keep what it cannot interpret. Properties are only ever added, never removed or renamed. See README.md in the archive.",
+  "type": "object",
+  "required": ["event_id", "device_id", "seq", "recorded_at", "kind", "payload"],
+  "properties": {
+    "event_id": { "type": "string", "description": "Unique id, assigned when the event is first appended." },
+    "device_id": { "type": "string", "description": "The authoring device, `dev-<uuid v7>`." },
+    "seq": { "type": "integer", "minimum": 0, "description": "Per-device sequence number, contiguous per device (no gaps in a complete log)." },
+    "recorded_at": { "type": "integer", "description": "Unix milliseconds on the author's clock." },
+    "kind": {
+      "type": "string",
+      "description": "Known: capture, redact, token_set, annotation, infra. Any other string is a kind introduced after this schema; keep it, don't interpret it.",
+      "examples": ["capture", "redact", "token_set", "annotation", "infra"]
+    },
+    "payload": { "$ref": "#/$defs/payload" },
+    "will_enrich": { "type": "boolean", "description": "Captures only: the author intends to enrich this capture (transcribe, caption). Absent = false." }
+  },
+  "additionalProperties": true,
+  "$defs": {
+    "blob_crypto": {
+      "type": "object",
+      "description": "Per-blob encryption envelope. Informational in an archive: the media files in the archive are already decrypted. Kept so the archive is a lossless copy of the event.",
+      "required": ["ck", "nonce"],
+      "properties": {
+        "ck": { "type": "string", "description": "base64: 24-byte wrap nonce + AEAD-wrapped 32-byte content key (wrapped under the journal's master-password key)." },
+        "nonce": { "type": "string", "description": "base64: 19-byte chunk-nonce base." }
+      },
+      "additionalProperties": true
+    },
+    "media": {
+      "type": "object",
+      "required": ["hash", "size"],
+      "properties": {
+        "hash": { "type": "string", "description": "blake3 hex of the stored CIPHERTEXT (the blob's identity). In an archive the plaintext file is media/<hash>.<ext>." },
+        "size": { "type": "integer", "minimum": 0, "description": "Plaintext length in bytes." },
+        "crypto": { "$ref": "#/$defs/blob_crypto" }
+      }
+    },
+    "pt": {
+      "type": "array",
+      "description": "A stroke point [x, y, pressure 0-1, tilt 0-1] in world units.",
+      "prefixItems": [{ "type": "number" }, { "type": "number" }, { "type": "number" }, { "type": "number" }],
+      "minItems": 4
+    },
+    "poly": { "type": "array", "items": { "type": "array", "prefixItems": [{ "type": "number" }, { "type": "number" }], "minItems": 2 } },
+    "ink_op": {
+      "type": "object",
+      "description": "One canvas drawing op (see docs/CANVAS-SPEC.md). `op` values not listed here are ops from a newer client: keep, ignore.",
+      "required": ["op"],
+      "properties": {
+        "op": { "type": "string", "examples": ["stroke", "image", "move", "delete", "undo", "redo"] },
+        "cid": { "type": "string", "description": "Client-generated id; undo/redo `target` refer to it." }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "op": { "const": "stroke" } }, "required": ["op"] },
+          "then": {
+            "required": ["tool", "seed", "size", "pts"],
+            "properties": {
+              "tool": { "type": "string", "description": "pencil | pen | eraser" },
+              "seed": { "type": "integer", "description": "uint32 seed of the dab-jitter PRNG (mulberry32)." },
+              "size": { "type": "number" },
+              "opacity": { "type": "number", "description": "0-1, absent = 1." },
+              "only": { "type": "array", "items": { "type": "string" }, "description": "Eraser: layers (pencil, pen) that were visible; absent = all." },
+              "pts": { "type": "array", "items": { "$ref": "#/$defs/pt" } }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "op": { "const": "image" } }, "required": ["op"] },
+          "then": { "required": ["hash", "rect"], "properties": { "hash": { "type": "string" }, "rect": { "type": "array", "items": { "type": "number" }, "minItems": 4, "maxItems": 4 } } }
+        },
+        {
+          "if": { "properties": { "op": { "const": "move" } }, "required": ["op"] },
+          "then": {
+            "required": ["poly", "xf"],
+            "properties": {
+              "poly": { "$ref": "#/$defs/poly" },
+              "xf": { "type": "object", "required": ["dx", "dy", "s", "cx", "cy"], "description": "p' = c + d + s*(p - c)" },
+              "copy": { "type": "boolean" },
+              "only": { "type": "array", "items": { "type": "string" } },
+              "ids": { "type": "array", "items": { "type": "string" } }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "op": { "const": "delete" } }, "required": ["op"] },
+          "then": { "required": ["poly"], "properties": { "poly": { "$ref": "#/$defs/poly" }, "only": { "type": "array", "items": { "type": "string" } }, "ids": { "type": "array", "items": { "type": "string" } } } }
+        },
+        {
+          "if": { "properties": { "op": { "enum": ["undo", "redo"] } }, "required": ["op"] },
+          "then": { "required": ["target"], "properties": { "target": { "type": "string", "description": "cid of the op toggled" } } }
+        }
+      ],
+      "additionalProperties": true
+    },
+    "payload": {
+      "type": "object",
+      "description": "Tagged by `type`. Unknown types are valid: keep them whole.",
+      "required": ["type"],
+      "properties": { "type": { "type": "string" } },
+      "allOf": [
+        {
+          "if": { "properties": { "type": { "const": "text" } }, "required": ["type"] },
+          "then": { "required": ["text"], "properties": { "text": { "type": "string" } } }
+        },
+        {
+          "if": { "properties": { "type": { "const": "photo" } }, "required": ["type"] },
+          "then": { "$ref": "#/$defs/media" }
+        },
+        {
+          "if": { "properties": { "type": { "const": "video" } }, "required": ["type"] },
+          "then": { "$ref": "#/$defs/media" }
+        },
+        {
+          "if": { "properties": { "type": { "const": "audio" } }, "required": ["type"] },
+          "then": {
+            "$ref": "#/$defs/media",
+            "properties": { "audio_kind": { "type": "string", "description": "voice (default when absent) | music. Voice = a dictated note whose transcript is the record; music = kept clean forever." } }
+          }
+        },
+        {
+          "if": { "properties": { "type": { "const": "redact" } }, "required": ["type"] },
+          "then": { "required": ["target"], "properties": { "target": { "type": "string", "description": "event_id of the capture hidden." } } }
+        },
+        {
+          "if": { "properties": { "type": { "const": "token_set" } }, "required": ["type"] },
+          "then": { "required": ["hash"], "properties": { "hash": { "type": "string", "description": "blake3 hex of the browser passcode (never the passcode). Latest token_set wins." } } }
+        },
+        {
+          "if": { "properties": { "type": { "const": "annotation" } }, "required": ["type"] },
+          "then": {
+            "required": ["target", "text"],
+            "properties": {
+              "target": { "type": "string", "description": "A capture event_id (a transcript/caption), a device id `dev-...` (device name), or the reserved `journal:password-proof`." },
+              "text": { "type": "string", "description": "Latest annotation per target wins (recorded_at, then event_id). For `journal:password-proof` the text is JSON {ck, nonce}." }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "type": { "const": "infra" } }, "required": ["type"] },
+          "then": {
+            "required": ["infra_kind", "data"],
+            "properties": {
+              "infra_kind": { "type": "string", "description": "peer_join | version_seen | key_rewrap | ink (legacy home of canvas ops) | anything newer." },
+              "target": { "type": "string", "description": "peer_join / version_seen: the device id. key_rewrap: the capture event_id. ink: the UTC month YYYY-MM." },
+              "data": {}
+            },
+            "allOf": [
+              { "if": { "properties": { "infra_kind": { "const": "version_seen" } }, "required": ["infra_kind"] }, "then": { "properties": { "data": { "type": "object", "properties": { "version": { "type": "string" }, "git_sha": { "type": "string" }, "build_date": { "type": "string" } } } } } },
+              { "if": { "properties": { "infra_kind": { "const": "key_rewrap" } }, "required": ["infra_kind"] }, "then": { "properties": { "data": { "$ref": "#/$defs/blob_crypto" } } } },
+              { "if": { "properties": { "infra_kind": { "const": "ink" } }, "required": ["infra_kind"] }, "then": { "properties": { "data": { "$ref": "#/$defs/ink_op" } } } }
+            ]
+          }
+        }
+      ],
+      "additionalProperties": true
+    }
+  }
+}

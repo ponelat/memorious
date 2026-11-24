@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://memorious.app/schema/archive/v1/manifest.schema.json",
+  "title": "Memorious archive manifest (manifest.json)",
+  "description": "Describes one export. Open world: extra properties are allowed and must be ignored.",
+  "type": "object",
+  "required": ["format", "format_version", "exported_at_ms", "engine", "device_id", "events", "media"],
+  "properties": {
+    "format": { "const": "memorious-archive" },
+    "format_version": { "type": "integer", "description": "Bumped only for an incompatible change to the archive layout itself; additions never bump it." },
+    "exported_at_ms": { "type": "integer" },
+    "exported_at": { "type": "string", "description": "ISO-8601 UTC." },
+    "engine": {
+      "type": "object",
+      "properties": { "version": { "type": "string" }, "git_sha": { "type": "string" }, "build_date": { "type": "string" } }
+    },
+    "device_id": { "type": "string", "description": "The device that produced this archive." },
+    "events": {
+      "type": "object",
+      "required": ["file", "encoding", "count", "sha256"],
+      "properties": {
+        "file": { "type": "string", "description": "events.jsonl (one JSON event per line) or events.json (one JSON array)." },
+        "encoding": { "enum": ["jsonl", "json"] },
+        "count": { "type": "integer", "minimum": 0 },
+        "sha256": { "type": "string" },
+        "first_recorded_at": { "type": "integer" },
+        "last_recorded_at": { "type": "integer" },
+        "order": { "type": "string", "description": "Events are listed by (recorded_at, event_id)." },
+        "by_kind": { "type": "object", "additionalProperties": { "type": "integer" } }
+      }
+    },
+    "schemas": { "type": "object", "properties": { "event": { "type": "string" }, "manifest": { "type": "string" } } },
+    "media": {
+      "type": "array",
+      "description": "One entry per media capture event.",
+      "items": {
+        "type": "object",
+        "required": ["event_id", "hash", "kind", "status"],
+        "properties": {
+          "event_id": { "type": "string" },
+          "hash": { "type": "string" },
+          "kind": { "enum": ["photo", "audio", "video"] },
+          "status": {
+            "enum": ["included", "redacted", "unavailable"],
+            "description": "included: the file is in the archive. redacted: the capture was redacted, so its bytes are deliberately left out (the events are still all there). unavailable: this device does not hold the bytes (e.g. a voice recording past its retention window, or media not yet synced here)."
+          },
+          "path": { "type": "string", "description": "Relative path of the file, when included." },
+          "mime": { "type": "string" },
+          "bytes": { "type": "integer" },
+          "sha256": { "type": "string", "description": "sha256 of the file in the archive." },
+          "reason": { "type": "string" }
+        }
+      }
+    },
+    "media_summary": { "type": "object", "properties": { "included": { "type": "integer" }, "redacted": { "type": "integer" }, "unavailable": { "type": "integer" } } },
+    "not_included": { "type": "array", "items": { "type": "string" }, "description": "Things that exist on the device but are deliberately not part of the archive (device-local settings, derived search indexes, the master password, peer addresses)." }
+  },
+  "additionalProperties": true
+}
