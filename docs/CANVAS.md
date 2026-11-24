@@ -49,6 +49,8 @@ back**: the eraser works on pixels, so before a piece is selected or moved the p
 out of it (a point counts as erased once the erasers passing over it have left < 20 % of it). **An eraser only reaches the
 layers that were visible when it was used** (`only` on the stroke), like move / delete.
 
+**Wipe** (`A`): a lasso that erases everything inside it from this period *and every earlier period that is showing* — a `delete` op is written into each period's own log (earlier periods are read-only on the canvas), folds carry it, nothing is removed from the journal; confirmed first, and not undoable for earlier periods.
+
 **Cursors** follow the tool: a pencil, a nib and a dashed lasso (drawn from the tool icons, white halo so they read on light
 and dark, hot spot at the working tip), a crosshair for rect, the ring for the eraser, a hand while Space is held.
 

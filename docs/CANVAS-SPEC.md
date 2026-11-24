@@ -122,6 +122,8 @@ Selecting is **non-destructive and lazy**: it computes *pieces*, and only *movin
   outside (or Esc) deselects. Edits are ops, so they undo like anything else. While a drag is live, render the selection as a
   floating layer; write the op on release.
 
+**Wipe** (tool `wipe`, key `A`) is a lasso that **erases everything inside it from the current period and from every earlier period that is showing**. Earlier periods are read-only on the canvas, so the erase is an ordinary `delete` op (polygon, plus `only` = the visible layers) written into *each* period's own log: a fold is the base and the delete folds on top of it, later folds bake it in, and nothing in the journal is removed (the original ink stays in the history that backups keep). The client asks for confirmation first, because an erase in an earlier period cannot be undone from the canvas (undo covers only the current period); in the current period it undoes like any edit.
+
 ## 6. Images
 
 `image` op = content-addressed blob (`hash`) + world `rect`; moved/copied/deleted by the same selection rules (atomic, centre-in).
