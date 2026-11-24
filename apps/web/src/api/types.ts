@@ -138,7 +138,7 @@ export interface Status {
   /** This peer is out of the network: no sync in or out (see isolate). */
   isolated?: boolean
   /** Collected stubs on this device (superseded canvas events kept as envelopes only) and of which original type. */
-  stubs?: { total: number; by_type: Record<string, number> }
+  stubs?: StubCounts
   /** Does this device keep revisions (superseded events)? False = it collects them after its window. */
   keeps_revisions?: boolean
   /** What each device last announced: does it keep revisions? (`peer_policy` events.) */
@@ -221,7 +221,13 @@ export interface RetentionView {
   keeps_revisions: boolean
   /** Some other device has announced it keeps revisions. */
   has_backup_peer: boolean
-  stubs: { total: number; by_type: Record<string, number> }
+  stubs: StubCounts
+}
+/** What a device has collected: how many events, of what, and the ranges (with the fold that superseded them and the time window they cover). */
+export interface StubCounts {
+  total: number
+  by_type: Record<string, number>
+  ranges?: { device_id: string; from_seq: number; to_seq: number; count: number; by: string; was: string; first_ms: number; last_ms: number }[]
 }
 export type Retain = { mode: 'forever' } | { mode: 'after_days'; days: number }
 
@@ -273,11 +279,13 @@ export interface SetupApi {
 export interface InkRecord {
   event_id: string
   device_id: string
+  /** The author device's sequence number (a fold covers ops by it). */
+  seq?: number
   recorded_at: number
   data: Record<string, unknown>
 }
 
-/** The infinite canvas's ink ops, per UTC month. */
+/** The infinite canvas's ink ops, per UTC period (an ISO week, or a legacy month). */
 export interface InkApi {
   months(): Promise<string[]>
   /** Ops that arrived on the peer after `after` (a `cursor` from an earlier call; omit for all), in arrival order. */

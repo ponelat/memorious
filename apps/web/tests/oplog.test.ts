@@ -116,3 +116,56 @@ describe('MonthLog', () => {
     expect((m.data as { ids?: string[] }).ids).toEqual(['x', 'y'])
   })
 })
+
+describe('ink_fold: a fold is the base of the canvas and covers the ops it supersedes', () => {
+  const recs = (eid: string, dev: string, seq: number, t: number, data: Record<string, unknown>): WireRecord => ({ event_id: eid, device_id: dev, seq, recorded_at: t, data })
+  const stroke = (cid: string, y: number) => ({ op: 'stroke', cid, tool: 'pen', seed: 1, size: 5, pts: [[0, y, 0.5, 0], [50, y, 0.5, 0]] })
+  const item = (id: string, y: number) => ({ id, tool: 'pen', seed: 1, size: 5, pts: [[0, y, 0.5, 0], [50, y, 0.5, 0]] })
+  const fold = (items: unknown[], upTo: Record<string, number>, extra: unknown[] = []) => ({
+    op: 'ink_fold', cid: 'f1', items, supersedes: [{ select: 'ink', period: '2026-W10', up_to: upTo }, ...extra],
+  })
+  const ids = (l: MonthLog) => l.events().filter((e) => e.active !== false).map((e) => e.id)
+
+  test('ops covered by the fold are replaced by its items; ops above the bound fold on top', () => {
+    const l = new MonthLog('2026-W10', 'dev-a')
+    l.merge([
+      recs('e1', 'dev-a', 1, 1, stroke('a', 0)),
+      recs('e2', 'dev-a', 2, 2, stroke('b', 10)),
+      recs('e3', 'dev-a', 3, 3, { op: 'undo', target: 'b', cid: 'u' }),
+      recs('e4', 'dev-a', 4, 4, fold([item('a', 0)], { 'dev-a': 3 })), // b was undone, baked out of the fold
+      recs('e5', 'dev-a', 5, 5, stroke('late', 20)),
+    ])
+    expect(ids(l)).toEqual(['a', 'late'])
+  })
+
+  test('a peer that only has the fold (the ops were collected) draws the same canvas', () => {
+    const l = new MonthLog('2026-W10', 'dev-b')
+    l.merge([recs('e4', 'dev-a', 4, 4, fold([item('a', 0), item('c', 30)], { 'dev-a': 3 })), recs('e5', 'dev-a', 5, 5, stroke('late', 20))])
+    expect(ids(l)).toEqual(['a', 'c', 'late'])
+  })
+
+  test('a later undo can still remove a folded item', () => {
+    const l = new MonthLog('2026-W10', 'dev-b')
+    l.merge([recs('e4', 'dev-a', 4, 4, fold([item('a', 0), item('c', 30)], { 'dev-a': 3 })), recs('e6', 'dev-a', 6, 6, { op: 'undo', target: 'c', cid: 'u2' })])
+    expect(ids(l)).toEqual(['a'])
+  })
+
+  test('the latest fold wins; an op the old fold covered is not resurrected', () => {
+    const l = new MonthLog('2026-W10', 'dev-a')
+    l.merge([
+      recs('e1', 'dev-a', 1, 1, stroke('a', 0)),
+      recs('e2', 'dev-a', 2, 2, fold([item('a', 0)], { 'dev-a': 1 })),
+      recs('e3', 'dev-a', 3, 3, stroke('late', 20)),
+      recs('e4', 'dev-a', 4, 4, fold([item('a', 0), item('late', 20)], { 'dev-a': 3 }, [{ id: 'e2' }])),
+    ])
+    expect(ids(l)).toEqual(['a', 'late'])
+  })
+
+  test('without a fold nothing changes, and ops without a seq (still pending) are never treated as covered', () => {
+    const l = new MonthLog('2026-W10', 'dev-a')
+    l.merge([recs('e2', 'dev-a', 2, 2, fold([item('a', 0)], { 'dev-a': 99 }))])
+    l.add({ op: 'stroke', tool: 'pen', seed: 2, size: 5, pts: [[0, 5, 0.5, 0]] })
+    expect(l.events().filter((e) => e.active !== false).length).toBe(2)
+    expect(l.hasContent).toBe(true)
+  })
+})

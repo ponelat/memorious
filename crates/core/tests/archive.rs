@@ -62,7 +62,7 @@ async fn the_archive_is_valid_complete_and_checksummed() {
         assert!(kinds.contains(k), "missing {k}");
     }
     assert!(lines.iter().any(|l| l["kind"] == "ink" && l["payload"]["op"] == "undo" && l["payload"]["period"] == "2026-11"));
-    assert!(lines.iter().any(|l| l["payload"]["type"] == "collected" && l["payload"]["was"] == "ink"), "the collected stub is exported as a stub");
+    assert!(!lines.iter().any(|l| l["payload"]["type"] == "collected"), "collected events leave no rows, so nothing is exported for them");
     assert!(lines.iter().any(|l| l["event_id"] == text.event_id.as_str() && l["payload"]["text"] == "hello\nworld"));
 
     // manifest validates, its checksums hold, media is decrypted and byte-identical
@@ -71,6 +71,7 @@ async fn the_archive_is_valid_complete_and_checksummed() {
     let errs: Vec<String> = mv.iter_errors(&manifest).map(|e| e.to_string()).collect();
     assert!(errs.is_empty(), "{errs:?}");
     assert_eq!(manifest["stubs"]["total"], 1);
+    assert_eq!(manifest["stubs"]["ranges"][0]["count"], 1, "the manifest lists what this device collected, as seq ranges");
     assert!(lines.iter().any(|l| l["kind"] == "infra" && l["payload"]["infra_kind"] == "peer_policy"));
     assert_eq!(manifest["events"]["sha256"], sha(raw.as_bytes()));
     assert_eq!(manifest["events"]["count"], lines.len());

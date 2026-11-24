@@ -109,6 +109,10 @@ enum Msg {
         /// peer ignores it and sends anyway; a write-only peer discards what it didn't ask for).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         receive: Option<bool>,
+        /// `seq` ranges the sender collected and will therefore never send: the receiver tolerates the jump in sequence numbers
+        /// and records it as collected. Optional for wire compat.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        gaps: Option<Vec<StubRange>>,
     },
     HelloAck {
         heads: Heads,
@@ -120,6 +124,8 @@ enum Msg {
         stubs: Option<Vec<StubRange>>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         receive: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        gaps: Option<Vec<StubRange>>,
     },
     Event(Event),
     EndEvents,
@@ -979,12 +985,13 @@ impl Node {
                 media: self.media_held().await.ok(),
                 stubs: self.journal.wanted_stub_ranges()?,
                 receive: self.journal.is_write_only()?.then_some(false),
+                gaps: self.journal.declared_gaps()?,
             },
         )
         .await?;
 
-        let (peer_heads, peer_device, peer_media, peer_stubs, peer_receive) = match read_msg(&mut recv).await? {
-            Some(Msg::HelloAck { heads, device, media, stubs, receive }) => (heads, device, media, stubs, receive),
+        let (peer_heads, peer_device, peer_media, peer_stubs, peer_receive, peer_gaps) = match read_msg(&mut recv).await? {
+            Some(Msg::HelloAck { heads, device, media, stubs, receive, gaps }) => (heads, device, media, stubs, receive, gaps),
             Some(other) => bail!("protocol violation: expected HelloAck, got {other:?}"),
             None => bail!("peer closed during handshake (bad journal secret?)"),
         };
@@ -996,7 +1003,7 @@ impl Node {
             match read_msg(&mut recv).await? {
                 // a write-only peer takes nothing in, even from a peer that sends anyway
                 Some(Msg::Event(_)) if write_only => {}
-                Some(Msg::Event(ev)) => match self.journal.store.insert_remote_outcome(&ev)? {
+                Some(Msg::Event(ev)) => match self.journal.store.insert_remote_outcome_with(&ev, peer_gaps.as_deref().unwrap_or(&[]))? {
                     crate::store::RemoteOutcome::New => report.received += 1,
                     crate::store::RemoteOutcome::Filled => report.stubs_filled += 1,
                     crate::store::RemoteOutcome::Duplicate => {}
@@ -1590,16 +1597,16 @@ impl ProtocolHandler for SyncProto {
         }
         let (mut send, mut recv) = connection.accept_bi().await?;
 
-        let (heads, initiator_addr, initiator_device, initiator_media, initiator_stubs, initiator_receive) =
+        let (heads, initiator_addr, initiator_device, initiator_media, initiator_stubs, initiator_receive, initiator_gaps) =
             match read_msg(&mut recv).await.map_err(acc)? {
-                Some(Msg::Hello { auth, heads, addr, device, media, stubs, receive }) => {
+                Some(Msg::Hello { auth, heads, addr, device, media, stubs, receive, gaps }) => {
                     if auth != auth_token(self.journal.secret()) {
                         connection.close(VarInt::from(CLOSE_BAD_AUTH), b"bad auth");
                         return Err(AcceptError::from_err(std::io::Error::other(
                             "peer failed journal auth",
                         )));
                     }
-                    (heads, addr.to_addr().map_err(acc)?, device, media, stubs, receive)
+                    (heads, addr.to_addr().map_err(acc)?, device, media, stubs, receive, gaps)
                 }
                 _ => {
                     return Err(AcceptError::from_err(std::io::Error::other(
@@ -1618,6 +1625,7 @@ impl ProtocolHandler for SyncProto {
                 media: my_media,
                 stubs: self.journal.wanted_stub_ranges().map_err(acc)?,
                 receive: self.journal.is_write_only().map_err(acc)?.then_some(false),
+                gaps: self.journal.declared_gaps().map_err(acc)?,
             },
         )
         .await
@@ -1648,7 +1656,7 @@ impl ProtocolHandler for SyncProto {
             match read_msg(&mut recv).await.map_err(acc)? {
                 Some(Msg::Event(_)) if i_am_write_only => {} // a write-only peer takes nothing in
                 Some(Msg::Event(ev)) => {
-                    if self.journal.store.insert_remote_outcome(&ev).map_err(acc)? == crate::store::RemoteOutcome::Filled {
+                    if self.journal.store.insert_remote_outcome_with(&ev, initiator_gaps.as_deref().unwrap_or(&[])).map_err(acc)? == crate::store::RemoteOutcome::Filled {
                         filled += 1;
                     }
                 }

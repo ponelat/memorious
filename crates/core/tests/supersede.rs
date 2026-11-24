@@ -7,7 +7,7 @@
 use memorious_core::node::Node;
 use memorious_core::retention::{Retain, RetentionPolicy};
 use memorious_core::store::now_ms;
-use memorious_core::{Event, Journal, Payload};
+use memorious_core::{Event, Journal};
 use serde_json::{json, Value};
 use tempfile::tempdir;
 
@@ -33,8 +33,9 @@ fn month_with_snapshot(j: &Journal, month: &str, n: u32) -> (Vec<Event>, Event) 
     (ops, snap)
 }
 
-fn is_stub(e: &Event) -> bool {
-    matches!(&e.payload, Payload::Unknown { type_tag, .. } if type_tag == "collected")
+/// A collected event leaves NO row: only a local record of the `seq` range it occupied (see `store.rs`, `supersede.rs`).
+fn is_gone(j: &Journal, e: &Event) -> bool {
+    !j.store_events_for_test().iter().any(|x| x.event_id == e.event_id)
 }
 
 fn by_id(j: &Journal, id: &str) -> Event {
@@ -51,35 +52,36 @@ fn a_device_that_keeps_revisions_never_collects() {
     let (_d, j) = journal(); // default policy: keep everything
     let (ops, _) = month_with_snapshot(&j, "2026-10", 3);
     assert_eq!(j.collect_superseded_at(now_ms() + 3650 * DAY).unwrap().events_collected, 0);
-    assert!(ops.iter().all(|o| !is_stub(&by_id(&j, &o.event_id))));
+    assert!(ops.iter().all(|o| !is_gone(&j, o)));
 }
 
 #[test]
-fn a_phone_collects_superseded_ops_after_its_window_counted_from_when_it_got_the_snapshot() {
+fn a_phone_collects_superseded_ops_after_its_window_leaving_no_rows_only_a_range() {
     let (_d, j) = journal();
     j.set_retention_policy(&phone()).unwrap();
     let (ops, snap) = month_with_snapshot(&j, "2026-10", 3);
     let keep = j.append_ink("2026-11", stroke(9)).unwrap(); // another month, nothing supersedes it
     let heads = j.store_heads_for_test();
+    let rows_before = j.store_events_for_test().len();
 
     assert_eq!(j.collect_superseded_at(now_ms() + 29 * DAY).unwrap().events_collected, 0, "inside the 30-day window");
     assert_eq!(j.collect_superseded_at(now_ms() + 31 * DAY).unwrap().events_collected, 3);
     for o in &ops {
-        let s = by_id(&j, &o.event_id);
-        assert!(is_stub(&s));
-        // the envelope is untouched: sync's contiguity depends on (device_id, seq)
-        assert_eq!((&s.device_id, s.seq, s.recorded_at, &s.kind), (&o.device_id, o.seq, o.recorded_at, &o.kind));
-        let v = serde_json::to_value(&s).unwrap();
-        assert_eq!(v["payload"]["by"], snap.event_id.as_str());
-        assert_eq!(v["payload"]["was"], "ink");
+        assert!(is_gone(&j, o), "the collected op has no row at all (the log is not padded with stubs)");
     }
-    assert!(!is_stub(&by_id(&j, &snap.event_id)) && !is_stub(&by_id(&j, &keep.event_id)));
-    assert_eq!(j.store_heads_for_test(), heads, "no seq changes");
+    assert_eq!(j.store_events_for_test().len(), rows_before - 3);
+    assert!(!is_gone(&j, &snap) && !is_gone(&j, &keep));
+    assert_eq!(j.store_heads_for_test(), heads, "heads still count what was collected: this device is not 'behind'");
     assert_eq!(j.collect_superseded_at(now_ms() + 40 * DAY).unwrap().events_collected, 0, "idempotent");
-    // counts for the detail pages
+
+    // what the detail pages show: how many, of what, which fold, and the time window the collected events cover
     let c = j.stub_counts().unwrap();
     assert_eq!(c.total, 3);
     assert_eq!(c.by_type.get("ink"), Some(&3));
+    assert_eq!(c.ranges.len(), 1);
+    let r = &c.ranges[0];
+    assert_eq!((r.device_id.as_str(), r.from_seq, r.to_seq, r.by.as_str(), r.count), (j.device_id(), ops[0].seq, ops[2].seq, snap.event_id.as_str(), 3));
+    assert_eq!((r.first_ms, r.last_ms), (ops[0].recorded_at, ops[2].recorded_at));
 }
 
 #[test]
@@ -90,7 +92,7 @@ fn collection_waits_until_a_backup_peer_is_known() {
     let (ops, _) = month_with_snapshot(&ja, "2026-10", 2);
     let far = now_ms() + 365 * DAY;
     assert_eq!(ja.collect_superseded_at(far).unwrap().events_collected, 0, "no peer is known to keep revisions");
-    assert!(!is_stub(&by_id(&ja, &ops[0].event_id)));
+    assert!(!is_gone(&ja, &ops[0]));
 
     // a second device declares it keeps revisions (its announcement syncs like any event)
     let jb = Journal::init_with_secret(&dir.path().join("b"), *ja.secret(), "pw").unwrap();
@@ -110,7 +112,7 @@ fn only_ink_can_be_collected_whatever_an_event_claims_to_supersede() {
     let note = j.annotate(&text.event_id, "a note").unwrap();
     j.append_ink("2026-10", json!({ "op": "ink_fold", "cid": "bad", "supersedes": [{ "id": text.event_id }, { "id": note.event_id }] })).unwrap();
     assert_eq!(j.collect_superseded_at(now_ms() + 365 * DAY).unwrap().events_collected, 0);
-    assert!(!is_stub(&by_id(&j, &text.event_id)) && !is_stub(&by_id(&j, &note.event_id)));
+    assert!(!is_gone(&j, &text) && !is_gone(&j, &note));
 }
 
 #[test]
@@ -121,9 +123,9 @@ fn the_latest_snapshot_wins_and_a_replaced_snapshot_is_collected_too() {
     // a re-snapshot (e.g. after an erase) supersedes the old snapshot as well
     let s2 = j.append_ink("2026-10", json!({ "op": "ink_fold", "cid": "snap2", "items": [], "supersedes": [{ "id": s1.event_id }] })).unwrap();
     let n = j.collect_superseded_at(now_ms() + 31 * DAY).unwrap().events_collected;
-    assert_eq!(n, 3, "the two ops and the old snapshot");
-    assert!(is_stub(&by_id(&j, &s1.event_id)) && is_stub(&by_id(&j, &ops[0].event_id)));
-    assert!(!is_stub(&by_id(&j, &s2.event_id)), "the newest snapshot keeps its content");
+    assert_eq!(n, 3, "the two ops and the old fold");
+    assert!(is_gone(&j, &s1) && is_gone(&j, &ops[0]));
+    assert!(!is_gone(&j, &s2), "the newest fold keeps its content");
 }
 
 #[test]
@@ -174,7 +176,7 @@ async fn status_reports_stub_counts() {
 }
 
 #[tokio::test]
-async fn a_peer_that_keeps_revisions_fills_its_stubs_from_a_peer_that_still_has_the_full_events() {
+async fn a_peer_that_keeps_revisions_fills_its_gaps_from_a_peer_that_still_has_the_full_events() {
     let dir = tempdir().unwrap();
     // A: a backup (keeps everything) that holds the full history
     let ja = Journal::init(&dir.path().join("a"), "pw").unwrap();
@@ -184,15 +186,17 @@ async fn a_peer_that_keeps_revisions_fills_its_stubs_from_a_peer_that_still_has_
     let jc = Journal::init_with_secret(&dir.path().join("c"), *ja.secret(), "pw").unwrap();
     let (a, p, c) = (Node::spawn(ja).await.unwrap(), Node::spawn(jp).await.unwrap(), Node::spawn(jc).await.unwrap());
 
-    // the phone syncs from A, then collects what the snapshot superseded
+    // the phone syncs from A, then collects what the fold superseded
     p.sync_events_with(&a.addr()).await.unwrap();
     assert_eq!(p.journal().collect_superseded_at(now_ms() + 31 * DAY).unwrap().events_collected, 3);
     assert_eq!(p.journal().stub_counts().unwrap().total, 3);
 
-    // a new backup C pulls from the phone first: it gets the snapshot and STUBS
+    // a new backup C pulls from the phone first: the phone declares its gap, so C accepts the jump in sequence numbers,
+    // gets the fold, and records the gap as ranges it does not hold
     c.sync_events_with(&p.addr()).await.unwrap();
-    assert_eq!(c.journal().stub_counts().unwrap().total, 3, "C holds stubs for now");
-    assert!(!is_stub(&by_id(c.journal(), &snap.event_id)));
+    assert_eq!(c.journal().stub_counts().unwrap().total, 3, "C knows it is missing 3 events");
+    assert!(c.journal().store_events_for_test().iter().any(|e| e.event_id == snap.event_id));
+    assert!(ops.iter().all(|o| is_gone(c.journal(), o)));
 
     // ...then connects to A, which has the full events: C asks for them, because its policy keeps revisions
     let r = c.sync_events_with(&a.addr()).await.unwrap();
@@ -202,7 +206,7 @@ async fn a_peer_that_keeps_revisions_fills_its_stubs_from_a_peer_that_still_has_
         assert_eq!(serde_json::to_value(by_id(c.journal(), &o.event_id)).unwrap(), serde_json::to_value(o).unwrap(), "byte-identical to the original");
     }
 
-    // the phone does not keep revisions, so it never asks A to refill its stubs
+    // the phone does not keep revisions, so it never asks A to refill its gaps
     let r = p.sync_events_with(&a.addr()).await.unwrap();
     assert_eq!(r.stubs_filled, 0);
     assert_eq!(p.journal().stub_counts().unwrap().total, 3);
@@ -212,21 +216,22 @@ async fn a_peer_that_keeps_revisions_fills_its_stubs_from_a_peer_that_still_has_
 }
 
 #[test]
-fn a_fill_must_match_the_stub_envelope_and_never_overwrites_a_full_event() {
+fn a_fill_only_goes_into_a_gap_this_device_knows_it_has_and_never_overwrites_an_existing_row() {
     let (_d, j) = journal();
     j.set_retention_policy(&phone()).unwrap();
     let (ops, _) = month_with_snapshot(&j, "2026-10", 1);
     let full = ops[0].clone();
-    // a full event arriving for an id we hold in full is an ordinary duplicate
-    assert!(!j.store_fill_for_test(&full), "never overwrites a full event");
+    assert!(!j.store_fill_for_test(&full), "an event we already hold in full is a plain duplicate");
     j.collect_superseded_at(now_ms() + 31 * DAY).unwrap();
-    assert!(is_stub(&by_id(&j, &full.event_id)));
-    // same id, different envelope (timestamp): refused
-    let mut forged = full.clone();
-    forged.recorded_at += 1;
-    assert!(!j.store_fill_for_test(&forged));
-    assert!(is_stub(&by_id(&j, &full.event_id)));
-    // the genuine event fills it
+    assert!(is_gone(&j, &full));
+    // an event for a seq we never collected (and hold no row for) is not a fill
+    let mut stray = full.clone();
+    stray.seq += 1000;
+    stray.event_id = "ev-stray".into();
+    assert!(!j.store_fill_for_test(&stray));
+    // the genuine event fills the gap and the gap disappears
     assert!(j.store_fill_for_test(&full));
     assert_eq!(serde_json::to_value(by_id(&j, &full.event_id)).unwrap(), serde_json::to_value(&full).unwrap());
+    assert_eq!(j.stub_counts().unwrap().total, 0);
+    assert!(!j.store_fill_for_test(&full), "filled once");
 }

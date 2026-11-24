@@ -544,7 +544,8 @@ function HistoryRow({ status, onChange }: { status: Status; onChange: () => void
       {!keeps && view && !view.has_backup_peer && <p className="hint">no peer has announced it keeps revisions, so nothing is collected yet</p>}
       {stubs && stubs.total > 0 ? (
         <p className="hint">
-          {stubs.total} stub{stubs.total === 1 ? '' : 's'} ({Object.entries(stubs.by_type).map(([t, n]) => `${n} ${t}`).join(', ')}) — full copies are not held here
+          {stubs.total} collected event{stubs.total === 1 ? '' : 's'} ({Object.entries(stubs.by_type).map(([t, n]) => `${n} ${t}`).join(', ')})
+          {stubs.ranges && stubs.ranges.length > 0 ? ` from ${prettyDate(Math.min(...stubs.ranges.map((r) => r.first_ms || Infinity)))} to ${prettyDate(Math.max(...stubs.ranges.map((r) => r.last_ms)))}` : ''} — full copies are not held here
           {keeps ? '; they fill in from any peer that has them' : ''}
         </p>
       ) : (

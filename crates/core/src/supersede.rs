@@ -1,15 +1,17 @@
-//! Superseding, collection, and the stub bookkeeping — the *facts* side. The *decision* (does this device keep or collect what is
+//! Superseding, collection, and the gap bookkeeping — the *facts* side. The *decision* (does this device keep or collect what is
 //! superseded, and when) is `retention.rs` rule 3; this module reads the log and applies it.
 //!
-//! An event may **supersede** earlier ones: it lists them in a `supersedes` property (today: an `ink_fold` op). That is a
-//! statement about the data, never an instruction to delete. Each device's own retention policy decides whether it keeps
-//! the superseded events (a backup: `superseded: Forever`) or **collects** them down to a stub (an active peer: after a window
-//! counted from when it received the superseding event). A stub keeps the event's envelope (`event_id`, `device_id`, `seq`,
-//! `recorded_at`, `kind`) so sync stays contiguous, with the payload replaced by `{type:"collected", by, was}`.
+//! An event may **supersede** earlier ones: it lists them in a `supersedes` property (today: an `ink_fold` op). That is a statement
+//! about the data, never an instruction to delete. Each device's own retention policy decides whether it keeps the superseded events
+//! (a backup: `superseded: Forever`) or **collects** them (an active peer: after a window counted from when it received the
+//! superseding event). Collecting **deletes the rows** — the log is not padded with stubs — and records, in this device's own
+//! `collected` table (local, never synced), the `seq` ranges the events occupied, which fold superseded them, what they were and the
+//! time window they cover. A device's heads still count them, so it is not "behind"; its handshake declares these ranges as **gaps**
+//! so a peer accepts the jump in sequence numbers (and records the gap, to fill later). A device that keeps revisions asks peers to
+//! fill the ranges it lacks (`stubs` handshake field); the full events go back into the gap (`Store::insert_remote_outcome_with`).
 //!
-//! Only canvas events can ever be collected (ink ops and snapshots): whatever an event claims to supersede, captures,
-//! annotations, redacts, key material and the like are never touched. A stub can later be **filled** with the genuine full event
-//! from any peer that still has it (`Store::insert_remote_outcome`; a device that keeps revisions asks for them, see `node.rs`).
+//! Only canvas events can ever be collected (ink ops and folds): whatever an event claims to supersede, captures, annotations,
+//! redacts, key material and the like are never touched.
 //!
 //! Refs in `supersedes`:
 //!
@@ -30,7 +32,7 @@ use crate::journal::Journal;
 use crate::retention::{superseded_disposition, Disposition};
 use crate::store::{StubCounts, StubRange};
 
-/// Most events served to a peer filling its stubs in one sync round (a big fill finishes over a few rounds).
+/// Most events served to a peer filling its gaps in one sync round (a big fill finishes over a few rounds).
 pub const FILL_CAP: usize = 5000;
 /// Most ranges a device advertises in one handshake.
 const MAX_RANGES: usize = 2000;
@@ -44,7 +46,7 @@ struct Supersession {
 
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct CollectReport {
-    /// Events turned into stubs.
+    /// Events collected (rows deleted, ranges recorded).
     pub events_collected: usize,
 }
 
@@ -62,10 +64,6 @@ fn supersedes_of(e: &Event) -> Vec<Value> {
 /// Only canvas events may ever be collected.
 fn is_collectable_kind(e: &Event) -> bool {
     e.kind == EventKind::Ink || matches!(&e.payload, Payload::Infra { infra_kind, .. } if infra_kind == "ink")
-}
-
-fn is_stub(e: &Event) -> bool {
-    matches!(&e.payload, Payload::Unknown { type_tag, .. } if type_tag == "collected")
 }
 
 impl Journal {
@@ -113,6 +111,7 @@ impl Journal {
         if policy.keeps_revisions() || (!policy.collect_without_backup && !self.has_backup_peer()?) {
             return Ok(report);
         }
+        let mut to_collect: Vec<(Event, String)> = Vec::new();
         for s in self.supersessions()? {
             let local = match self.store.local_received_at(&s.by)? {
                 Some(t) if t > 0 => t,
@@ -125,13 +124,12 @@ impl Journal {
                 continue;
             }
             let Some(e) = self.store.get_event(&s.event_id)? else { continue };
-            if !is_collectable_kind(&e) || is_stub(&e) {
+            if !is_collectable_kind(&e) {
                 continue;
             }
-            let was = e.payload_json().get("type").and_then(Value::as_str).unwrap_or("").to_string();
-            self.store.stub_event(&e.event_id, &json!({ "type": "collected", "by": s.by, "was": was }))?;
-            report.events_collected += 1;
+            to_collect.push((e, s.by.clone()));
         }
+        report.events_collected = self.store.collect_events(&to_collect)?;
         Ok(report)
     }
 
@@ -151,6 +149,13 @@ impl Journal {
         if !self.retention_policy()?.keeps_revisions() {
             return Ok(None);
         }
+        let ranges = self.store.stub_ranges(MAX_RANGES)?;
+        Ok((!ranges.is_empty()).then_some(ranges))
+    }
+
+    /// The ranges this device collected, to declare as gaps in the handshake (always, whatever its policy: the peer must accept the
+    /// jump in sequence numbers). `None` when there are none.
+    pub fn declared_gaps(&self) -> Result<Option<Vec<StubRange>>> {
         let ranges = self.store.stub_ranges(MAX_RANGES)?;
         Ok((!ranges.is_empty()).then_some(ranges))
     }
