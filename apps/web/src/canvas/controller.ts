@@ -15,7 +15,7 @@ export interface ToolSetting {
 }
 export type Settings = Record<Tool, ToolSetting>
 /** The toolbar's tools: three that draw, two that select. */
-/** `wipe` = a lasso that erases everything inside it, in this period AND in every earlier period that is showing. */
+/** `wipe` = a lasso whose selection reaches every earlier period that is showing: move, duplicate or erase it across time. */
 export type UiTool = Tool | 'lasso' | 'rect' | 'wipe'
 /** A 24 px cursor drawn from the tool's icon: a white halo under the orange line so it reads on light and dark, with the
  *  hot spot at the working tip. */
@@ -31,6 +31,12 @@ const CURSORS: Record<UiTool, string> = {
   lasso: cursorOf('M6 9c0-3 6-5 10-3s3 7-1 9-8 1-9-2M10 17c0 2 1 3 3 4', 13, 21, "stroke-dasharray='3 2.4'"),
   rect: 'crosshair',
   wipe: cursorOf('M6 9c0-3 6-5 10-3s3 7-1 9-8 1-9-2M10 17c0 2 1 3 3 4M4 4l16 16', 13, 21, "stroke-dasharray='3 2.4'"),
+}
+/** The part of a selection that lives in one earlier period. */
+interface SelPart {
+  month: string
+  ids: string[]
+  pieces: Item[]
 }
 const isSelect = (t: UiTool) => t === 'lasso' || t === 'rect' || t === 'wipe'
 const isDraw = (t: UiTool): t is Tool => !isSelect(t)
@@ -122,10 +128,12 @@ export class CanvasController {
     return this.log.events()
   }
   private items: Item[] = []
-  private sel: { poly: Poly; ids: string[]; pieces: Item[]; bbox: BBox } | null = null
+  /** The selection. `ids`/`pieces` are this period's; `others` are the same shape's ink in each earlier period that is showing (wipe tool only). */
+  private sel: { poly: Poly; ids: string[]; pieces: Item[]; others: SelPart[]; bbox: BBox } | null = null
   private lassoPath: Poly | null = null
   private rectStart: [number, number] | null = null
   private lift: { poly: Poly; only?: string[]; ids: string[] } | null = null // the selection is being dragged: draw the canvas without it
+  private liftOthers = new Map<string, { poly: Poly; only?: string[]; ids: string[] }>() // ...and the same for each earlier period it reaches
   private drag: { mode: 'move' | 'scale'; sx: number; sy: number; d0: number; cx: number; cy: number } | null = null
   private dragXf: Xf | null = null
   /** Offset mode (finger): the tool's position (world) — a tap sets it, a drag moves it relatively. */
@@ -444,6 +452,8 @@ export class CanvasController {
 
   private monthItems(m: string) {
     const log = this.data.log(m)
+    const lf = this.liftOthers.get(m)
+    if (lf) return fold(log.events(), [{ type: 'delete', poly: lf.poly, only: lf.only, ids: lf.ids }]) // being dragged: draw it without the lifted ink
     let e = this.others.get(m)
     if (!e || e.v !== log.version) this.others.set(m, (e = { v: log.version, items: fold(log.events()) }))
     return e.items
@@ -460,7 +470,7 @@ export class CanvasController {
     const { base, imgs, ink } = this.ctx
     // other months, oldest first, dimmed, underneath — redrawn only if something they depend on changed
     const months = [...this.visibleMonths].sort()
-    const baseKey = [W, H, this.view.x, this.view.y, this.view.z, this.layers.pencil, this.layers.pen, this.layers.image, this.bitmapsLoaded, this.dimLevel, months.map((m) => m + ':' + this.data.log(m).version).join(',')].join('|')
+    const baseKey = [W, H, this.view.x, this.view.y, this.view.z, this.layers.pencil, this.layers.pen, this.layers.image, this.bitmapsLoaded, this.dimLevel, [...this.liftOthers.keys()].join('+'), months.map((m) => m + ':' + this.data.log(m).version).join(',')].join('|')
     if (baseKey !== this.baseKey) {
       this.baseKey = baseKey
       base.clearRect(0, 0, W, H)
@@ -579,51 +589,86 @@ export class CanvasController {
     this.refreshSelectionView()
     this.drawOverlay()
   }
-  private selectPoly(poly: Poly) {
-    const { pieces, ids } = piecesIn(fold(this.events), poly, this.layers)
-    if (!pieces.length) return this.clearSel()
-    this.sel = { poly, ids, pieces, bbox: bboxOf(pieces) }
+  /** The shape's ink in each earlier period that is showing (wipe tool): the same lasso, across time. */
+  private partsIn(poly: Poly): SelPart[] {
+    if (this.tool !== 'wipe') return []
+    const parts: SelPart[] = []
+    for (const m of [...this.visibleMonths].sort()) {
+      const { pieces, ids } = piecesIn(this.monthItems(m), poly, this.layers)
+      if (pieces.length) parts.push({ month: m, ids, pieces })
+    }
+    return parts
+  }
+  private setSel(poly: Poly, mine: { ids: string[]; pieces: Item[] }, others: SelPart[]) {
+    if (!mine.pieces.length && !others.length) return this.clearSel()
+    this.sel = { poly, ids: mine.ids, pieces: mine.pieces, others, bbox: bboxOf([...mine.pieces, ...others.flatMap((o) => o.pieces)]) }
     this.refreshSelectionView()
     this.drawOverlay()
+  }
+  private selectPoly(poly: Poly) {
+    this.setSel(poly, piecesIn(fold(this.events), poly, this.layers), this.partsIn(poly))
   }
   /** The journal changed under a selection (our own op coming back stamped, or a peer's): keep holding the same ink.
    *  Its ids are stable, so look the pieces up again; the selection only goes if all of it is gone. */
   private refreshSelection() {
     const s = this.sel
     if (!s || this.drag) return
-    const ids = new Set(s.ids)
-    const { pieces } = piecesIn(fold(this.events).filter((it) => ids.has(it.id)), s.poly, this.layers)
-    if (!pieces.length) return this.clearSel()
+    const again = (items: Item[], ids: string[]) => {
+      const want = new Set(ids)
+      return piecesIn(items.filter((it) => want.has(it.id)), s.poly, this.layers).pieces
+    }
+    const pieces = again(fold(this.events), s.ids)
+    const others = s.others.map((o) => ({ ...o, pieces: again(this.monthItems(o.month), o.ids) })).filter((o) => o.pieces.length)
+    if (!pieces.length && !others.length) return this.clearSel()
     s.pieces = pieces
-    s.bbox = bboxOf(pieces)
+    s.others = others
+    s.bbox = bboxOf([...pieces, ...others.flatMap((o) => o.pieces)])
     this.refreshSelectionView()
     this.drawOverlay()
   }
-  /** After a move / duplicate: select exactly the pieces that op produced — not whatever else sits where they landed. */
-  private selectMoved(poly: Poly, opId: string) {
-    const items = fold(this.events)
-    const mine = items.filter((it) => it.tool !== 'eraser' && it.id.includes(`~${opId}i`) && this.layers[layerOf(it)])
-    if (!mine.length) return this.clearSel()
-    this.sel = { poly, ids: mine.map((it) => it.id), pieces: mine, bbox: bboxOf(mine) }
-    this.refreshSelectionView()
-    this.drawOverlay()
+  /** After a move / duplicate: select exactly the pieces that op produced (in this period and, for the wipe tool, in each earlier
+   *  one) — not whatever else sits where they landed. */
+  private selectMoved(poly: Poly, opId: string | null, otherOps: { month: string; opId: string }[] = []) {
+    const pick = (items: Item[], id: string) => items.filter((it) => it.tool !== 'eraser' && it.id.includes(`~${id}i`) && this.layers[layerOf(it)])
+    const mine = opId ? pick(fold(this.events), opId) : []
+    const others = otherOps.map((o) => ({ month: o.month, pieces: pick(this.monthItems(o.month), o.opId) })).filter((o) => o.pieces.length).map((o) => ({ ...o, ids: o.pieces.map((it) => it.id) }))
+    this.setSel(poly, { ids: mine.map((it) => it.id), pieces: mine }, others)
+  }
+  /** Write an op into an earlier period's own log (earlier periods are read-only on the canvas, so this is how the wipe tool reaches them). */
+  private addEarlier(month: string, ev: Ev): string {
+    const op = this.data.log(month).addEvent(ev)
+    this.data.added(month)
+    return op.cid
+  }
+  /** Apply one op to this period (if the selection has ink here) and to each earlier period it reaches. Returns the op ids. */
+  private applyToSelection(make: (ids: string[]) => Ev) {
+    const s = this.sel!
+    const mine = s.ids.length ? this.pushEvent(make(s.ids)).cid : null
+    const others = s.others.map((o) => ({ month: o.month, opId: this.addEarlier(o.month, make(o.ids)) }))
+    if (others.length) this.hooks.onChange()
+    return { mine, others }
   }
   deleteSelection() {
     const s = this.sel
     if (!s) return
-    this.pushEvent({ type: 'delete', poly: s.poly, only: onlyList(this.layers), ids: s.ids })
+    if (s.others.length && !window.confirm(`Erase this from ${s.others.length + 1} periods? Erasing in earlier periods cannot be undone from here.`)) return
+    const only = onlyList(this.layers)
+    this.applyToSelection((ids) => ({ type: 'delete', poly: s.poly, only, ids }))
     this.sel = null
+    this.refreshSelectionView()
     this.rebuild()
+    this.drawOverlay()
   }
   duplicateSelection() {
     const s = this.sel
     if (!s) return
     const o = 24 / this.view.z
     const xf: Xf = { dx: o, dy: o, s: 1, cx: (s.bbox[0] + s.bbox[2]) / 2, cy: (s.bbox[1] + s.bbox[3]) / 2 }
-    const op = this.pushEvent({ type: 'move', poly: s.poly, xf, copy: true, only: onlyList(this.layers), ids: s.ids })
+    const only = onlyList(this.layers)
+    const { mine, others } = this.applyToSelection((ids) => ({ type: 'move', poly: s.poly, xf, copy: true, only, ids }))
     this.sel = null
     this.rebuild()
-    this.selectMoved(xfPoly(s.poly, xf), op.cid)
+    this.selectMoved(xfPoly(s.poly, xf), mine, others)
   }
 
   private selDown(e: PointerEvent) {
@@ -650,16 +695,30 @@ export class CanvasController {
   private beginDrag(mode: 'move' | 'scale', w: [number, number], cx: number, cy: number) {
     const s = this.sel!
     this.selActive = true
-    this.lift = { poly: s.poly, only: onlyList(this.layers), ids: s.ids }
+    const only = onlyList(this.layers)
+    this.lift = { poly: s.poly, only, ids: s.ids }
+    this.liftOthers = new Map(s.others.map((o) => [o.month, { poly: s.poly, only, ids: o.ids }]))
     this.dragXf = { dx: 0, dy: 0, s: 1, cx, cy }
     this.drag = { mode, sx: w[0], sy: w[1], d0: Math.max(1e-6, Math.hypot(w[0] - cx, w[1] - cy)), cx, cy }
     this.rebuild() // main canvas without the selection
+    // the lifted ink, drawn once into the floating layer: earlier periods' parts at their dimmed brightness, this period's on top
     const { W, H } = this.buf
-    this.buf.clear(this.view)
-    this.stampAll(s.pieces)
-    this.buf.dirty = [0, 0, W, H]
-    this.buf.flush(this.ctx.float, this.layers)
-    this.drawImages(this.ctx.float, s.pieces)
+    const f = this.ctx.float
+    const tmp = this.tmpInk.getContext('2d')!
+    f.clearRect(0, 0, W, H)
+    const groups = [...s.others.map((o) => ({ pieces: o.pieces, alpha: this.dimLevel })), { pieces: s.pieces, alpha: 1 }]
+    for (const g of groups) {
+      if (!g.pieces.length) continue
+      this.buf.clear(this.view)
+      this.stampAll(g.pieces)
+      this.buf.dirty = [0, 0, W, H]
+      tmp.clearRect(0, 0, W, H)
+      this.buf.flush(tmp, this.layers)
+      f.globalAlpha = g.alpha
+      f.drawImage(this.tmpInk, 0, 0)
+      this.drawImages(f, g.pieces)
+      f.globalAlpha = 1
+    }
   }
 
   private selMove(e: PointerEvent) {
@@ -691,19 +750,20 @@ export class CanvasController {
     this.selActive = false
     const xf = this.dragXf
     if (this.drag && xf && this.sel) {
-      const { poly, ids } = this.sel
+      const { poly } = this.sel
       const only = this.lift?.only
       this.drag = null
       this.dragXf = null
       this.lift = null
+      this.liftOthers = new Map()
       if (isIdentity(xf)) {
         this.rebuild()
         this.drawOverlay()
         return
       }
-      const op = this.pushEvent({ type: 'move', poly, xf, only, ids })
+      const { mine, others } = this.applyToSelection((ids) => ({ type: 'move', poly, xf, only, ids }))
       this.rebuild()
-      this.selectMoved(xfPoly(poly, xf), op.cid)
+      this.selectMoved(xfPoly(poly, xf), mine, others)
       return
     }
     const path = this.lassoPath
@@ -713,29 +773,7 @@ export class CanvasController {
     const poly = this.tool === 'rect' ? path : simplifyPoly(path, 1.5 / this.view.z)
     const [x0, y0, x1, y1] = [Math.min(...poly.map((p) => p[0])), Math.min(...poly.map((p) => p[1])), Math.max(...poly.map((p) => p[0])), Math.max(...poly.map((p) => p[1]))]
     if (poly.length < 3 || (x1 - x0) * this.view.z < 4 || (y1 - y0) * this.view.z < 4) return this.drawOverlay()
-    if (this.tool === 'wipe') return this.wipeRegion(poly)
     this.selectPoly(poly)
-  }
-
-  /** Erase everything inside `poly` from this period and from every earlier period that is showing. Earlier periods are read-only on
-   *  the canvas, so the erase is an ordinary `delete` op written into each period's own log: folds and later ops carry it (a fold
-   *  is the base, the delete folds on top), nothing in the journal is removed. Only the layers that are visible are touched. */
-  private wipeRegion(poly: Poly) {
-    const periods = [this.month, ...this.visibleMonths]
-    const where = periods.length === 1 ? 'this period' : `${periods.length} periods`
-    if (!window.confirm(`Erase everything inside this shape from ${where}?${periods.length > 1 ? ' Erasing in earlier periods cannot be undone from here.' : ''}`)) return this.drawOverlay()
-    const only = onlyList(this.layers)
-    for (const m of periods) {
-      const ev: Ev = { type: 'delete', poly: poly.map(([x, y]) => [+x.toFixed(1), +y.toFixed(1)] as [number, number]), only }
-      if (m === this.month) this.pushEvent(ev) // this period: undoable like any edit
-      else {
-        this.data.log(m).addEvent(ev)
-        this.data.added(m)
-      }
-    }
-    this.hooks.onChange()
-    this.rebuild()
-    this.drawOverlay()
   }
 
   // ── events ─────────────────────────────────────────────────────────────
@@ -937,6 +975,7 @@ export class CanvasController {
         this.drag = null
         this.dragXf = null
         this.lift = null
+        this.liftOthers = new Map()
         this.rebuild()
       }
       this.drawOverlay()
