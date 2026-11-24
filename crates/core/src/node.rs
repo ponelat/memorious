@@ -31,7 +31,7 @@ use zeroize::Zeroize;
 
 use crate::event::{AudioKind, Event, MediaKind, Payload};
 use crate::journal::{Journal, MediaHeld, SECRET_LEN};
-use crate::store::Heads;
+use crate::store::{Heads, StubRange};
 
 /// Blob GC cadence for real peers; see retention.rs for what GC may drop.
 pub const DEFAULT_GC_INTERVAL: Duration = Duration::from_secs(10 * 60);
@@ -101,6 +101,10 @@ enum Msg {
         /// what it holds of the events). Optional for wire compat.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         media: Option<MediaHeld>,
+        /// Stubs the sender holds and wants the receiver to fill with full events, if it has them (only a device that keeps
+        /// revisions asks). Optional for wire compat: an older peer ignores it and simply serves nothing extra.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        stubs: Option<Vec<StubRange>>,
     },
     HelloAck {
         heads: Heads,
@@ -108,6 +112,8 @@ enum Msg {
         device: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         media: Option<MediaHeld>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        stubs: Option<Vec<StubRange>>,
     },
     Event(Event),
     EndEvents,
@@ -119,6 +125,8 @@ pub struct SyncReport {
     pub sent: usize,
     pub received: usize,
     pub blobs_fetched: usize,
+    /// Stubs this sync replaced with their full events.
+    pub stubs_filled: usize,
 }
 
 /// Outcome of syncing one remembered peer. A failure never hides other outcomes.
@@ -237,6 +245,9 @@ pub struct PeerInfo {
     /// Whether the health light waits on this peer (default yes; a local
     /// per-device mark, not synced).
     pub required: bool,
+    /// Stubs this peer has filled for us (running total).
+    #[serde(default)]
+    pub stubs_filled: u64,
 }
 
 /// Private, loopback, or link-local — "same network" for the status UI.
@@ -458,9 +469,9 @@ impl Node {
             let cb: iroh_blobs::store::ProtectCb = Arc::new(move |live: &mut HashSet<Hash>| {
                 let journal = protect_journal.clone();
                 Box::pin(async move {
-                    // compaction rides the GC pass: turn superseded-and-past-lease events into stubs (derived.rs)
-                    if let Err(err) = journal.collect() {
-                        tracing::warn!("derived: collection skipped: {err:#}");
+                    // collection rides the GC pass: superseded canvas events past this device's window become stubs (supersede.rs)
+                    if let Err(err) = journal.collect_superseded() {
+                        tracing::warn!("superseded: collection skipped: {err:#}");
                     }
                     match live_blob_hashes(&journal) {
                         Ok(hashes) => {
@@ -941,12 +952,13 @@ impl Node {
                 addr: AddrWire::from_addr(&my_addr),
                 device: Some(self.journal.device_id().to_string()),
                 media: self.media_held().await.ok(),
+                stubs: self.journal.wanted_stub_ranges()?,
             },
         )
         .await?;
 
-        let (peer_heads, peer_device, peer_media) = match read_msg(&mut recv).await? {
-            Some(Msg::HelloAck { heads, device, media }) => (heads, device, media),
+        let (peer_heads, peer_device, peer_media, peer_stubs) = match read_msg(&mut recv).await? {
+            Some(Msg::HelloAck { heads, device, media, stubs }) => (heads, device, media, stubs),
             Some(other) => bail!("protocol violation: expected HelloAck, got {other:?}"),
             None => bail!("peer closed during handshake (bad journal secret?)"),
         };
@@ -955,11 +967,11 @@ impl Node {
         let mut report = SyncReport::default();
         loop {
             match read_msg(&mut recv).await? {
-                Some(Msg::Event(ev)) => {
-                    if self.journal.store.insert_remote(&ev)? {
-                        report.received += 1;
-                    }
-                }
+                Some(Msg::Event(ev)) => match self.journal.store.insert_remote_outcome(&ev)? {
+                    crate::store::RemoteOutcome::New => report.received += 1,
+                    crate::store::RemoteOutcome::Filled => report.stubs_filled += 1,
+                    crate::store::RemoteOutcome::Duplicate => {}
+                },
                 Some(Msg::EndEvents) => break,
                 Some(other) => bail!("protocol violation: expected Event/EndEvents, got {other:?}"),
                 None => bail!("peer closed mid event stream"),
@@ -967,7 +979,12 @@ impl Node {
         }
 
         // Send what the peer is missing.
-        for ev in self.journal.store.events_missing_from(&peer_heads)? {
+        let mut to_send = self.journal.store.events_missing_from(&peer_heads)?;
+        if let Some(ranges) = &peer_stubs {
+            // the peer keeps revisions and holds stubs: give it the full events we still have for them
+            to_send.extend(self.journal.store.full_events_in_ranges(ranges, crate::supersede::FILL_CAP)?);
+        }
+        for ev in to_send {
             write_msg(&mut send, &Msg::Event(ev)).await?;
             report.sent += 1;
         }
@@ -988,6 +1005,7 @@ impl Node {
             peer_device.as_deref(),
             "ticket",
         )?;
+        self.journal.record_stubs_filled(&addr.id.to_string(), report.stubs_filled)?;
         // Converged: the peer now holds exactly our heads.
         self.journal.record_peer_holdings(
             &addr.id.to_string(),
@@ -1074,6 +1092,7 @@ impl Node {
                 media: holdings.media,
                 media_missing,
                 required: self.journal.peer_required(&endpoint_id_for_required)?,
+                stubs_filled: self.journal.peer_stubs_filled(&endpoint_id_for_required),
             });
         }
         out.sort_by_key(|p| std::cmp::Reverse(p.last_ok_ms));
@@ -1093,6 +1112,10 @@ impl Node {
         let mut v = serde_json::json!({
             "device_id": journal.device_id(),
             "isolated": journal.is_isolated()?,
+            "stubs": journal.stub_counts()?,
+            "retention": journal.retention_policy()?,
+            "keeps_revisions": journal.retention_policy()?.keeps_revisions(),
+            "peer_policies": journal.peer_policies()?,
             "entries": timeline.entries,
             "trash": journal.trash()?.len(),
             "heads": journal.store.heads()?,
@@ -1537,16 +1560,16 @@ impl ProtocolHandler for SyncProto {
         }
         let (mut send, mut recv) = connection.accept_bi().await?;
 
-        let (heads, initiator_addr, initiator_device, initiator_media) =
+        let (heads, initiator_addr, initiator_device, initiator_media, initiator_stubs) =
             match read_msg(&mut recv).await.map_err(acc)? {
-                Some(Msg::Hello { auth, heads, addr, device, media }) => {
+                Some(Msg::Hello { auth, heads, addr, device, media, stubs }) => {
                     if auth != auth_token(self.journal.secret()) {
                         connection.close(VarInt::from(CLOSE_BAD_AUTH), b"bad auth");
                         return Err(AcceptError::from_err(std::io::Error::other(
                             "peer failed journal auth",
                         )));
                     }
-                    (heads, addr.to_addr().map_err(acc)?, device, media)
+                    (heads, addr.to_addr().map_err(acc)?, device, media, stubs)
                 }
                 _ => {
                     return Err(AcceptError::from_err(std::io::Error::other(
@@ -1563,17 +1586,21 @@ impl ProtocolHandler for SyncProto {
                 heads: my_heads,
                 device: Some(self.journal.device_id().to_string()),
                 media: my_media,
+                stubs: self.journal.wanted_stub_ranges().map_err(acc)?,
             },
         )
         .await
         .map_err(acc)?;
 
-        // Send the initiator what it's missing.
-        let to_send = self
+        // Send the initiator what it's missing (plus full events for any stubs it asked to have filled).
+        let mut to_send = self
             .journal
             .store
             .events_missing_from(&heads)
             .map_err(acc)?;
+        if let Some(ranges) = &initiator_stubs {
+            to_send.extend(self.journal.store.full_events_in_ranges(ranges, crate::supersede::FILL_CAP).map_err(acc)?);
+        }
         for ev in to_send {
             write_msg(&mut send, &Msg::Event(ev))
                 .await
@@ -1584,13 +1611,13 @@ impl ProtocolHandler for SyncProto {
             .map_err(acc)?;
 
         // Receive what we're missing.
+        let mut filled = 0usize;
         loop {
             match read_msg(&mut recv).await.map_err(acc)? {
                 Some(Msg::Event(ev)) => {
-                    self.journal
-                        .store
-                        .insert_remote(&ev)
-                        .map_err(acc)?;
+                    if self.journal.store.insert_remote_outcome(&ev).map_err(acc)? == crate::store::RemoteOutcome::Filled {
+                        filled += 1;
+                    }
                 }
                 Some(Msg::EndEvents) => break,
                 _ => {
@@ -1613,6 +1640,7 @@ impl ProtocolHandler for SyncProto {
             initiator_device.as_deref(),
             "inbound",
         );
+        let _ = self.journal.record_stubs_filled(&connection.remote_id().to_string(), filled);
         if let Ok(heads) = self.journal.store.heads() {
             let _ = self.journal.record_peer_holdings(
                 &connection.remote_id().to_string(),

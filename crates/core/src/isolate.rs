@@ -77,6 +77,9 @@ impl Journal {
     pub fn store_insert_remote_for_test(&self, e: &crate::event::Event) {
         self.store.insert_remote(e).unwrap();
     }
+    pub fn store_fill_for_test(&self, e: &crate::event::Event) -> bool {
+        self.store.insert_remote_outcome(e).unwrap() == crate::store::RemoteOutcome::Filled
+    }
     pub fn store_heads_for_test(&self) -> std::collections::BTreeMap<String, u64> {
         self.store.heads().unwrap()
     }

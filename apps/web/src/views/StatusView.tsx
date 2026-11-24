@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { api, ArchiveExport, ArchiveOptions, AgentKey, DownloadFile, ExportReport, NetConfig, PeerBuild, PeerInfo, PeerPing, Status } from '../api'
+import { api, RetentionView, ArchiveExport, ArchiveOptions, AgentKey, DownloadFile, ExportReport, NetConfig, PeerBuild, PeerInfo, PeerPing, Status } from '../api'
 import { agoLabel, edgeKind, MapPeer, PeerMap } from '../components/PeerMap'
 import { Appearance, onAppearanceChange, readAppearance, setAppearance } from '../appearance'
 
@@ -97,6 +97,9 @@ function holdingsLabel(peer: PeerInfo, status: Status): { text: string; behind: 
       text += ` · ${m.evictable} let go by its policy`
     }
   }
+  const keeps = peer.device_id ? status.peer_policies?.[peer.device_id] : undefined
+  if (keeps !== undefined) text += keeps ? ' · keeps revisions' : ' · visible data only'
+  if ((peer.stubs_filled ?? 0) > 0) text += ` · filled ${peer.stubs_filled} stubs for us`
   return { text, behind }
 }
 
@@ -504,6 +507,51 @@ function IsolationRow({ isolated, onChange }: { isolated: boolean; onChange: () 
       {isolated && <p className="hint">isolated — not syncing with anyone. new events stay on this peer.</p>}
       <button className="ghost" disabled={busy} onClick={() => void set(!isolated)}>
         {busy ? '…' : isolated ? 'end isolation' : 'isolate this peer…'}
+      </button>
+      {err && <p className="error">{err}</p>}
+    </>
+  )
+}
+
+/** What this device keeps. Superseded canvas events are kept (a backup) or collected to stubs after a window; stubs are counted here. */
+function HistoryRow({ status, onChange }: { status: Status; onChange: () => void }) {
+  const [view, setView] = useState<RetentionView | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
+  useEffect(() => {
+    void api.getRetention!().then(setView).catch(() => {})
+  }, [status.keeps_revisions])
+  async function set(preset: 'keep_everything' | 'phone') {
+    setBusy(true)
+    setErr(null)
+    try {
+      setView(await api.setRetention!(preset))
+      onChange()
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+  const keeps = view?.keeps_revisions ?? status.keeps_revisions ?? true
+  const stubs = status.stubs ?? view?.stubs
+  const days = view && view.policy.superseded.mode === 'after_days' ? view.policy.superseded.days : null
+  return (
+    <>
+      <p className="hint">
+        {keeps ? 'keeping everything, including revisions' : `keeping what's visible; superseded drawing history is collected${days ? ` after ${days} days` : ''}`}
+      </p>
+      {!keeps && view && !view.has_backup_peer && <p className="hint">no peer has announced it keeps revisions, so nothing is collected yet</p>}
+      {stubs && stubs.total > 0 ? (
+        <p className="hint">
+          {stubs.total} stub{stubs.total === 1 ? '' : 's'} ({Object.entries(stubs.by_type).map(([t, n]) => `${n} ${t}`).join(', ')}) — full copies are not held here
+          {keeps ? '; they fill in from any peer that has them' : ''}
+        </p>
+      ) : (
+        <p className="hint">no stubs</p>
+      )}
+      <button className="ghost" disabled={busy} onClick={() => void set(keeps ? 'phone' : 'keep_everything')}>
+        {busy ? '…' : keeps ? 'keep only what’s visible' : 'keep everything'}
       </button>
       {err && <p className="error">{err}</p>}
     </>
@@ -1040,6 +1088,14 @@ export function StatusView() {
               >
                 {copied ? 'ticket copied' : 'copy pairing ticket'}
               </button>
+            </dd>
+          </>
+        )}
+        {api.getRetention && (
+          <>
+            <dt>history</dt>
+            <dd>
+              <HistoryRow status={status} onChange={refresh} />
             </dd>
           </>
         )}

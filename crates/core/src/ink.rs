@@ -106,7 +106,7 @@ impl Journal {
         Ok(serde_json::json!({
             "device_id": self.device_id(),
             "cursor": evs.last().map(|(r, _)| *r).unwrap_or(after),
-            "events": evs.iter().map(|(_, e)| serde_json::json!({
+            "events": evs.iter().filter(|(_, e)| !matches!(&e.payload, crate::Payload::Unknown { type_tag, .. } if type_tag == "collected")).map(|(_, e)| serde_json::json!({
                 "event_id": e.event_id,
                 "device_id": e.device_id,
                 "recorded_at": e.recorded_at,

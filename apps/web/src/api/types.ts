@@ -93,6 +93,8 @@ export interface PeerInfo {
   media_missing?: number | null
   /** Whether the health light waits on this peer (default true; a local mark of this device). */
   required?: boolean
+  /** Stubs this peer has filled for us with full events (running total). */
+  stubs_filled?: number
 }
 
 export interface TimelineStats {
@@ -135,6 +137,12 @@ export interface Status {
   device_id: string
   /** This peer is out of the network: no sync in or out (see isolate). */
   isolated?: boolean
+  /** Collected stubs on this device (superseded canvas events kept as envelopes only) and of which original type. */
+  stubs?: { total: number; by_type: Record<string, number> }
+  /** Does this device keep revisions (superseded events)? False = it collects them after its window. */
+  keeps_revisions?: boolean
+  /** What each device last announced: does it keep revisions? (`peer_policy` events.) */
+  peer_policies?: Record<string, boolean>
   entries: number
   trash: number
   heads: Record<string, number>
@@ -207,6 +215,16 @@ export interface ArchiveExport {
   progress: { events: number; media_done: number; media_total: number; bytes: number } | null
 }
 
+/** What this device keeps (crates/core/src/retention.rs). Superseded = canvas ops a snapshot supersedes. */
+export interface RetentionView {
+  policy: { voice_audio: Retain; redacted: Retain; superseded: Retain; collect_without_backup: boolean }
+  keeps_revisions: boolean
+  /** Some other device has announced it keeps revisions. */
+  has_backup_peer: boolean
+  stubs: { total: number; by_type: Record<string, number> }
+}
+export type Retain = { mode: 'forever' } | { mode: 'after_days'; days: number }
+
 export interface ExportReport {
   path: string
   days: number
@@ -246,7 +264,8 @@ export interface SetupApi {
   /** 'locked': a journal exists but needs the master password this launch. */
   state(): Promise<'ready' | 'empty' | 'locked'>
   initFresh(password: string): Promise<void>
-  joinTicket(ticket: string, password: string): Promise<SyncReport>
+  /** `keep`: what this device keeps, chosen at join (default everything; changeable later in status). */
+  joinTicket(ticket: string, password: string, keep?: 'everything' | 'visible'): Promise<SyncReport>
   unlock(password: string): Promise<void>
 }
 
@@ -322,6 +341,9 @@ export interface JournalApi {
   syncNow?(ticket?: string): Promise<SyncReport>
   /** Mirror the journal as markdown by day plus media into a folder (desktop only). */
   exportJournal?(): Promise<ExportReport>
+  /** What this device keeps, and change it: `keep_everything` (a backup of the full history) or `phone` (visible data only). */
+  getRetention?(): Promise<RetentionView>
+  setRetention?(preset: 'keep_everything' | 'phone'): Promise<RetentionView>
   /** Isolate this peer (new address, forget every peer, refuse all sync; events untouched) or end isolation. Web only for now. */
   setIsolated?(on: boolean): Promise<void>
   /** Download the lossless archive (events as JSON/JSONL, JSON Schemas, decrypted media) as a zip. Web only for now. */

@@ -1092,3 +1092,33 @@ async fn isolate_over_http_resets_the_node_in_place_and_keeps_the_journal() {
     let _ = ticket_before;
     std::env::remove_var("MEMORIOUS_PASSWORD");
 }
+
+#[tokio::test]
+async fn retention_over_http_changes_what_this_device_keeps_and_announces_it() {
+    let (_dir, state) = test_state().await;
+    let router = app(wrap(state), None);
+    let get = || authed(Request::get("/api/retention")).body(Body::empty()).unwrap();
+    let post = |body: &str| {
+        authed(Request::post("/api/retention")).header(header::CONTENT_TYPE, "application/json").body(Body::from(body.to_string())).unwrap()
+    };
+
+    let v = body_json(router.clone().oneshot(get()).await.unwrap()).await;
+    assert_eq!(v["keeps_revisions"], true, "the default keeps everything");
+    assert_eq!(v["stubs"]["total"], 0);
+
+    let resp = router.clone().oneshot(post(r#"{"preset":"phone"}"#)).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let v = body_json(resp).await;
+    assert_eq!(v["keeps_revisions"], false);
+    assert_eq!(v["policy"]["superseded"]["days"], 30);
+    // announced to the network, and visible in status
+    let st = body_json(router.clone().oneshot(authed(Request::get("/api/status")).body(Body::empty()).unwrap()).await.unwrap()).await;
+    assert_eq!(st["keeps_revisions"], false);
+    let device = st["device_id"].as_str().unwrap();
+    assert_eq!(st["peer_policies"][device], false);
+
+    let resp = router.clone().oneshot(post(r#"{"preset":"keep_everything"}"#)).await.unwrap();
+    assert_eq!(body_json(resp).await["keeps_revisions"], true);
+    assert_eq!(router.clone().oneshot(post(r#"{"preset":"nope"}"#)).await.unwrap().status(), StatusCode::BAD_REQUEST);
+    assert_eq!(router.oneshot(post("{}")).await.unwrap().status(), StatusCode::BAD_REQUEST);
+}

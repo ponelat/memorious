@@ -71,6 +71,8 @@ async function saveResponse(resp: Response, filename: string): Promise<void> {
 }
 
 export const httpApi: JournalApi = {
+  getRetention: () => json('/api/retention'),
+  setRetention: (preset) => json('/api/retention', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ preset }) }),
   async setIsolated(on: boolean) {
     await request('/api/isolate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ isolate: on }) })
   },
@@ -320,11 +322,11 @@ export const httpApi: JournalApi = {
       })
       setToken(passcode)
     },
-    async joinTicket(ticket: string, passcode: string): Promise<SyncReport> {
+    async joinTicket(ticket: string, passcode: string, keep?: 'everything' | 'visible'): Promise<SyncReport> {
       await json('/api/setup/join', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ticket, passcode }),
+        body: JSON.stringify({ ticket, passcode, keep }),
       })
       setToken(passcode)
       return { received: 0, blobs: 0 }

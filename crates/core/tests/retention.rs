@@ -31,6 +31,7 @@ async fn phone_evicts_transcribed_voice_server_keeps_it_and_sync_restores_on_dem
     let eager = RetentionPolicy {
         voice_audio: Retain::AfterDays(0),
         redacted: Retain::AfterDays(0),
+        ..RetentionPolicy::KEEP_EVERYTHING
     };
     jp.set_retention_policy(&eager).unwrap();
 

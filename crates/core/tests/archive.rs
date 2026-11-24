@@ -33,9 +33,11 @@ async fn the_archive_is_valid_complete_and_checksummed() {
     j.set_device_name(j.device_id(), "test box").unwrap();
     let ink1 = j.append_ink("2026-11", json!({ "op": "stroke", "tool": "pen", "seed": 1, "size": 5, "cid": "c1", "pts": [[0, 0, 0.5, 0], [10, 10, 0.5, 0]] })).unwrap();
     j.append_ink("2026-11", json!({ "op": "undo", "target": "c1", "cid": "c2" })).unwrap();
-    // a snapshot that replaces the stroke, collected: the archive then holds a derived event and a collected stub
-    j.append_derived_at("ink_snapshot", json!([]), json!([{ "id": ink1.event_id }]), Some(1), json!({ "items": [] }), 1_000).unwrap();
-    assert_eq!(j.collect_at(10_000).unwrap().events_collected, 1);
+    // a snapshot that supersedes the stroke, collected on a device that doesn't keep revisions: the archive then holds a
+    // snapshot, a collected stub and a peer_policy announcement
+    j.set_retention_policy(&memorious_core::retention::RetentionPolicy { collect_without_backup: true, ..memorious_core::retention::RetentionPolicy::PHONE }).unwrap();
+    j.append_ink("2026-11", json!({ "op": "snapshot", "cid": "s1", "items": [], "supersedes": [{ "id": ink1.event_id }] })).unwrap();
+    assert_eq!(j.collect_superseded_at(memorious_core::store::now_ms() + 31 * 86_400_000).unwrap().events_collected, 1);
     j.ensure_version_seen().unwrap();
     j.ensure_peer_join().unwrap();
 
@@ -56,7 +58,7 @@ async fn the_archive_is_valid_complete_and_checksummed() {
     }
     // every kind we wrote is there, including infra and the redact itself (the log is lossless)
     let kinds: std::collections::BTreeSet<&str> = lines.iter().map(|l| l["kind"].as_str().unwrap()).collect();
-    for k in ["capture", "redact", "annotation", "infra", "ink", "derived"] {
+    for k in ["capture", "redact", "annotation", "infra", "ink"] {
         assert!(kinds.contains(k), "missing {k}");
     }
     assert!(lines.iter().any(|l| l["kind"] == "ink" && l["payload"]["op"] == "undo" && l["payload"]["month"] == "2026-11"));
@@ -68,6 +70,8 @@ async fn the_archive_is_valid_complete_and_checksummed() {
     let mv = jsonschema::validator_for(&serde_json::from_str::<Value>(MANIFEST_SCHEMA).unwrap()).unwrap();
     let errs: Vec<String> = mv.iter_errors(&manifest).map(|e| e.to_string()).collect();
     assert!(errs.is_empty(), "{errs:?}");
+    assert_eq!(manifest["stubs"]["total"], 1);
+    assert!(lines.iter().any(|l| l["kind"] == "infra" && l["payload"]["infra_kind"] == "peer_policy"));
     assert_eq!(manifest["events"]["sha256"], sha(raw.as_bytes()));
     assert_eq!(manifest["events"]["count"], lines.len());
     let ph = photo.blob_hash().unwrap();

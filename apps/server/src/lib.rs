@@ -237,6 +237,7 @@ pub fn app(state: RouterState, web_dist: Option<PathBuf>) -> Router {
         .route("/peers/required", post(set_peer_required))
         .route("/isolate", post(isolate))
         .route("/migrate-ink", post(migrate_ink))
+        .route("/retention", get(get_retention).post(set_retention))
         .route("/device-name", post(set_device_name))
         .route("/agents", get(list_agents).post(mint_agent))
         .route("/agents/{id}", axum::routing::delete(revoke_agent))
@@ -930,8 +931,63 @@ pub async fn reset_journal(state: &AppState) -> Result<Node> {
     let journal = Journal::init(&state.data_dir, &password)?;
     journal.ensure_device_name("web")?;
     journal.ensure_peer_join()?;
+    journal.ensure_peer_policy()?;
     journal.ensure_version_seen()?;
     Node::spawn(journal).await
+}
+
+fn join_policy(keep: Option<&str>) -> memorious_core::retention::RetentionPolicy {
+    use memorious_core::retention::RetentionPolicy;
+    match keep {
+        Some("visible") => RetentionPolicy::PHONE,
+        _ => RetentionPolicy::KEEP_EVERYTHING,
+    }
+}
+
+fn retention_view(state: &SharedState) -> anyhow::Result<serde_json::Value> {
+    use memorious_core::retention::RetentionPolicy;
+    let j = state.journal();
+    Ok(json!({
+        "policy": j.retention_policy()?,
+        "keeps_revisions": j.retention_policy()?.keeps_revisions(),
+        "has_backup_peer": j.has_backup_peer()?,
+        "stubs": j.stub_counts()?,
+        "presets": { "keep_everything": RetentionPolicy::KEEP_EVERYTHING, "phone": RetentionPolicy::PHONE },
+    }))
+}
+
+/// `GET /api/retention` — this device's retention policy (what it keeps), the presets, whether any other peer is known to keep
+/// revisions, and its stub counts.
+async fn get_retention(State(state): State<SharedState>) -> Response {
+    match retention_view(&state) {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => internal(e),
+    }
+}
+
+#[derive(Deserialize)]
+struct RetentionBody {
+    /// `"keep_everything"` or `"phone"`.
+    preset: Option<String>,
+    /// Or a full policy.
+    policy: Option<memorious_core::retention::RetentionPolicy>,
+}
+
+/// `POST /api/retention {preset | policy}` — change what this device keeps. A change announces itself (a `peer_policy` infra event)
+/// so peers learn whether this device keeps revisions.
+async fn set_retention(State(state): State<SharedState>, Json(body): Json<RetentionBody>) -> Response {
+    use memorious_core::retention::RetentionPolicy;
+    let policy = match (body.preset.as_deref(), body.policy) {
+        (Some("keep_everything"), _) => RetentionPolicy::KEEP_EVERYTHING,
+        (Some("phone"), _) => RetentionPolicy::PHONE,
+        (Some(other), _) => return err(StatusCode::BAD_REQUEST, &format!("unknown preset {other:?}")),
+        (None, Some(p)) => p,
+        (None, None) => return err(StatusCode::BAD_REQUEST, "send {preset} or {policy}"),
+    };
+    if let Err(e) = state.journal().set_retention_policy(&policy) {
+        return internal(e);
+    }
+    get_retention(State(state)).await
 }
 
 /// `POST /api/migrate-ink` → `{migrated: n}`: rewrite this peer's legacy `infra`/`ink` canvas events as first-class `ink`
@@ -1077,6 +1133,10 @@ async fn setup_passcode(State(state): State<SharedState>, Json(body): Json<Setup
 #[derive(Deserialize)]
 struct SetupJoinBody {
     ticket: String,
+    /// What this device keeps, chosen at join: `"everything"` (default: it is a backup of the full history, revisions included)
+    /// or `"visible"` (only what is visible; superseded canvas events are collected after a window). Changeable later.
+    #[serde(default)]
+    keep: Option<String>,
     /// Set explicitly right after joining rather than left to arrive with
     /// the rest of the synced log — same belt-and-braces reasoning as the
     /// EC2 peers' compose entrypoint (`docs/DEPLOY.md`): this device is
@@ -1112,6 +1172,7 @@ async fn setup_join(State(router_state): State<RouterState>, Json(body): Json<Se
     for step in [
         node.journal().ensure_device_name("web"),
         node.journal().ensure_peer_join(),
+        node.journal().set_retention_policy(&join_policy(body.keep.as_deref())), // announces whether this device keeps revisions
         node.journal().ensure_version_seen(),
         node.journal().set_passcode(&body.passcode).map(|_| ()),
     ] {

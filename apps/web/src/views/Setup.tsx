@@ -117,9 +117,10 @@ function NewJournal({ setup, onDone, onBack }: { setup: SetupApi; onDone: () => 
 function JoinJournal({ setup, onDone, onBack }: { setup: SetupApi; onDone: () => void; onBack: () => void }) {
   const [ticket, setTicket] = useState('')
   const [secret, setSecret] = useState('')
+  const [keep, setKeep] = useState<'everything' | 'visible'>('everything')
   const { busy, error, run } = useRun(onDone)
   const canJoin = !busy && ticket.trim() !== '' && secret !== ''
-  const join = () => canJoin && run(() => setup.joinTicket(ticket.trim(), secret))
+  const join = () => canJoin && run(() => setup.joinTicket(ticket.trim(), secret, keep))
 
   return (
     <BrandHero
@@ -145,6 +146,12 @@ function JoinJournal({ setup, onDone, onBack }: { setup: SetupApi; onDone: () =>
         onChange={(e) => setSecret(e.target.value)}
         onKeyDown={(e) => e.key === 'Enter' && join()}
       />
+      <label className="row">
+        <input type="radio" name="keep" checked={keep === 'everything'} onChange={() => setKeep('everything')} /> keep everything, revisions too
+      </label>
+      <label className="row">
+        <input type="radio" name="keep" checked={keep === 'visible'} onChange={() => setKeep('visible')} /> keep only what's visible
+      </label>
       <button disabled={!canJoin} onClick={join}>
         {busy ? 'joining…' : 'join'}
       </button>

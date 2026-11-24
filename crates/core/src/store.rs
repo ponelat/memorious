@@ -202,6 +202,11 @@ impl Store {
     /// Insert an event received from a peer. Idempotent: an event we already hold is a no-op
     /// (returns false). A seq gap is a protocol violation and errors out.
     pub fn insert_remote(&self, event: &Event) -> Result<bool> {
+        Ok(self.insert_remote_outcome(event)? == RemoteOutcome::New)
+    }
+
+    /// As [`Self::insert_remote`], but says what happened: stored as new, filled a stub, or a duplicate.
+    pub fn insert_remote_outcome(&self, event: &Event) -> Result<RemoteOutcome> {
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
         let head: u64 = tx
@@ -212,7 +217,13 @@ impl Store {
             )
             .unwrap_or(0);
         if event.seq <= head {
-            return Ok(false); // duplicate
+            // a duplicate — unless we hold only a STUB of it and this is the genuine full event: then fill the stub
+            return Ok(if fill_stub(&tx, event)? {
+                tx.commit()?;
+                RemoteOutcome::Filled
+            } else {
+                RemoteOutcome::Duplicate
+            });
         }
         if event.seq != head + 1 {
             bail!(
@@ -225,7 +236,7 @@ impl Store {
         insert_event(&tx, event)?;
         tx.commit()?;
         self.announce(event);
-        Ok(true)
+        Ok(RemoteOutcome::New)
     }
 
     /// Highest seq per device.
@@ -313,6 +324,86 @@ impl Store {
         }
         tx.commit()?;
         Ok(n)
+    }
+
+    /// Events that declare they supersede others (a `supersedes` list in an ink payload, or as an extra property anywhere),
+    /// oldest first.
+    pub fn events_declaring_supersedes(&self) -> Result<Vec<Event>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT event_id, device_id, seq, recorded_at, kind, payload, will_enrich, extra
+             FROM events
+             WHERE json_extract(payload, '$.supersedes') IS NOT NULL OR json_extract(extra, '$.supersedes') IS NOT NULL
+             ORDER BY recorded_at, event_id",
+        )?;
+        let rows = stmt.query_map([], row_to_event)?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
+
+    /// How many events are collected stubs, and of what original payload type.
+    pub fn stub_counts(&self) -> Result<StubCounts> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT COALESCE(json_extract(payload, '$.was'), ''), COUNT(*) FROM events
+             WHERE json_extract(payload, '$.type') = 'collected' GROUP BY 1",
+        )?;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, u64>(1)?)))?;
+        let mut c = StubCounts::default();
+        for row in rows {
+            let (was, n) = row?;
+            c.total += n;
+            c.by_type.insert(if was.is_empty() { "unknown".into() } else { was }, n);
+        }
+        Ok(c)
+    }
+
+    /// The stubs this device holds, as per-device contiguous `seq` ranges (compact: a month of ink is a handful of ranges).
+    pub fn stub_ranges(&self, max_ranges: usize) -> Result<Vec<StubRange>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT device_id, seq FROM events WHERE json_extract(payload, '$.type') = 'collected' ORDER BY device_id, seq",
+        )?;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, u64>(1)?)))?;
+        let mut out: Vec<StubRange> = Vec::new();
+        for row in rows {
+            let (device, seq) = row?;
+            match out.last_mut() {
+                Some(r) if r.device_id == device && r.to_seq + 1 == seq => r.to_seq = seq,
+                _ => {
+                    if out.len() >= max_ranges {
+                        break;
+                    }
+                    out.push(StubRange { device_id: device, from_seq: seq, to_seq: seq });
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// Events this device holds IN FULL (not stubs) inside the requested per-device ranges, at most `cap`.
+    pub fn full_events_in_ranges(&self, ranges: &[StubRange], cap: usize) -> Result<Vec<Event>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT event_id, device_id, seq, recorded_at, kind, payload, will_enrich, extra
+             FROM events WHERE device_id = ?1 AND seq BETWEEN ?2 AND ?3
+               AND COALESCE(json_extract(payload, '$.type'), '') != 'collected'
+             ORDER BY seq",
+        )?;
+        let mut out = Vec::new();
+        for r in ranges {
+            let rows = stmt.query_map(params![r.device_id, r.from_seq, r.to_seq], row_to_event)?;
+            for row in rows {
+                if out.len() >= cap {
+                    return Ok(out);
+                }
+                out.push(row?);
+            }
+        }
+        Ok(out)
     }
 
     /// Every event of one kind, oldest first.
@@ -679,6 +770,64 @@ fn row_to_event(r: &rusqlite::Row) -> rusqlite::Result<Event> {
         .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
     Event::from_stored(r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, kind, &payload_str, r.get(6)?, r.get::<_, Option<String>>(7)?.as_deref())
         .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))
+}
+
+/// What `insert_remote_outcome` did with an incoming event.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RemoteOutcome {
+    New,
+    /// We held a stub of exactly this event; it now holds the full content.
+    Filled,
+    Duplicate,
+}
+
+/// Collected stubs on this device: how many, and of which original payload type.
+#[derive(Debug, Default, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct StubCounts {
+    pub total: u64,
+    pub by_type: std::collections::BTreeMap<String, u64>,
+}
+
+/// A contiguous run of one device's events by `seq`.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct StubRange {
+    pub device_id: String,
+    pub from_seq: u64,
+    pub to_seq: u64,
+}
+
+/// Fill a stub with the genuine full event: only when the stored row IS a stub, the incoming event is not one, and the
+/// whole envelope matches (event_id, device_id, seq, recorded_at, kind). Never overwrites a full event.
+fn fill_stub(tx: &rusqlite::Transaction, event: &Event) -> Result<bool> {
+    if matches!(&event.payload, Payload::Unknown { type_tag, .. } if type_tag == "collected") {
+        return Ok(false);
+    }
+    let row: Option<(String, i64, String, String)> = tx
+        .query_row(
+            "SELECT event_id, recorded_at, kind, payload FROM events WHERE device_id = ?1 AND seq = ?2",
+            params![event.device_id, event.seq],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .optional()?;
+    let Some((id, recorded_at, kind, payload)) = row else { return Ok(false) };
+    let stored_is_stub = serde_json::from_str::<serde_json::Value>(&payload).map(|v| v.get("type").and_then(|t| t.as_str()) == Some("collected")).unwrap_or(false);
+    let ev_kind = serde_json::to_string(&event.kind)?;
+    if !stored_is_stub || id != event.event_id || recorded_at != event.recorded_at || kind != ev_kind.trim_matches('"') {
+        return Ok(false);
+    }
+    tx.execute(
+        "UPDATE events SET payload = ?2, extra = ?3, will_enrich = ?4 WHERE event_id = ?1",
+        params![
+            event.event_id,
+            serde_json::to_string(&event.payload_json())?,
+            if event.extra.is_empty() { None } else { Some(serde_json::to_string(&event.extra)?) },
+            event.will_enrich,
+        ],
+    )?;
+    if let Some(text) = event.fts_text() {
+        tx.execute("INSERT INTO events_fts (text, event_id) VALUES (?1, ?2)", params![text, event.event_id])?;
+    }
+    Ok(true)
 }
 
 pub fn now_ms() -> i64 {
