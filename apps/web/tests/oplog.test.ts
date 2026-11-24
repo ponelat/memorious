@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import { MonthLog, type OpData, type WireRecord } from '../src/canvas/oplog'
+import { fold } from '../src/canvas/select'
 
 const stroke = (seed: number): OpData => ({ op: 'stroke', tool: 'pen', seed, size: 5, pts: [[0, 0, 0.5, 0]] })
 const rec = (eid: string, dev: string, t: number, data: Record<string, unknown>): WireRecord => ({ event_id: eid, device_id: dev, recorded_at: t, data })
@@ -167,5 +168,32 @@ describe('ink_fold: a fold is the base of the canvas and covers the ops it super
     l.add({ op: 'stroke', tool: 'pen', seed: 2, size: 5, pts: [[0, 5, 0.5, 0]] })
     expect(l.events().filter((e) => e.active !== false).length).toBe(2)
     expect(l.hasContent).toBe(true)
+  })
+})
+
+describe('wiping: a delete op written into an earlier, already-folded period', () => {
+  const rec = (eid: string, dev: string, seq: number, t: number, data: Record<string, unknown>): WireRecord => ({ event_id: eid, device_id: dev, seq, recorded_at: t, data })
+  const item = (id: string, y: number) => ({ id, tool: 'pen', seed: 1, size: 5, pts: [[0, y, 0.5, 0], [50, y, 0.5, 0]] })
+  const foldOp = { op: 'ink_fold', cid: 'f', items: [item('a', 0), item('b', 100), item('c', 200)], supersedes: [{ select: 'ink', period: '2026-W10', up_to: { 'dev-a': 3 } }] }
+  const ids = (l: MonthLog) => fold(l.events()).map((i) => i.id)
+
+  test('the delete folds on top of the fold: ink inside the shape goes, the rest stays', () => {
+    const l = new MonthLog('2026-W10', 'dev-b')
+    l.merge([rec('e4', 'dev-a', 4, 4, foldOp), rec('e5', 'dev-b', 1, 5, { op: 'delete', cid: 'w1', poly: [[-10, 90], [60, 90], [60, 110], [-10, 110]] })])
+    expect(ids(l)).toEqual(['a', 'c'])
+  })
+
+  test('a delete written locally (still pending, no seq) applies at once', () => {
+    const l = new MonthLog('2026-W10', 'dev-b')
+    l.merge([rec('e4', 'dev-a', 4, 4, foldOp)])
+    l.addEvent({ type: 'delete', poly: [[-10, 190], [60, 190], [60, 210], [-10, 210]], active: true } as never)
+    expect(ids(l)).toEqual(['a', 'b'])
+  })
+
+  test('only the visible layers are touched', () => {
+    const l = new MonthLog('2026-W10', 'dev-b')
+    const pencil = { id: 'p', tool: 'pencil', seed: 2, size: 5, pts: [[0, 100, 0.5, 0], [50, 100, 0.5, 0]] }
+    l.merge([rec('e4', 'dev-a', 4, 4, { ...foldOp, items: [item('b', 100), pencil] }), rec('e5', 'dev-b', 1, 5, { op: 'delete', cid: 'w2', only: ['pen'], poly: [[-10, 90], [60, 90], [60, 110], [-10, 110]] })])
+    expect(ids(l)).toEqual(['p'])
   })
 })

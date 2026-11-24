@@ -15,7 +15,8 @@ export interface ToolSetting {
 }
 export type Settings = Record<Tool, ToolSetting>
 /** The toolbar's tools: three that draw, two that select. */
-export type UiTool = Tool | 'lasso' | 'rect'
+/** `wipe` = a lasso that erases everything inside it, in this period AND in every earlier period that is showing. */
+export type UiTool = Tool | 'lasso' | 'rect' | 'wipe'
 /** A 24 px cursor drawn from the tool's icon: a white halo under the orange line so it reads on light and dark, with the
  *  hot spot at the working tip. */
 const cursorOf = (path: string, hx: number, hy: number, dash = '', fill = 'none') => {
@@ -29,8 +30,9 @@ const CURSORS: Record<UiTool, string> = {
   eraser: 'none', // the ring is the cursor
   lasso: cursorOf('M6 9c0-3 6-5 10-3s3 7-1 9-8 1-9-2M10 17c0 2 1 3 3 4', 13, 21, "stroke-dasharray='3 2.4'"),
   rect: 'crosshair',
+  wipe: cursorOf('M6 9c0-3 6-5 10-3s3 7-1 9-8 1-9-2M10 17c0 2 1 3 3 4M4 4l16 16', 13, 21, "stroke-dasharray='3 2.4'"),
 }
-const isSelect = (t: UiTool) => t === 'lasso' || t === 'rect'
+const isSelect = (t: UiTool) => t === 'lasso' || t === 'rect' || t === 'wipe'
 const isDraw = (t: UiTool): t is Tool => !isSelect(t)
 // Josh-tuned defaults (ink-spike, 2026-11-17)
 export const DEFAULT_SETTINGS: Settings = {
@@ -704,7 +706,29 @@ export class CanvasController {
     const poly = this.tool === 'rect' ? path : simplifyPoly(path, 1.5 / this.view.z)
     const [x0, y0, x1, y1] = [Math.min(...poly.map((p) => p[0])), Math.min(...poly.map((p) => p[1])), Math.max(...poly.map((p) => p[0])), Math.max(...poly.map((p) => p[1]))]
     if (poly.length < 3 || (x1 - x0) * this.view.z < 4 || (y1 - y0) * this.view.z < 4) return this.drawOverlay()
+    if (this.tool === 'wipe') return this.wipeRegion(poly)
     this.selectPoly(poly)
+  }
+
+  /** Erase everything inside `poly` from this period and from every earlier period that is showing. Earlier periods are read-only on
+   *  the canvas, so the erase is an ordinary `delete` op written into each period's own log: folds and later ops carry it (a fold
+   *  is the base, the delete folds on top), nothing in the journal is removed. Only the layers that are visible are touched. */
+  private wipeRegion(poly: Poly) {
+    const periods = [this.month, ...this.visibleMonths]
+    const where = periods.length === 1 ? 'this period' : `${periods.length} periods`
+    if (!window.confirm(`Erase everything inside this shape from ${where}?${periods.length > 1 ? ' Erasing in earlier periods cannot be undone from here.' : ''}`)) return this.drawOverlay()
+    const only = onlyList(this.layers)
+    for (const m of periods) {
+      const ev: Ev = { type: 'delete', poly: poly.map(([x, y]) => [+x.toFixed(1), +y.toFixed(1)] as [number, number]), only }
+      if (m === this.month) this.pushEvent(ev) // this period: undoable like any edit
+      else {
+        this.data.log(m).addEvent(ev)
+        this.data.added(m)
+      }
+    }
+    this.hooks.onChange()
+    this.rebuild()
+    this.drawOverlay()
   }
 
   // ── events ─────────────────────────────────────────────────────────────

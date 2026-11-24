@@ -138,7 +138,7 @@ Clients that can place images SHOULD downscale to ~1.3× on-screen size and enco
 - **Touch undo/redo**: a two-finger tap = undo, a three-finger tap = redo (discard any stroke a finger had just started).
 - **Quick-swap** has two user-selectable modes: *last tool* (toggle between the current and previous tool) or *eraser* (toggle the eraser on, and back to the tool that was active before it). A control (and any hardware gesture the platform exposes — stylus barrel/squeeze/double-tap, keyboard `X`) toggles
   between the current and the previous tool. Holding the stylus still **~0.6 s** also swaps, drawing nothing.
-- Keyboard (left hand while the right holds the pencil): `D` pencil, `W` pen, `E` eraser, `S` lasso, `R` rect, `G` image, `X` swap,
+- Keyboard (left hand while the right holds the pencil): `D` pencil, `W` pen, `E` eraser, `S` lasso, `R` rect, `A` wipe, `G` image, `X` swap,
   `C` duplicate / `Q` delete selection, `Esc` deselect, Cmd/Ctrl-Z undo, +Shift redo.
 - **Panning/zooming** must stay smooth: while fingers move, show the already-rendered pixels transformed (translate/scale relative to the view they were stamped at); re-stamp when the fingers pause or lift. Pan and pinch recognised together must apply *incremental* deltas to one view, never each restore a private start state (that makes the picture jump).
 - **Offset mode (optional, finger)**: long-press (~0.5 s) with a draw tool drops a *mark*; then taps move the mark and drags move
