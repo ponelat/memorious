@@ -29,6 +29,7 @@ pub mod mcp;
 pub mod oauth;
 pub mod embed_sweeper;
 mod ink;
+mod exports;
 pub mod peer_ping;
 pub mod sweeper;
 use serde_json::json;
@@ -76,6 +77,8 @@ pub struct AppState {
     /// Semantic-search model, on peers configured to run one. Set once at
     /// startup (`with_embedder`); `None` means keyword search only.
     pub embedder: Option<Arc<dyn memorious_core::search::Embedder>>,
+    /// Archive downloads being built (see `exports.rs`).
+    pub exports: exports::Exports,
 }
 
 impl AppState {
@@ -87,6 +90,7 @@ impl AppState {
             data_dir,
             oauth_codes: Default::default(),
             embedder: None,
+            exports: Default::default(),
         }
     }
 
@@ -219,6 +223,8 @@ pub fn app(state: RouterState, web_dist: Option<PathBuf>) -> Router {
         .route("/feed", get(feed))
         .route("/media/{hash}", get(media))
         .route("/export", get(export_archive))
+        .route("/exports", get(exports::list).post(exports::create))
+        .route("/exports/{id}", axum::routing::delete(exports::delete))
         .route("/redact", post(redact))
         .route("/ink", get(ink::months))
         .route("/ink/stream", get(ink::stream))
@@ -254,6 +260,7 @@ pub fn app(state: RouterState, web_dist: Option<PathBuf>) -> Router {
     let mut app = Router::new()
         .nest("/api", api)
         .route("/mcp", post(mcp::endpoint).get(mcp::not_allowed))
+        .route("/export/{id}/{secret}/{name}", get(exports::download))
         .route("/.well-known/oauth-protected-resource", get(oauth::protected_resource))
         .route("/.well-known/oauth-protected-resource/mcp", get(oauth::protected_resource))
         .route("/.well-known/oauth-authorization-server", get(oauth::server_metadata))
@@ -681,7 +688,7 @@ async fn export_archive(State(state): State<SharedState>, Query(p): Query<Export
     let result: anyhow::Result<std::fs::File> = async {
         let file = tempfile::tempfile()?;
         let mut sink = ZipSink::new(file, &name);
-        export_archive(&state.node, &mut sink, ArchiveOpts { events, media }, now).await?;
+        export_archive(&state.node, &mut sink, ArchiveOpts { events, media, progress: None }, now).await?;
         let mut file = sink.finish()?;
         file.seek(SeekFrom::Start(0))?;
         Ok(file)

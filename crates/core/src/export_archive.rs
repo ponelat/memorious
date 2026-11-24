@@ -21,6 +21,8 @@ use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::{Seek, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use n0_future::StreamExt;
@@ -45,16 +47,26 @@ pub enum EventsEncoding {
     Json,
 }
 
-#[derive(Debug, Clone, Copy)]
+/// Live counters a caller can read while [`export_archive`] runs (for a progress bar).
+#[derive(Debug, Default)]
+pub struct ArchiveProgress {
+    pub events_total: AtomicU64,
+    pub media_total: AtomicU64,
+    pub media_done: AtomicU64,
+    pub bytes_written: AtomicU64,
+}
+
+#[derive(Debug, Clone)]
 pub struct ArchiveOpts {
     pub events: EventsEncoding,
     /// Include the media files. Off = events + schema + manifest only (small, fast).
     pub media: bool,
+    pub progress: Option<Arc<ArchiveProgress>>,
 }
 
 impl Default for ArchiveOpts {
     fn default() -> Self {
-        Self { events: EventsEncoding::Jsonl, media: true }
+        Self { events: EventsEncoding::Jsonl, media: true, progress: None }
     }
 }
 
@@ -177,6 +189,15 @@ pub async fn export_archive(node: &Node, sink: &mut dyn ArchiveSink, opts: Archi
     let events: Vec<Event> = journal.store.all_events()?;
     let redacted = journal.store.redacted_ids()?;
     let mut report = ArchiveReport { events: events.len(), ..Default::default() };
+    let prog = opts.progress.clone();
+    if let Some(p) = &prog {
+        p.events_total.store(events.len() as u64, Ordering::Relaxed);
+        let n = events
+            .iter()
+            .filter(|e| e.kind == EventKind::Capture && e.payload.media_kind().is_some() && !redacted.contains(&e.event_id))
+            .count();
+        p.media_total.store(if opts.media { n as u64 } else { 0 }, Ordering::Relaxed);
+    }
 
     sink.put("README.md", README.as_bytes())?;
     sink.put("schema/event.schema.json", EVENT_SCHEMA.as_bytes())?;
@@ -256,6 +277,9 @@ pub async fn export_archive(node: &Node, sink: &mut dyn ArchiveSink, opts: Archi
                         h.update(&chunk);
                         n += chunk.len() as u64;
                         sink.write(&chunk)?;
+                        if let Some(p) = &prog {
+                            p.bytes_written.fetch_add(chunk.len() as u64, Ordering::Relaxed);
+                        }
                     }
                     let sha = hex(&h.finalize());
                     entry["status"] = "included".into();
@@ -278,6 +302,11 @@ pub async fn export_archive(node: &Node, sink: &mut dyn ArchiveSink, opts: Archi
             }
         }
         media.push(entry);
+        if let Some(p) = &prog {
+            if !redacted.contains(&e.event_id) {
+                p.media_done.fetch_add(1, Ordering::Relaxed);
+            }
+        }
     }
 
     let manifest = json!({

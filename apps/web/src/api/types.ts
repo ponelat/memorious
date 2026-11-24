@@ -190,6 +190,21 @@ export interface ArchiveOptions {
   media: boolean
 }
 
+/** One archive build / download link on this peer. `link` is a path (`/export/<id>/<secret>/<name>`): prefix it with the page's origin. */
+export interface ArchiveExport {
+  id: string
+  name: string
+  status: 'running' | 'ready' | 'failed'
+  error: string | null
+  created_ms: number
+  expires_ms: number
+  size: number
+  format: 'jsonl' | 'json'
+  media: boolean
+  link: string | null
+  progress: { events: number; media_done: number; media_total: number; bytes: number } | null
+}
+
 export interface ExportReport {
   path: string
   days: number
@@ -307,6 +322,10 @@ export interface JournalApi {
   exportJournal?(): Promise<ExportReport>
   /** Download the lossless archive (events as JSON/JSONL, JSON Schemas, decrypted media) as a zip. Web only for now. */
   exportArchive?(opts: ArchiveOptions): Promise<string>
+  /** Build an archive in the background and get a secret, expiring, resumable download link. */
+  createArchiveLink?(opts: ArchiveOptions & { ttlHours: number }): Promise<ArchiveExport>
+  listArchiveLinks?(): Promise<ArchiveExport[]>
+  deleteArchiveLink?(id: string): Promise<void>
   /** Delete this device's (or, over the browser, this server's) copy of the
    * journal and its identity; other devices keep theirs. On the browser
    * this also ends the server process — it takes longer to come back than

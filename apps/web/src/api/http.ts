@@ -1,4 +1,4 @@
-import type { AgentKey, ArchiveOptions, Entry, FeedPage, InkRecord, JournalApi, MediaRef, NetConfig, Status, SyncReport } from './types'
+import type { AgentKey, ArchiveExport, ArchiveOptions, Entry, FeedPage, InkRecord, JournalApi, MediaRef, NetConfig, Status, SyncReport } from './types'
 
 const TOKEN_KEY = 'memorious.passcode'
 
@@ -71,6 +71,20 @@ async function saveResponse(resp: Response, filename: string): Promise<void> {
 }
 
 export const httpApi: JournalApi = {
+  async createArchiveLink(opts) {
+    const r = await json<{ export: ArchiveExport }>('/api/exports', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ format: opts.format, media: opts.media, ttl_hours: opts.ttlHours }),
+    })
+    return r.export
+  },
+  async listArchiveLinks() {
+    return (await json<{ exports: ArchiveExport[] }>('/api/exports')).exports
+  },
+  async deleteArchiveLink(id) {
+    await request(`/api/exports/${id}`, { method: 'DELETE' })
+  },
   async exportArchive(opts: ArchiveOptions) {
     const resp = await request(`/api/export?format=${opts.format}&media=${opts.media ? 1 : 0}`)
     const cd = resp.headers.get('content-disposition') ?? ''

@@ -31,6 +31,8 @@ tower-http = { version = "0.6", features = ["fs", "cors", "set-header"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tokio-util = { version = "0.7.20", features = ["io"] }
+rand = "0.9"
+tower = { version = "0.5", features = ["util"] }
 
 [dev-dependencies]
 http-body-util = "0.1"

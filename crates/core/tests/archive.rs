@@ -91,7 +91,7 @@ async fn json_array_and_no_media_variants() {
     node.capture_blob(MediaKind::Photo, vec![1, 2]).await.unwrap();
 
     let out = dir.path().join("a");
-    let opts = ArchiveOpts { events: EventsEncoding::Json, media: false };
+    let opts = ArchiveOpts { events: EventsEncoding::Json, media: false, ..Default::default() };
     let report = export_archive_dir(&node, &out, opts, 1).await.unwrap();
     let arr: Value = serde_json::from_str(&std::fs::read_to_string(out.join("events.json")).unwrap()).unwrap();
     assert_eq!(arr.as_array().unwrap().len(), report.events);

@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react'
-import { api, ArchiveOptions, AgentKey, DownloadFile, ExportReport, NetConfig, PeerBuild, PeerInfo, PeerPing, Status } from '../api'
+import { useCallback, useEffect, useState } from 'react'
+import { api, ArchiveExport, ArchiveOptions, AgentKey, DownloadFile, ExportReport, NetConfig, PeerBuild, PeerInfo, PeerPing, Status } from '../api'
 import { agoLabel, edgeKind, MapPeer, PeerMap } from '../components/PeerMap'
 import { Appearance, onAppearanceChange, readAppearance, setAppearance } from '../appearance'
 
@@ -481,30 +481,69 @@ function AgentsRow() {
   )
 }
 
-/** Download the lossless archive: every event as JSON, the JSON Schemas, and the media in plain formats. */
-function ArchiveRow() {
-  const [busy, setBusy] = useState(false)
-  const [opts, setOpts] = useState<ArchiveOptions>({ format: 'jsonl', media: true })
-  const [done, setDone] = useState<string | null>(null)
-  const [err, setErr] = useState<string | null>(null)
+const fmtBytes = (n: number) => (n >= 1e9 ? `${(n / 1e9).toFixed(1)} GB` : n >= 1e6 ? `${(n / 1e6).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1e3))} KB`)
+const fmtLeft = (ms: number) => {
+  const m = Math.max(0, Math.round((ms - Date.now()) / 60000))
+  return m >= 120 ? `${Math.round(m / 60)} h left` : `${m} min left`
+}
 
-  async function run() {
+/** The lossless archive (every event as JSON, the JSON Schemas, the media in plain formats) as a download LINK: built in the
+ *  background, then a secret, expiring, resumable URL that works from any machine (curl -C -, a browser, wget). */
+function ArchiveRow() {
+  const [opts, setOpts] = useState<ArchiveOptions>({ format: 'jsonl', media: true })
+  const [ttl, setTtl] = useState(24)
+  const [links, setLinks] = useState<ArchiveExport[]>([])
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
+  const [copied, setCopied] = useState<string | null>(null)
+
+  const load = useCallback(async () => {
+    try {
+      setLinks(await api.listArchiveLinks!())
+    } catch {}
+  }, [])
+  useEffect(() => {
+    void load()
+  }, [load])
+  const running = links.some((l) => l.status === 'running')
+  useEffect(() => {
+    if (!running) return
+    const t = window.setInterval(() => void load(), 1500)
+    return () => window.clearInterval(t)
+  }, [running, load])
+
+  async function create() {
     setBusy(true)
     setErr(null)
-    setDone(null)
     try {
-      setDone(await api.exportArchive!(opts))
+      await api.createArchiveLink!({ ...opts, ttlHours: ttl })
+      await load()
     } catch (e) {
-      if (!(e instanceof DOMException && e.name === 'AbortError')) setErr(e instanceof Error ? e.message : String(e))
+      setErr(e instanceof Error ? e.message : String(e))
     } finally {
       setBusy(false)
     }
   }
+  async function revoke(id: string) {
+    setErr(null)
+    try {
+      await api.deleteArchiveLink!(id)
+      await load()
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e))
+    }
+  }
+  const url = (l: ArchiveExport) => `${window.location.origin}${l.link}`
+  async function copy(l: ArchiveExport) {
+    await navigator.clipboard.writeText(url(l))
+    setCopied(l.id)
+    window.setTimeout(() => setCopied((c) => (c === l.id ? null : c)), 2000)
+  }
 
   return (
     <>
-      <button className="ghost" disabled={busy} onClick={run}>
-        {busy ? 'preparing archive…' : 'download archive…'}
+      <button className="ghost" disabled={busy || running} onClick={create}>
+        {running ? 'building archive…' : 'create download link'}
       </button>
       <label className="row">
         <input type="checkbox" checked={opts.media} onChange={(e) => setOpts({ ...opts, media: e.target.checked })} /> media
@@ -512,8 +551,46 @@ function ArchiveRow() {
       <label className="row">
         <input type="checkbox" checked={opts.format === 'json'} onChange={(e) => setOpts({ ...opts, format: e.target.checked ? 'json' : 'jsonl' })} /> one json array (not jsonl)
       </label>
-      {done && <p className="hint mono">{done}</p>}
+      <label className="row">
+        link lives for{' '}
+        <select value={ttl} onChange={(e) => setTtl(Number(e.target.value))}>
+          <option value={1}>1 hour</option>
+          <option value={24}>24 hours</option>
+          <option value={168}>7 days</option>
+        </select>
+      </label>
       {err && <p className="error">{err}</p>}
+      {links.map((l) => (
+        <div key={l.id} className="hint">
+          {l.status === 'running' && (
+            <span>
+              building…{' '}
+              {l.progress && l.progress.media_total > 0
+                ? `${l.progress.media_done}/${l.progress.media_total} media · ${fmtBytes(l.progress.bytes)}`
+                : l.progress
+                  ? `${l.progress.events} events`
+                  : ''}
+            </span>
+          )}
+          {l.status === 'failed' && <span className="error">failed: {l.error}</span>}
+          {l.status === 'ready' && (
+            <>
+              <a href={url(l)} download>
+                {l.name}
+              </a>{' '}
+              · {fmtBytes(l.size)} · {fmtLeft(l.expires_ms)}{' '}
+              <button className="ghost" onClick={() => void copy(l)}>
+                {copied === l.id ? 'copied' : 'copy link'}
+              </button>
+            </>
+          )}{' '}
+          {l.status !== 'running' && (
+            <button className="ghost" onClick={() => void revoke(l.id)}>
+              delete
+            </button>
+          )}
+        </div>
+      ))}
     </>
   )
 }
@@ -957,7 +1034,7 @@ export function StatusView() {
         <dd>
           <AppearancePicker />
         </dd>
-        {api.exportArchive && (
+        {api.createArchiveLink && (
           <>
             <dt>archive</dt>
             <dd>
