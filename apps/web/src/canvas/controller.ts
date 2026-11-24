@@ -41,7 +41,7 @@ export const DEFAULT_SETTINGS: Settings = {
   eraser: { size: 5, op: 0.4 },
 }
 const SIMPLIFY: Record<Tool, number> = { pencil: 0, pen: 0.4, eraser: 0.4 }
-const DIM = 0.3 // other months show through at this opacity
+const DIM = 0.3 // earlier periods show through at this opacity (unless dimming is switched off: then at full brightness)
 const clamp = (v: number, a: number, b: number) => (v < a ? a : v > b ? b : v)
 
 interface Floating {
@@ -137,6 +137,7 @@ export class CanvasController {
   // caches (see rebuild): what's already drawn is kept, and only what changed is redone
   private bboxCache = new Map<string, BBox>() // per item id: its ink bounds (an item's points never change under the same id)
   private baseKey = '' // what the dimmed-months layer currently shows
+  private dimLevel = DIM // how bright the earlier periods are drawn: DIM, or 1 when dimming is off
   private bitmapsLoaded = 0
   private stamped: string[] = [] // the events (id:active) drawn into the ink buffers, in order — lets a peer's new strokes be stamped on top instead of redrawing everything
 
@@ -266,6 +267,12 @@ export class CanvasController {
   setSetting(t: Tool, s: Partial<ToolSetting>) {
     Object.assign(this.settings[t], s)
     if (t === this.tool) this.updateMarkRing()
+  }
+  /** Earlier periods underneath: dimmed (default) or at full brightness. */
+  setDim(on: boolean) {
+    this.dimLevel = on ? DIM : 1
+    this.baseKey = ''
+    this.rebuild()
   }
   /** Show / hide the overview of the whole canvas (this month plus the months shown underneath). */
   setMinimap(on: boolean) {
@@ -453,7 +460,7 @@ export class CanvasController {
     const { base, imgs, ink } = this.ctx
     // other months, oldest first, dimmed, underneath — redrawn only if something they depend on changed
     const months = [...this.visibleMonths].sort()
-    const baseKey = [W, H, this.view.x, this.view.y, this.view.z, this.layers.pencil, this.layers.pen, this.layers.image, this.bitmapsLoaded, months.map((m) => m + ':' + this.data.log(m).version).join(',')].join('|')
+    const baseKey = [W, H, this.view.x, this.view.y, this.view.z, this.layers.pencil, this.layers.pen, this.layers.image, this.bitmapsLoaded, this.dimLevel, months.map((m) => m + ':' + this.data.log(m).version).join(',')].join('|')
     if (baseKey !== this.baseKey) {
       this.baseKey = baseKey
       base.clearRect(0, 0, W, H)
@@ -468,7 +475,7 @@ export class CanvasController {
         ti.clearRect(0, 0, W, H)
         this.buf.flush(ti, this.layers) // only the part the strokes reached
         tm.drawImage(this.tmpInk, 0, 0)
-        base.globalAlpha = DIM
+        base.globalAlpha = this.dimLevel
         base.drawImage(this.tmpMonth, 0, 0)
         base.globalAlpha = 1
       }

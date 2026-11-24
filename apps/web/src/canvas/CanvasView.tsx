@@ -13,6 +13,7 @@ const K_MONTHS = 'memorious.canvas.months'
 const K_VIEW = 'memorious.canvas.view'
 const K_TOUCH = 'memorious.canvas.touch'
 const K_MINI = 'memorious.canvas.minimap'
+const K_DIM = 'memorious.canvas.dim' // 'off' = earlier periods at full brightness; anything else = dimmed
 
 interface MonthPrefs {
   visible: string[]
@@ -193,6 +194,7 @@ export function CanvasView() {
   const [zoom, setZoom] = useState(1)
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
   const [mini, setMini] = useState(() => localStorage.getItem(K_MINI) === 'on')
+  const [dim, setDim] = useState(() => localStorage.getItem(K_DIM) !== 'off')
   const [panel, setPanel] = useState<'tools' | 'options' | null>(null)
   const [corner, setCorner] = useState<{ x: number; y: number } | null>(null)
   const [settings, setSettings] = useState<Settings>(() => {
@@ -237,6 +239,7 @@ export function CanvasView() {
     c.layers = layers
     c.setVisibleMonths(prefs.visible)
     c.setMinimap(mini)
+    c.setDim(dim)
     c.setTool('pencil')
     c.rebuild()
     return () => {
@@ -365,6 +368,12 @@ export function CanvasView() {
       </button>
     </div>
   )
+  const toggleDim = () => {
+    const next = !dim
+    setDim(next)
+    localStorage.setItem(K_DIM, next ? 'on' : 'off')
+    ctl.current?.setDim(next)
+  }
   const toggleMini = () => {
     const next = !mini
     setMini(next)
@@ -451,6 +460,9 @@ export function CanvasView() {
             </button>
             <button className={'canvas-btn' + (mini ? ' on' : '')} onClick={toggleMini}>
               minimap
+            </button>
+            <button className={'canvas-btn' + (dim ? ' on' : '')} onClick={toggleDim} title="earlier periods: dimmed, or full brightness">
+              dim earlier
             </button>
 
           </div>

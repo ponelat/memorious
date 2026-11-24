@@ -11,7 +11,7 @@ three files; the shared **golden vectors** (§9) keep the ports honest.
 ## 1. Concept
 
 - One **infinite canvas per period**: a **UTC ISO week** (`YYYY-Www`, Monday 00:00 to Sunday 24:00 UTC, keyed by the ISO year; new) or, for canvases made before weekly canvases, a **UTC calendar month** (`YYYY-MM`, legacy, read-only history). Only the *current* week is drawable; earlier periods are shown
-  underneath, dimmed to **30 %** opacity, read-only. A client MAY let the user pick any other period to show. Every device must agree which week an op belongs to, hence UTC.
+  underneath, dimmed to **30 %** opacity, read-only. A user option (*dim earlier*, on by default, remembered per device) shows them at **full brightness** instead. A client MAY let the user pick any other period to show. Every device must agree which week an op belongs to, hence UTC.
 - A canvas is **the fold of an append-only log of ops** (§4). Nothing is ever stored as pixels except placed images.
 - World coordinates are a plane in "CSS-pixel-like" units, unbounded, origin arbitrary. A **view** is `{x, y, z}`: the world
   point at the viewport's top-left and a zoom (screen px per world unit). Zoom MUST be clamped to **0.1 … 20**.

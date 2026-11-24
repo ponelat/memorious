@@ -7,7 +7,7 @@ canvas; earlier months (the previous one by default, any other on request) show 
 30% opacity and are read-only. Layers: pencil, pen, images — each a view toggle, like the month toggles.
 
 Chrome: floating buttons, bottom-left — a quick **tool picker** (shows the current tool), **options**, and **undo** / **redo** (first-class, always visible)
-(size + opacity with a live sample of the tool, one light↔dark button, finger, layer toggles, month list with an **other…** picker).
+(size + opacity with a live sample of the tool, one light↔dark button, finger, minimap, **dim earlier** (earlier periods at 30% or full brightness), layer toggles, period list with an **other…** picker).
 
 Where: `apps/web/src/canvas/` (`CanvasView.tsx` chrome, `controller.ts` input/replay, `ink.ts` engine,
 `store.ts` persistence, `paper.ts` paper tile). Reached from the **canvas** tab in the top bar.
