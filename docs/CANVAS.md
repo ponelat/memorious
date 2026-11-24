@@ -49,7 +49,7 @@ back**: the eraser works on pixels, so before a piece is selected or moved the p
 out of it (a point counts as erased once the erasers passing over it have left < 20 % of it). **An eraser only reaches the
 layers that were visible when it was used** (`only` on the stroke), like move / delete.
 
-**Wipe** (`A`): a lasso whose selection reaches this period *and every earlier period that is showing*; move, scale, duplicate or delete it across time. Each action is an ordinary op written into each period's own log (earlier periods are read-only on the canvas), folds carry it, nothing is removed from the journal; deleting asks for confirmation and is not undoable for earlier periods.
+**Timeline** (`T`): a lasso whose selection reaches this period *and every earlier period that is showing*; move, scale, duplicate or delete it across time. Move / scale / delete are ordinary ops written into each period's own log (earlier periods are read-only on the canvas), folds carry them, nothing is removed from the journal; deleting asks for confirmation. **Duplicate** brings the ink in as new events on the *current* timeline, not back into its source period. The period list in options can **hide the current period** to see underneath (earlier periods then at full brightness; any other tool shows it again).
 
 **Cursors** follow the tool: a pencil, a nib and a dashed lasso (drawn from the tool icons, white halo so they read on light
 and dark, hot spot at the working tip), a crosshair for rect, the ring for the eraser, a hand while Space is held.

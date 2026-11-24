@@ -44,7 +44,7 @@ const ICONS = {
   eraser: 'M7 21h12M5 15l9-9 5 5-7 7H8z',
   lasso: 'M6 9c0-3 6-5 10-3s3 7-1 9-8 1-9-2M10 17c0 2 1 3 3 4',
   rect: 'M5 5h14v14H5z',
-  wipe: 'M6 9c0-3 6-5 10-3s3 7-1 9-8 1-9-2M10 17c0 2 1 3 3 4M4 4l16 16', // a lasso struck through: erase inside it, in earlier periods too
+  timeline: 'M8 8c0-3 6-5 10-3s3 7-1 9-8 1-9-2M12 16c0 2 1 3 3 4M2 5h4M2 9h3M2 13h2', // a lasso with stacked lines: select through the periods underneath
   image: 'M4 5h16v14H4zM4 16l5-5 4 4 3-3 4 4M9 9v.01',
   options: 'M4 7h10M18 7h2M4 17h2M10 17h10M14 4v6M8 14v6',
   sun: 'M12 8a4 4 0 100 8 4 4 0 000-8zM12 2v2M12 20v2M2 12h2M20 12h2M5 5l1.5 1.5M17.5 17.5L19 19M5 19l1.5-1.5M17.5 6.5L19 5',
@@ -66,12 +66,12 @@ function PenIcon({ size = 20 }: { size?: number }) {
     </svg>
   )
 }
-const TOOLS: UiTool[] = ['pencil', 'pen', 'eraser', 'lasso', 'rect', 'wipe']
+const TOOLS: UiTool[] = ['pencil', 'pen', 'eraser', 'lasso', 'rect', 'timeline']
 /** One key per tool (shown in the tool list and the tooltips). Undo/redo are the usual Cmd/Ctrl+Z / Shift+Z. With a selection: C duplicates, Q deletes. */
-const KEYS: Record<UiTool | 'image', string> = { pencil: 'D', pen: 'W', eraser: 'E', lasso: 'S', rect: 'R', wipe: 'A', image: 'G' } // all on the left of the keyboard: one hand on the keys, the other on the pencil
+const KEYS: Record<UiTool | 'image', string> = { pencil: 'D', pen: 'W', eraser: 'E', lasso: 'S', rect: 'R', timeline: 'T', image: 'G' } // all on the left of the keyboard: one hand on the keys, the other on the pencil
 const SWAP_KEY = 'X' // back to the previous tool
 const MOD = /Mac|iPhone|iPad/.test(navigator.platform) ? '⌘' : 'Ctrl+'
-const toolIcon = (t: UiTool) => (t === 'pen' ? <PenIcon /> : <Icon d={ICONS[t]} dash={t === 'rect' || t === 'lasso' || t === 'wipe'} />)
+const toolIcon = (t: UiTool) => (t === 'pen' ? <PenIcon /> : <Icon d={ICONS[t]} dash={t === 'rect' || t === 'lasso' || t === 'timeline'} />)
 
 const MARK_NUDGE: Record<string, [number, number]> = {
   ArrowLeft: [-10, 0],
@@ -195,6 +195,7 @@ export function CanvasView() {
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
   const [mini, setMini] = useState(() => localStorage.getItem(K_MINI) === 'on')
   const [dim, setDim] = useState(() => localStorage.getItem(K_DIM) !== 'off')
+  const [hideCur, setHideCur] = useState(false) // this period hidden, to see the earlier ones underneath (not remembered)
   const [panel, setPanel] = useState<'tools' | 'options' | null>(null)
   const [corner, setCorner] = useState<{ x: number; y: number } | null>(null)
   const [settings, setSettings] = useState<Settings>(() => {
@@ -231,6 +232,7 @@ export function CanvasView() {
         onContext: (x, y) => setMenu({ x, y }),
         onTouchDraws: (on) => setTouch(on),
         onMark: setHasMark,
+        onHideCurrent: setHideCur,
       },
       data,
       { settings, view: loadJSON<View>(K_VIEW, { x: 0, y: 0, z: 1 }), touchDraws: touch },
@@ -368,6 +370,11 @@ export function CanvasView() {
       </button>
     </div>
   )
+  const toggleHideCurrent = () => {
+    const next = !hideCur
+    setHideCur(next)
+    ctl.current?.setHideCurrent(next)
+  }
   const toggleDim = () => {
     const next = !dim
     setDim(next)
@@ -472,7 +479,7 @@ export function CanvasView() {
           <div className="canvas-checks">
             {months.map((m) => (
               <label key={m} className="canvas-check">
-                <input type="checkbox" checked={m === now || prefs.visible.includes(m)} disabled={m === now} onChange={() => toggleMonth(m)} />
+                <input type="checkbox" checked={m === now ? !hideCur : prefs.visible.includes(m)} onChange={() => (m === now ? toggleHideCurrent() : toggleMonth(m))} />
                 {monthLabel(m)}
               </label>
             ))}

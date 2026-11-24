@@ -4,7 +4,7 @@
  *  including the iPad fix (touchstart/touchmove preventDefault — without it iPadOS swallowed a pencil
  *  touch that landed within ~0.4 s of the previous one). */
 import { InkBuffers, Stamper, rdp, type Ev, type ImageEv, type Item, type Layers, type Poly, type Pt, type StrokeEv, type Tool, type View, type Xf } from './ink'
-import { bboxOf, fold, isIdentity, layerOf, onlyList, piecesIn, simplifyPoly, xfPoly, xfXY, type BBox } from './select'
+import { bboxOf, fold, isIdentity, layerOf, onlyList, piecesIn, simplifyPoly, xfItem, xfPoly, xfXY, type BBox } from './select'
 import type { MonthLog } from './oplog'
 import { getBlob, ingest, monthKey } from './store'
 import type { CanvasData } from './sync'
@@ -15,8 +15,8 @@ export interface ToolSetting {
 }
 export type Settings = Record<Tool, ToolSetting>
 /** The toolbar's tools: three that draw, two that select. */
-/** `wipe` = a lasso whose selection reaches every earlier period that is showing: move, duplicate or erase it across time. */
-export type UiTool = Tool | 'lasso' | 'rect' | 'wipe'
+/** `timeline` = a lasso whose selection reaches every earlier period that is showing: move, duplicate or erase it across time. */
+export type UiTool = Tool | 'lasso' | 'rect' | 'timeline'
 /** A 24 px cursor drawn from the tool's icon: a white halo under the orange line so it reads on light and dark, with the
  *  hot spot at the working tip. */
 const cursorOf = (path: string, hx: number, hy: number, dash = '', fill = 'none') => {
@@ -30,7 +30,7 @@ const CURSORS: Record<UiTool, string> = {
   eraser: 'none', // the ring is the cursor
   lasso: cursorOf('M6 9c0-3 6-5 10-3s3 7-1 9-8 1-9-2M10 17c0 2 1 3 3 4', 13, 21, "stroke-dasharray='3 2.4'"),
   rect: 'crosshair',
-  wipe: cursorOf('M6 9c0-3 6-5 10-3s3 7-1 9-8 1-9-2M10 17c0 2 1 3 3 4M4 4l16 16', 13, 21, "stroke-dasharray='3 2.4'"),
+  timeline: cursorOf('M6 9c0-3 6-5 10-3s3 7-1 9-8 1-9-2M10 17c0 2 1 3 3 4M4 4l16 16', 13, 21, "stroke-dasharray='3 2.4'"),
 }
 /** The part of a selection that lives in one earlier period. */
 interface SelPart {
@@ -38,7 +38,7 @@ interface SelPart {
   ids: string[]
   pieces: Item[]
 }
-const isSelect = (t: UiTool) => t === 'lasso' || t === 'rect' || t === 'wipe'
+const isSelect = (t: UiTool) => t === 'lasso' || t === 'rect' || t === 'timeline'
 const isDraw = (t: UiTool): t is Tool => !isSelect(t)
 // Josh-tuned defaults (ink-spike, 2026-11-17)
 export const DEFAULT_SETTINGS: Settings = {
@@ -81,6 +81,8 @@ export interface ControllerHooks {
   onTouchDraws(on: boolean): void
   /** The offset marker was added or cleared. */
   onMark(on: boolean): void
+  /** The current period was shown again by itself (a tool touched the canvas while it was hidden). */
+  onHideCurrent?(hidden: boolean): void
   /** The zoom changed (1 = 100 %). */
   onZoom(z: number): void
   /** The tool changed (by the user, or by a swap from a pen button). */
@@ -146,6 +148,7 @@ export class CanvasController {
   private bboxCache = new Map<string, BBox>() // per item id: its ink bounds (an item's points never change under the same id)
   private baseKey = '' // what the dimmed-months layer currently shows
   private dimLevel = DIM // how bright the earlier periods are drawn: DIM, or 1 when dimming is off
+  private hideCurrent = false // this period is hidden so the earlier ones show through (at full brightness)
   private bitmapsLoaded = 0
   private stamped: string[] = [] // the events (id:active) drawn into the ink buffers, in order — lets a peer's new strokes be stamped on top instead of redrawing everything
 
@@ -275,6 +278,15 @@ export class CanvasController {
   setSetting(t: Tool, s: Partial<ToolSetting>) {
     Object.assign(this.settings[t], s)
     if (t === this.tool) this.updateMarkRing()
+  }
+  /** Hide this period to see what is underneath it. Earlier periods then show at full brightness; the timeline tool keeps working on
+   *  them; any other tool touching the canvas shows this period again. */
+  setHideCurrent(on: boolean) {
+    if (this.hideCurrent === on) return
+    this.hideCurrent = on
+    this.clearSel()
+    this.baseKey = ''
+    this.rebuild()
   }
   /** Earlier periods underneath: dimmed (default) or at full brightness. */
   setDim(on: boolean) {
@@ -470,7 +482,7 @@ export class CanvasController {
     const { base, imgs, ink } = this.ctx
     // other months, oldest first, dimmed, underneath — redrawn only if something they depend on changed
     const months = [...this.visibleMonths].sort()
-    const baseKey = [W, H, this.view.x, this.view.y, this.view.z, this.layers.pencil, this.layers.pen, this.layers.image, this.bitmapsLoaded, this.dimLevel, [...this.liftOthers.keys()].join('+'), months.map((m) => m + ':' + this.data.log(m).version).join(',')].join('|')
+    const baseKey = [W, H, this.view.x, this.view.y, this.view.z, this.layers.pencil, this.layers.pen, this.layers.image, this.bitmapsLoaded, this.dimLevel, this.hideCurrent, [...this.liftOthers.keys()].join('+'), months.map((m) => m + ':' + this.data.log(m).version).join(',')].join('|')
     if (baseKey !== this.baseKey) {
       this.baseKey = baseKey
       base.clearRect(0, 0, W, H)
@@ -485,7 +497,7 @@ export class CanvasController {
         ti.clearRect(0, 0, W, H)
         this.buf.flush(ti, this.layers) // only the part the strokes reached
         tm.drawImage(this.tmpInk, 0, 0)
-        base.globalAlpha = this.dimLevel
+        base.globalAlpha = this.hideCurrent ? 1 : this.dimLevel
         base.drawImage(this.tmpMonth, 0, 0)
         base.globalAlpha = 1
       }
@@ -494,6 +506,7 @@ export class CanvasController {
     imgs.clearRect(0, 0, W, H)
     if (this.lift) this.items = fold(this.events, [{ type: 'delete', poly: this.lift.poly, only: this.lift.only, ids: this.lift.ids }])
     else this.items = this.monthItems(this.month)
+    if (this.hideCurrent) this.items = [] // hidden: nothing of this period is drawn
     this.drawImages(imgs, this.items)
     this.buf.clear(this.view)
     this.stampAll(this.items)
@@ -591,7 +604,7 @@ export class CanvasController {
   }
   /** The shape's ink in each earlier period that is showing (wipe tool): the same lasso, across time. */
   private partsIn(poly: Poly): SelPart[] {
-    if (this.tool !== 'wipe') return []
+    if (this.tool !== 'timeline') return []
     const parts: SelPart[] = []
     for (const m of [...this.visibleMonths].sort()) {
       const { pieces, ids } = piecesIn(this.monthItems(m), poly, this.layers)
@@ -606,7 +619,7 @@ export class CanvasController {
     this.drawOverlay()
   }
   private selectPoly(poly: Poly) {
-    this.setSel(poly, piecesIn(fold(this.events), poly, this.layers), this.partsIn(poly))
+    this.setSel(poly, this.hideCurrent ? { ids: [], pieces: [] } : piecesIn(fold(this.events), poly, this.layers), this.partsIn(poly))
   }
   /** The journal changed under a selection (our own op coming back stamped, or a peer's): keep holding the same ink.
    *  Its ids are stable, so look the pieces up again; the selection only goes if all of it is gone. */
@@ -626,13 +639,27 @@ export class CanvasController {
     this.refreshSelectionView()
     this.drawOverlay()
   }
-  /** After a move / duplicate: select exactly the pieces that op produced (in this period and, for the wipe tool, in each earlier
-   *  one) — not whatever else sits where they landed. */
-  private selectMoved(poly: Poly, opId: string | null, otherOps: { month: string; opId: string }[] = []) {
+  /** After a move / duplicate: select exactly the pieces that op produced (in this period and, for the timeline tool, in each earlier
+   *  one) — not whatever else sits where they landed. `exactIds` are items by their own id (new strokes added as copies). */
+  private selectMoved(poly: Poly, opId: string | null, otherOps: { month: string; opId: string }[] = [], exactIds: string[] = []) {
     const pick = (items: Item[], id: string) => items.filter((it) => it.tool !== 'eraser' && it.id.includes(`~${id}i`) && this.layers[layerOf(it)])
-    const mine = opId ? pick(fold(this.events), opId) : []
+    const want = new Set(exactIds)
+    const mine = [...(opId ? pick(fold(this.events), opId) : []), ...fold(this.events).filter((it) => want.has(it.id) && this.layers[layerOf(it)])]
     const others = otherOps.map((o) => ({ month: o.month, pieces: pick(this.monthItems(o.month), o.opId) })).filter((o) => o.pieces.length).map((o) => ({ ...o, ids: o.pieces.map((it) => it.id) }))
     this.setSel(poly, { ids: mine.map((it) => it.id), pieces: mine }, others)
+  }
+  /** Add an event to this period's log without a live stroke behind it (a copy, not something just drawn). */
+  private addCurrent(ev: Ev): string {
+    const op = this.log.addEvent(ev)
+    this.data.added(this.month)
+    this.hooks.onChange()
+    return op.cid
+  }
+  /** An earlier period's piece as a brand-new stroke / image event in this period, moved by `xf`. */
+  private copyAsEvent(piece: Item, xf: Xf): Ev {
+    const it = xfItem(piece, xf)
+    if (it.tool === 'image') return { type: 'image', hash: it.hash, rect: it.rect.map((v) => +v.toFixed(1)) as ImageEv['rect'] }
+    return { type: 'stroke', tool: it.tool, seed: it.seed, size: +it.size.toFixed(2), ...(it.op != null ? { op: it.op } : {}), pts: it.pts.map((q) => [+q[0].toFixed(1), +q[1].toFixed(1), q[2], q[3]] as Pt) }
   }
   /** Write an op into an earlier period's own log (earlier periods are read-only on the canvas, so this is how the wipe tool reaches them). */
   private addEarlier(month: string, ev: Ev): string {
@@ -659,16 +686,19 @@ export class CanvasController {
     this.rebuild()
     this.drawOverlay()
   }
+  /** Duplicate: this period's ink as before (a copy op); each earlier period's ink comes in as NEW strokes/images on the current timeline,
+   *  not back into the period it came from. */
   duplicateSelection() {
     const s = this.sel
     if (!s) return
     const o = 24 / this.view.z
     const xf: Xf = { dx: o, dy: o, s: 1, cx: (s.bbox[0] + s.bbox[2]) / 2, cy: (s.bbox[1] + s.bbox[3]) / 2 }
     const only = onlyList(this.layers)
-    const { mine, others } = this.applyToSelection((ids) => ({ type: 'move', poly: s.poly, xf, copy: true, only, ids }))
+    const mine = s.ids.length ? this.pushEvent({ type: 'move', poly: s.poly, xf, copy: true, only, ids: s.ids }).cid : null
+    const fresh = s.others.flatMap((p) => p.pieces).map((piece) => this.addCurrent(this.copyAsEvent(piece, xf)))
     this.sel = null
     this.rebuild()
-    this.selectMoved(xfPoly(s.poly, xf), mine, others)
+    this.selectMoved(xfPoly(s.poly, xf), mine, [], fresh)
   }
 
   private selDown(e: PointerEvent) {
@@ -706,7 +736,7 @@ export class CanvasController {
     const f = this.ctx.float
     const tmp = this.tmpInk.getContext('2d')!
     f.clearRect(0, 0, W, H)
-    const groups = [...s.others.map((o) => ({ pieces: o.pieces, alpha: this.dimLevel })), { pieces: s.pieces, alpha: 1 }]
+    const groups = [...s.others.map((o) => ({ pieces: o.pieces, alpha: this.hideCurrent ? 1 : this.dimLevel })), { pieces: s.pieces, alpha: 1 }]
     for (const g of groups) {
       if (!g.pieces.length) continue
       this.buf.clear(this.view)
@@ -835,6 +865,10 @@ export class CanvasController {
   }
 
   private pointerDown(e: PointerEvent) {
+    if (this.hideCurrent && this.tool !== 'timeline' && e.button === 0) {
+      this.setHideCurrent(false) // drawing or selecting here: bring this period back first
+      this.hooks.onHideCurrent?.(false)
+    }
     this.penButton(e)
     const now = performance.now()
     if (e.pointerType === 'touch' && this.penSeen && (this.live || now - this.lastPenT < 700)) return e.preventDefault() // palm
@@ -1179,7 +1213,7 @@ export class CanvasController {
       this.mini.height = this.miniLayer.height = Math.round(ch * dpr)
       this.miniKey = ''
     }
-    const groups = [...this.visibleMonths].sort().map((m) => ({ items: this.monthItems(m), dim: true, v: this.data.log(m).version })).concat([{ items: this.monthItems(this.month), dim: false, v: this.log.version }])
+    const groups = [...this.visibleMonths].sort().map((m) => ({ items: this.monthItems(m), dim: true, v: this.data.log(m).version })).concat(this.hideCurrent ? [] : [{ items: this.monthItems(this.month), dim: false, v: this.log.version }])
     // bounds: all the ink (stable while you pan), recomputed only when a month's log changes
     const bkey = groups.map((g) => g.v).join(',') + '|' + this.layers.image
     if (this.miniBounds.key !== bkey) {

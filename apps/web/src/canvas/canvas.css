@@ -71,6 +71,18 @@
   background: var(--brand);
   color: var(--paper);
 }
+/* The app-wide `button:hover` fills every button orange, and on touch screens :hover sticks after a tap — so a toggled-OFF button
+   looked "on" (and an ON one looked the same). Canvas buttons keep their on/off look under hover: only a light tint says "hovered". */
+.canvas-btn:hover:not(:disabled):not(.on),
+.canvas-fab:hover:not(:disabled):not(.on) {
+  background: color-mix(in srgb, var(--brand) 12%, var(--paper));
+  color: var(--brand);
+}
+.canvas-btn.on:hover:not(:disabled),
+.canvas-fab.on:hover:not(:disabled) {
+  background: var(--brand);
+  color: var(--paper);
+}
 .canvas-btn:disabled {
   opacity: 0.4;
 }
