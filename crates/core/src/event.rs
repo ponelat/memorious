@@ -1,4 +1,5 @@
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde_json::{Map, Value};
 
 /// The event kinds. `Infra` (2026-09-16) is a deliberate, one-time exception to
 /// "no more without a fight": it's an open-world envelope for peer/security/ops
@@ -67,12 +68,21 @@ pub enum MediaKind {
 /// the transcript is the record and the blob is disposable. `Music` is the
 /// record itself — captured clean, never transcribed, never evicted.
 /// The full policy lives in one place: `crates/core/src/retention.rs`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AudioKind {
     #[default]
     Voice,
     Music,
+}
+
+/// Open enum: a value this build doesn't know (a newer client's `audio_kind`) reads as `Voice`, the default, instead of
+/// failing the whole payload; the original value is kept in `Event::payload_extra` so it still round-trips.
+impl<'de> Deserialize<'de> for AudioKind {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(d)?;
+        Ok(AudioKind::parse(&s).unwrap_or_default())
+    }
 }
 
 impl AudioKind {
@@ -310,7 +320,11 @@ impl<'de> Deserialize<'de> for Payload {
 }
 
 /// Event envelope. Append-only: an Event is immutable once written.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// **Open world.** `extra` and `payload_extra` hold properties this build does not know (a newer client's), kept verbatim so
+/// they survive storage, sync and export through any older peer. They are never interpreted here. Serialization writes them
+/// back, so `serialize(deserialize(json)) == json` as JSON values (key order is not preserved; values are).
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Event {
     pub event_id: String,
     pub device_id: String,
@@ -320,8 +334,111 @@ pub struct Event {
     pub kind: EventKind,
     pub payload: Payload,
     /// "I intend to enrich this" (captures only).
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub will_enrich: bool,
+    /// Envelope properties this build doesn't know.
+    pub extra: Map<String, Value>,
+    /// Properties this build doesn't know inside a payload of a type it does know (for an unknown payload type the whole
+    /// object is in `Payload::Unknown`).
+    pub payload_extra: Map<String, Value>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct EventRepr {
+    event_id: String,
+    device_id: String,
+    seq: u64,
+    recorded_at: i64,
+    kind: EventKind,
+    payload: Value,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    will_enrich: bool,
+    #[serde(flatten)]
+    extra: Map<String, Value>,
+}
+
+/// Parse a stored/received payload object: the typed view plus whatever properties it carried that the typed view does not
+/// re-emit (unknown properties, and defaults a newer client spelled out).
+pub fn split_payload(v: Value) -> (Payload, Map<String, Value>) {
+    let payload: Payload = match serde_json::from_value(v.clone()) {
+        Ok(p) => p,
+        Err(_) => {
+            let type_tag = v.get("type").and_then(|t| t.as_str()).unwrap_or_default().to_string();
+            return (Payload::Unknown { type_tag, data: v }, Map::new());
+        }
+    };
+    let mut extra = Map::new();
+    if !matches!(payload, Payload::Unknown { .. }) {
+        if let (Value::Object(orig), Ok(Value::Object(again))) = (&v, serde_json::to_value(&payload)) {
+            for (k, x) in orig {
+                if !again.contains_key(k) {
+                    extra.insert(k.clone(), x.clone());
+                }
+            }
+        }
+    }
+    (payload, extra)
+}
+
+impl Event {
+    /// An event with no extra properties (everything a local append writes).
+    pub fn new(event_id: String, device_id: String, seq: u64, recorded_at: i64, kind: EventKind, payload: Payload, will_enrich: bool) -> Self {
+        Self { event_id, device_id, seq, recorded_at, kind, payload, will_enrich, extra: Map::new(), payload_extra: Map::new() }
+    }
+
+    /// The payload as JSON, typed fields plus the preserved unknown ones. This is what is stored and sent.
+    pub fn payload_json(&self) -> Value {
+        let mut v = serde_json::to_value(&self.payload).unwrap_or(Value::Null);
+        if let Value::Object(m) = &mut v {
+            for (k, x) in &self.payload_extra {
+                m.entry(k.clone()).or_insert_with(|| x.clone());
+            }
+        }
+        v
+    }
+
+    /// Build an event from stored columns.
+    pub fn from_stored(event_id: String, device_id: String, seq: u64, recorded_at: i64, kind: EventKind, payload_json: &str, will_enrich: bool, extra_json: Option<&str>) -> serde_json::Result<Self> {
+        let (payload, payload_extra) = split_payload(serde_json::from_str(payload_json)?);
+        let extra = match extra_json {
+            Some(s) => serde_json::from_str(s)?,
+            None => Map::new(),
+        };
+        Ok(Self { event_id, device_id, seq, recorded_at, kind, payload, will_enrich, extra, payload_extra })
+    }
+}
+
+impl Serialize for Event {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        EventRepr {
+            event_id: self.event_id.clone(),
+            device_id: self.device_id.clone(),
+            seq: self.seq,
+            recorded_at: self.recorded_at,
+            kind: self.kind.clone(),
+            payload: self.payload_json(),
+            will_enrich: self.will_enrich,
+            extra: self.extra.clone(),
+        }
+        .serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for Event {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let r = EventRepr::deserialize(deserializer)?;
+        let (payload, payload_extra) = split_payload(r.payload);
+        Ok(Event {
+            event_id: r.event_id,
+            device_id: r.device_id,
+            seq: r.seq,
+            recorded_at: r.recorded_at,
+            kind: r.kind,
+            payload,
+            will_enrich: r.will_enrich,
+            extra: r.extra,
+            payload_extra,
+        })
+    }
 }
 
 impl Payload {

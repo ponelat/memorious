@@ -347,6 +347,8 @@ mod tests {
             kind: EventKind::Capture,
             payload,
             will_enrich: false,
+            extra: Default::default(),
+            payload_extra: Default::default(),
         }
     }
 

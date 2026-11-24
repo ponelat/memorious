@@ -31,6 +31,8 @@ CREATE TABLE IF NOT EXISTS events (
   kind        TEXT NOT NULL,
   payload     TEXT NOT NULL,
   will_enrich INTEGER NOT NULL DEFAULT 0,
+  -- Envelope properties this build doesn't know (JSON object), kept verbatim so they sync on unchanged (open world).
+  extra       TEXT,
   -- When THIS peer first saw the event. Local only, never syncs; the
   -- enrichment grace period counts from here, not from recorded_at.
   local_received_at INTEGER NOT NULL DEFAULT 0,
@@ -88,6 +90,8 @@ impl Store {
             "ALTER TABLE events ADD COLUMN local_received_at INTEGER NOT NULL DEFAULT 0",
             [],
         );
+        // Open-world envelope extras (2026-11-24); errors mean the column exists.
+        let _ = conn.execute("ALTER TABLE events ADD COLUMN extra TEXT", []);
         Ok(Self {
             conn: Mutex::new(conn),
             ink_tx: tokio::sync::broadcast::channel(256).0,
@@ -188,15 +192,7 @@ impl Store {
                 |r| r.get(0),
             )
             .unwrap_or(0);
-        let event = Event {
-            event_id: uuid::Uuid::now_v7().to_string(),
-            device_id: device_id.to_string(),
-            seq: head + 1,
-            recorded_at,
-            kind,
-            payload,
-            will_enrich,
-        };
+        let event = Event::new(uuid::Uuid::now_v7().to_string(), device_id.to_string(), head + 1, recorded_at, kind, payload, will_enrich);
         insert_event(&tx, &event)?;
         tx.commit()?;
         self.announce(&event);
@@ -249,7 +245,7 @@ impl Store {
     pub fn events_missing_from(&self, peer_heads: &Heads) -> Result<Vec<Event>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT event_id, device_id, seq, recorded_at, kind, payload, will_enrich
+            "SELECT event_id, device_id, seq, recorded_at, kind, payload, will_enrich, extra
              FROM events ORDER BY device_id, seq",
         )?;
         let rows = stmt.query_map([], row_to_event)?;
@@ -268,7 +264,7 @@ impl Store {
     pub fn all_events(&self) -> Result<Vec<Event>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT event_id, device_id, seq, recorded_at, kind, payload, will_enrich
+            "SELECT event_id, device_id, seq, recorded_at, kind, payload, will_enrich, extra
              FROM events ORDER BY recorded_at, event_id",
         )?;
         let rows = stmt.query_map([], row_to_event)?;
@@ -303,7 +299,7 @@ impl Store {
     pub fn ink_events(&self, month: &str, after: i64) -> Result<Vec<(i64, Event)>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT rowid, event_id, device_id, seq, recorded_at, kind, payload, will_enrich
+            "SELECT rowid, event_id, device_id, seq, recorded_at, kind, payload, will_enrich, extra
              FROM events
              WHERE rowid > ?2
                AND kind = 'infra'
@@ -317,19 +313,10 @@ impl Store {
             let payload_str: String = r.get(6)?;
             let kind: EventKind = serde_json::from_str(&format!("\"{kind_str}\""))
                 .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
-            let payload: Payload = serde_json::from_str(&payload_str)
-                .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
             Ok((
                 rowid,
-                Event {
-                    event_id: r.get(1)?,
-                    device_id: r.get(2)?,
-                    seq: r.get(3)?,
-                    recorded_at: r.get(4)?,
-                    kind,
-                    payload,
-                    will_enrich: r.get(7)?,
-                },
+                Event::from_stored(r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, kind, &payload_str, r.get(7)?, r.get::<_, Option<String>>(8)?.as_deref())
+                    .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?,
             ))
         })?;
         let mut out = Vec::new();
@@ -363,7 +350,7 @@ impl Store {
         let conn = self.conn.lock().unwrap();
         let ev = conn
             .query_row(
-                "SELECT event_id, device_id, seq, recorded_at, kind, payload, will_enrich
+                "SELECT event_id, device_id, seq, recorded_at, kind, payload, will_enrich, extra
                  FROM events WHERE kind = 'token_set'
                  ORDER BY recorded_at DESC, device_id DESC, seq DESC LIMIT 1",
                 [],
@@ -377,7 +364,7 @@ impl Store {
         let conn = self.conn.lock().unwrap();
         let ev = conn
             .query_row(
-                "SELECT event_id, device_id, seq, recorded_at, kind, payload, will_enrich
+                "SELECT event_id, device_id, seq, recorded_at, kind, payload, will_enrich, extra
                  FROM events WHERE event_id = ?1",
                 [event_id],
                 row_to_event,
@@ -603,10 +590,10 @@ impl Store {
 fn insert_event(tx: &rusqlite::Transaction, event: &Event) -> Result<()> {
     let kind = serde_json::to_string(&event.kind)?;
     let kind = kind.trim_matches('"');
-    let payload = serde_json::to_string(&event.payload)?;
+    let payload = serde_json::to_string(&event.payload_json())?;
     tx.execute(
-        "INSERT INTO events (event_id, device_id, seq, recorded_at, kind, payload, will_enrich, local_received_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        "INSERT INTO events (event_id, device_id, seq, recorded_at, kind, payload, will_enrich, local_received_at, extra)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
         params![
             event.event_id,
             event.device_id,
@@ -616,6 +603,7 @@ fn insert_event(tx: &rusqlite::Transaction, event: &Event) -> Result<()> {
             payload,
             event.will_enrich,
             now_ms(),
+            if event.extra.is_empty() { None } else { Some(serde_json::to_string(&event.extra)?) },
         ],
     )?;
     if let Some(text) = event.fts_text() {
@@ -632,17 +620,8 @@ fn row_to_event(r: &rusqlite::Row) -> rusqlite::Result<Event> {
     let payload_str: String = r.get(5)?;
     let kind: EventKind = serde_json::from_str(&format!("\"{kind_str}\""))
         .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
-    let payload: Payload = serde_json::from_str(&payload_str)
-        .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
-    Ok(Event {
-        event_id: r.get(0)?,
-        device_id: r.get(1)?,
-        seq: r.get(2)?,
-        recorded_at: r.get(3)?,
-        kind,
-        payload,
-        will_enrich: r.get(6)?,
-    })
+    Event::from_stored(r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, kind, &payload_str, r.get(6)?, r.get::<_, Option<String>>(7)?.as_deref())
+        .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))
 }
 
 pub fn now_ms() -> i64 {
@@ -730,6 +709,8 @@ mod tests {
             kind: EventKind::Capture,
             payload: text("b1"),
             will_enrich: false,
+            extra: Default::default(),
+            payload_extra: Default::default(),
         };
         assert!(store.insert_remote(&remote).unwrap());
         let heads = store.heads().unwrap();
@@ -748,6 +729,8 @@ mod tests {
             kind: EventKind::Capture,
             payload: text("x"),
             will_enrich: false,
+            extra: Default::default(),
+            payload_extra: Default::default(),
         };
         assert!(store.insert_remote(&ev(1)).unwrap());
         assert!(!store.insert_remote(&ev(1)).unwrap()); // duplicate: no-op

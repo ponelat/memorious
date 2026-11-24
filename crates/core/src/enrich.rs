@@ -151,6 +151,8 @@ mod tests {
             kind: EventKind::Capture,
             payload: Payload::Photo { hash: "beef".into(), size: 4, crypto: None },
             will_enrich: true,
+            extra: Default::default(),
+            payload_extra: Default::default(),
         };
         j.store.insert_remote(&flagged_remote).unwrap();
 
