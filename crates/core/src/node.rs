@@ -940,6 +940,41 @@ impl Node {
         media_held(&self.blobs, &self.journal).await
     }
 
+    /// Referenced blobs this device does not hold and is still waiting for:
+    /// not let go by retention, not declared lost. Each row names the capture
+    /// that references it, so a human can decide whether it is `media_lost`.
+    pub async fn missing_media(&self) -> Result<Vec<serde_json::Value>> {
+        let policy = self.journal.retention_policy()?;
+        let evictable: HashSet<String> = self
+            .journal
+            .evictable_blob_hashes(&policy, unix_now_ms())?
+            .into_iter()
+            .collect();
+        let lost = self.journal.lost_blob_hashes()?;
+        let mut out = Vec::new();
+        let mut seen = HashSet::new();
+        for hex in self.journal.store.referenced_blob_hashes()? {
+            if evictable.contains(&hex) || lost.contains(&hex) || !seen.insert(hex.clone()) {
+                continue;
+            }
+            let hash: Hash = hex.parse().context("bad hash in log")?;
+            if self.blobs.has(hash).await? {
+                continue;
+            }
+            let capture = self.journal.store.capture_for_hash(&hex)?;
+            let (event_id, kind) = match &capture {
+                Some((id, p)) => (Some(id.clone()), p.media_kind().map(|k| format!("{k:?}").to_lowercase())),
+                None => (None, None),
+            };
+            let recorded_at = match &event_id {
+                Some(id) => self.journal.store.get_event(id)?.map(|e| e.recorded_at),
+                None => None,
+            };
+            out.push(serde_json::json!({"hash": hex, "capture": event_id, "kind": kind, "recorded_at": recorded_at}));
+        }
+        Ok(out)
+    }
+
     /// One full sync round-trip with the peer at `addr`: events, then media.
     pub async fn sync_with(&self, addr: &EndpointAddr) -> Result<SyncReport> {
         if self.journal.is_isolated()? {
@@ -1207,11 +1242,14 @@ async fn media_held(blobs: &BlobStore, journal: &Journal) -> Result<MediaHeld> {
         bytes: journal.storage_usage()?.blobs_bytes,
         ..MediaHeld::default()
     };
+    let lost = journal.lost_blob_hashes()?;
     for hex in journal.store.referenced_blob_hashes()? {
         tally.referenced += 1;
         let hash: Hash = hex.parse().context("bad hash in log")?;
         if blobs.has(hash).await? {
             tally.held += 1;
+        } else if lost.contains(&hex) {
+            tally.lost += 1;
         } else if evictable.contains(&hex) {
             tally.evictable += 1;
         }
@@ -1313,10 +1351,11 @@ async fn fetch_missing_blobs(
         .evictable_blob_hashes(&journal.retention_policy()?, unix_now_ms())?
         .into_iter()
         .collect();
+    let lost = journal.lost_blob_hashes()?;
     let mut missing = Vec::new();
     let mut seen = HashSet::new();
     for hex in journal.store.referenced_blob_hashes()? {
-        if evictable.contains(&hex) {
+        if evictable.contains(&hex) || lost.contains(&hex) {
             continue;
         }
         let hash: Hash = hex.parse().context("bad hash in log")?;

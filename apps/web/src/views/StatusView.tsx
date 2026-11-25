@@ -96,6 +96,7 @@ function holdingsLabel(peer: PeerInfo, status: Status): { text: string; behind: 
     } else if (m.evictable > 0) {
       text += ` · ${m.evictable} let go by its policy`
     }
+    if (m.lost) text += ` · ${m.lost} lost for good`
   }
   const keeps = peer.device_id ? status.peer_policies?.[peer.device_id] : undefined
   if (keeps !== undefined) text += keeps ? ' · keeps revisions' : ' · visible data only'
@@ -1003,6 +1004,7 @@ export function StatusView() {
                   this device{row.headSeq !== undefined && ` · ${row.headSeq} events`}
                   {status.media && ` · media ${status.media.held} of ${status.media.referenced}`}
                   {status.media && status.media.evictable > 0 && ` (${status.media.evictable} let go by policy)`}
+                  {status.media && !!status.media.lost && ` · ${status.media.lost} lost for good`}
                 </span>
               )}
               {!row.isSelf && row.peer && (

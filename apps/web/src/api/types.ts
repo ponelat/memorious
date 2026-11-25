@@ -53,6 +53,8 @@ export interface MediaHeld {
   referenced: number
   held: number
   evictable: number
+  /** Declared lost for good (`media_lost` events); no longer counted as missing. */
+  lost?: number
   bytes: number
   policy?: unknown
 }

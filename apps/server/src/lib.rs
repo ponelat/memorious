@@ -235,6 +235,8 @@ pub fn app(state: RouterState, web_dist: Option<PathBuf>) -> Router {
         .route("/status", get(status))
         .route("/peers/ping", post(ping_peers))
         .route("/peers/required", post(set_peer_required))
+        .route("/media/missing", get(missing_media))
+        .route("/media/lost", post(mark_media_lost))
         .route("/isolate", post(isolate))
         .route("/migrate-ink", post(migrate_ink))
         .route("/ink/fold", post(fold_ink))
@@ -798,6 +800,28 @@ async fn set_peer_required(
 ) -> Response {
     match state.journal().set_peer_required(&body.endpoint_id, body.required) {
         Ok(()) => Json(json!({"ok": true})).into_response(),
+        Err(e) => err(StatusCode::BAD_REQUEST, &format!("{e:#}")),
+    }
+}
+
+/// `GET /api/media/missing` — blobs this device still waits for (each with its capture), and those already declared lost.
+async fn missing_media(State(state): State<SharedState>) -> Response {
+    match (state.node.missing_media().await, state.journal().lost_media()) {
+        (Ok(missing), Ok(lost)) => Json(json!({"missing": missing, "lost": lost})).into_response(),
+        (Err(e), _) | (_, Err(e)) => internal(e),
+    }
+}
+
+#[derive(Deserialize)]
+struct MediaLostBody {
+    hash: String,
+    reason: Option<String>,
+}
+
+/// `POST /api/media/lost {hash, reason?}` — declare a referenced blob lost for good (a synced `media_lost` event).
+async fn mark_media_lost(State(state): State<SharedState>, Json(body): Json<MediaLostBody>) -> Response {
+    match state.journal().mark_media_lost(&body.hash, body.reason.as_deref()) {
+        Ok(ev) => Json(json!({"ok": true, "new": ev.is_some()})).into_response(),
         Err(e) => err(StatusCode::BAD_REQUEST, &format!("{e:#}")),
     }
 }

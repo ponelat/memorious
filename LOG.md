@@ -715,3 +715,11 @@
 - Validation: 131 core checks, native journal/recording/background suites and all
   eight graphical checks pass. The native canvas fixture covers save/reopen,
   selection, vertical scaling, duplication and undo/redo.
+
+## 2026-11-25 — `media_lost`
+
+- New infra event `media_lost` (`target` = blob hash, `data.reason?`): a referenced blob no device can supply any
+  more. No wire change. A lost blob stops counting as missing (`MediaHeld.lost`, subtracted in `missing()`), is
+  never fetched, and the capture/placeholder stay — append-only. A device that still holds the bytes counts them as
+  held. `Journal::mark_media_lost` (idempotent; refuses a hash no capture references), `lost_media()`,
+  `Node::missing_media()`; server `GET /api/media/missing`, `POST /api/media/lost`.

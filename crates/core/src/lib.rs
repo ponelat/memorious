@@ -13,6 +13,7 @@ pub mod ink;
 pub mod ink_fold;
 pub mod journal;
 pub mod local;
+pub mod lost_media;
 pub mod mcp;
 pub mod mcp_quic;
 pub mod media;

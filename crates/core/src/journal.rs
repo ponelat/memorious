@@ -94,6 +94,9 @@ pub struct MediaHeld {
     pub referenced: u64,
     pub held: u64,
     pub evictable: u64,
+    /// Declared lost for good (`media_lost` events): referenced, held by no
+    /// device, and no longer waited for.
+    pub lost: u64,
     /// Bytes in the blob store (everything on disk, not just referenced).
     pub bytes: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -106,6 +109,7 @@ impl MediaHeld {
         self.referenced
             .saturating_sub(self.held)
             .saturating_sub(self.evictable)
+            .saturating_sub(self.lost)
     }
     pub fn complete(&self) -> bool {
         self.missing() == 0

@@ -391,6 +391,12 @@ async fn dispatch(
             }
             node.journal().ink_append_json(period, ops.clone())
         }
+        "missing_media" => Ok(json!({ "missing": node.missing_media().await?, "lost": node.journal().lost_media()? })),
+        "mark_media_lost" => {
+            let hash = request.params["hash"].as_str().context("missing blob hash")?;
+            let event = node.journal().mark_media_lost(hash, request.params["reason"].as_str())?;
+            Ok(json!({"ok": true, "new": event.is_some()}))
+        }
         "set_peer_required" => {
             node.journal().set_peer_required(
                 request.params["endpoint_id"]
