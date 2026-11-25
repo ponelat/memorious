@@ -84,3 +84,72 @@ async fn newest_held_is_judged_by_the_peers_heads() {
     a.shutdown().await;
     b.shutdown().await;
 }
+
+#[tokio::test]
+async fn newest_event_names_the_drawing_and_quotes_the_transcript() {
+    use memorious_core::event::MediaKind;
+    let dir = tempdir().unwrap();
+    let ja = Journal::init(&dir.path().join("a"), "pw").unwrap();
+    let a = Node::spawn(ja).await.unwrap();
+
+    // a voice note with a transcript: the line quotes the beginning of it, not just "Voice note"
+    let voice = a.capture_blob(MediaKind::Audio, b"pcm".to_vec()).await.unwrap();
+    a.journal().annotate(&voice.event_id, "Remember to order the bolts before Friday and ask about the longer ones").unwrap();
+    let n = a.journal().newest_event(None).unwrap().unwrap();
+    assert_eq!(n.kind, "voice");
+    assert!(n.title.starts_with("Remember to order the bolts"), "{}", n.title);
+
+    // a squiggle is newer: it shows as a drawing with its dot count and a normalised shape
+    a.journal()
+        .append_ink_batch(
+            "2026-W48",
+            vec![serde_json::json!({"op":"stroke","tool":"pen","seed":1,"size":2,"cid":"c1","pts":[[0,0,1,0],[10,5,1,1],[20,0,1,2],[30,9,1,3]]})],
+        )
+        .unwrap();
+    let n = a.journal().newest_event(None).unwrap().unwrap();
+    assert_eq!((n.kind.as_str(), n.points), ("ink", Some(4)));
+    let shape = n.shape.expect("a squiggle to draw");
+    assert_eq!(shape.len(), 4);
+    assert!(shape.iter().all(|p| (0.0..=1.0).contains(&p[0]) && (0.0..=1.0).contains(&p[1])));
+
+    a.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_failed_attempt_is_visible_and_a_nudge_pushes_soon() {
+    let dir = tempdir().unwrap();
+    let ja = Journal::init(&dir.path().join("a"), "pw").unwrap();
+    let secret = *ja.secret();
+    let a = Node::spawn(ja).await.unwrap();
+    let jb = Journal::init_with_secret(&dir.path().join("b"), secret, "pw").unwrap();
+    let b = Node::spawn(jb).await.unwrap();
+    a.journal().capture_text("hello").unwrap();
+    a.sync_with(&b.addr()).await.unwrap();
+
+    // contact worked: no failure on record, nothing in flight
+    let p = &a.peers().await.unwrap()[0];
+    assert!(!p.syncing && p.last_error.is_none() && p.last_attempt_ms.is_some());
+
+    // the schedule the server publishes comes back in status
+    a.set_sync_schedule(1_000, 900_000);
+    let st = a.status_json().await.unwrap();
+    assert_eq!(st["sync"]["next_ms"], 1_000);
+    assert_eq!(st["sync"]["interval_ms"], 900_000);
+
+    // b goes away; a's next attempt fails and says why
+    b.shutdown().await;
+    let ep = a.peers().await.unwrap()[0].endpoint_id.clone();
+    let ping = a.ping_peer(&ep, None, std::time::Duration::from_secs(2)).await;
+    assert!(!ping.ok);
+    let p = &a.peers().await.unwrap()[0];
+    assert!(p.last_error.is_some() && !p.syncing);
+
+    // a nudge: only the latest of a burst fires, and it is announced while pending
+    let g1 = a.nudge_begin(std::time::Duration::from_secs(5));
+    let g2 = a.nudge_begin(std::time::Duration::from_secs(5));
+    assert!(a.status_json().await.unwrap()["sync"]["nudge_at_ms"].as_i64().unwrap() > 0);
+    assert!(!a.nudge_take(g1), "a newer nudge supersedes");
+    assert!(a.nudge_take(g2));
+    assert_eq!(a.status_json().await.unwrap()["sync"]["nudge_at_ms"], 0);
+    a.shutdown().await;
+}

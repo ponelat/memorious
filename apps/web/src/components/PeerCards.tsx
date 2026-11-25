@@ -45,13 +45,25 @@ function Icon({ d, size = 18 }: { d: string; size?: number }) {
   )
 }
 
+function Squiggle({ shape }: { shape: [number, number][] }) {
+  const pts = shape.map(([x, y]) => `${(2 + x * 24).toFixed(1)},${(2 + y * 14).toFixed(1)}`).join(' ')
+  return (
+    <svg width="28" height="18" viewBox="0 0 28 18" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <polyline points={pts} />
+    </svg>
+  )
+}
+
 function EventLine({ label, ev, now, none }: { label: string; ev?: NewestEvent | null; now: number; none: string }) {
   return (
     <>
       <span className="pc-lab">{label}</span>
       {ev ? (
         <>
-          <span className="pc-tt"><Icon d={KIND_ICON[ev.kind] ?? KIND_ICON.text} size={16} /> {ev.title}</span>
+          <span className="pc-tt">
+            {ev.kind === 'ink' && ev.shape ? <Squiggle shape={ev.shape} /> : <Icon d={KIND_ICON[ev.kind] ?? KIND_ICON.text} size={16} />}
+            <span className="pc-ttx">{ev.kind === 'ink' ? `Drawing · ${ev.points ?? 0} dots` : ev.title}</span>
+          </span>
           <span className="pc-tm">{ago(ev.recorded_at, now)}</span>
         </>
       ) : (
@@ -222,10 +234,19 @@ export function PeerCards({ status, history, now, nameOf, renderTools, buildText
         const age = now - p.last_ok_ms
         const inWindow = p.last_ok_ms > 0 && age <= WINDOW_MS
         const tone = p.last_ok_ms <= 0 || age > AGE_STALE ? 'bad' : age > AGE_OK ? 'warn' : 'ok'
+        const waiting = p.events_missing ?? 0
+        const plural = (n: number) => `${n} event${n === 1 ? '' : 's'}`
+        const sc = status.sync
+        const due = Math.min(...[sc?.next_ms, sc?.nudge_at_ms].filter((t): t is number => !!t && t > now - 1000))
+        const inMin = Number.isFinite(due) ? Math.max(0, Math.round((due - now) / 60_000)) : null
+        const dueText = inMin == null ? 'sends at the next sync' : due - now < 90_000 ? 'sends in under a minute' : `sends in ${inMin} min`
+        const failed = !!p.last_error && (p.last_attempt_ms ?? 0) >= p.last_ok_ms
         const tag =
           p.last_ok_ms <= 0 ? 'never reached'
           : !inWindow ? `last heard ${ago(p.last_ok_ms, now)}`
-          : (p.events_missing ?? 0) > 0 ? `${p.events_missing} behind`
+          : p.syncing ? (waiting > 0 ? `sending ${plural(waiting)} now` : 'syncing now')
+          : waiting > 0 && failed ? `${plural(waiting)} waiting · last try failed`
+          : waiting > 0 ? `${plural(waiting)} waiting · ${dueText}`
           : age > AGE_OK ? 'may have more'
           : ''
         const isOpen = open.has(p.endpoint_id)
@@ -247,6 +268,7 @@ export function PeerCards({ status, history, now, nameOf, renderTools, buildText
                 <small>Last ping</small>
                 <b className={`t-${tone}`}>{p.last_ok_ms <= 0 ? 'never' : inWindow ? ago(p.last_ok_ms, now) : 'none in 7 days'}</b>
                 {tag && <span className={`t-${tone === 'ok' ? 'warn' : tone}`}>{tag}</span>}
+                {failed && p.last_error && inWindow && <span className="pc-why">{p.last_error.slice(0, 80)}</span>}
               </span>
             </button>
             <div className="pc-ev">
@@ -295,6 +317,11 @@ export function PeerCards({ status, history, now, nameOf, renderTools, buildText
                         )}
                         <li><b>Found by</b><span>{p.discovery === 'ticket' ? 'pairing ticket' : p.discovery === 'inbound' ? 'it found us' : 'unknown'}</span></li>
                       </ul>
+                      <dl className="pc-kv" style={{ marginTop: 10 }}>
+                        <dt>Next sync</dt>
+                        <dd>{p.syncing ? 'in progress' : sc?.next_ms ? `${dueText.replace('sends ', '')}${sc.interval_ms ? ` (every ${Math.round(sc.interval_ms / 60_000)} min)` : ''}` : 'not scheduled on this device'}</dd>
+                        {p.last_attempt_ms ? (<><dt>Last try</dt><dd>{ago(p.last_attempt_ms, now)}{failed ? <> · <b className="t-bad">failed</b>: {p.last_error}</> : ' · worked'}</dd></>) : null}
+                      </dl>
                       <div className="pc-actions"><button className="pc-btn primary" onClick={onPing} disabled={pinging}>{pinging ? 'Pinging…' : 'Ping now'}</button></div>
                     </section>
                     <section>

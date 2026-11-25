@@ -267,6 +267,12 @@ pub struct PeerInfo {
     pub stubs_filled: u64,
     /// The newest user-visible event within the heads it held at last contact — "newest it held".
     pub newest_held: Option<crate::peer_view::NewestEvent>,
+    /// A sync with this peer is in flight right now.
+    pub syncing: bool,
+    /// When we last tried to sync with it (worked or not), unix ms.
+    pub last_attempt_ms: Option<i64>,
+    /// Why the last attempt failed; `None` when it worked (or nothing has been tried since launch).
+    pub last_error: Option<String>,
 }
 
 /// Private, loopback, or link-local — "same network" for the status UI.
@@ -331,7 +337,59 @@ fn auth_token(secret: &[u8; SECRET_LEN]) -> [u8; 32] {
     *blake3::keyed_hash(AUTH_CONTEXT, secret).as_bytes()
 }
 
+/// What each known peer is doing right now, from our side: a sync in flight, and the outcome of the last attempt. Plus
+/// when the next scheduled sync (set by whoever runs the ping loop) and any debounced "push soon" nudge will fire.
+#[derive(Default)]
+struct SyncState {
+    attempts: Mutex<HashMap<String, Attempt>>,
+    schedule: Mutex<Schedule>,
+}
+
+#[derive(Default, Clone)]
+struct Attempt {
+    in_flight: u32,
+    last_attempt_ms: Option<i64>,
+    last_error: Option<String>,
+}
+
+#[derive(Default, Clone, Copy)]
+struct Schedule {
+    next_ms: i64,
+    interval_ms: u64,
+    nudge_at_ms: i64,
+    nudge_gen: u64,
+}
+
+/// Marks a sync as in flight; whatever way the future ends (finished, errored, dropped by a timeout) it records the outcome.
+struct AttemptGuard<'a> {
+    state: &'a SyncState,
+    peer: String,
+    outcome: Option<Option<String>>,
+}
+
+impl<'a> AttemptGuard<'a> {
+    fn begin(state: &'a SyncState, peer: String) -> Self {
+        state.attempts.lock().unwrap().entry(peer.clone()).or_default().in_flight += 1;
+        Self { state, peer, outcome: None }
+    }
+    fn finish(mut self, error: Option<String>) {
+        self.outcome = Some(error);
+    }
+}
+
+impl Drop for AttemptGuard<'_> {
+    fn drop(&mut self) {
+        let error = self.outcome.take().unwrap_or_else(|| Some("no answer in time".into()));
+        let mut map = self.state.attempts.lock().unwrap();
+        let a = map.entry(self.peer.clone()).or_default();
+        a.in_flight = a.in_flight.saturating_sub(1);
+        a.last_attempt_ms = Some(unix_now_ms());
+        a.last_error = error;
+    }
+}
+
 pub struct Node {
+    sync_state: SyncState,
     journal: Arc<Journal>,
     blobs: BlobStore,
     endpoint: Endpoint,
@@ -595,6 +653,7 @@ impl Node {
         }
 
         Ok(Self {
+            sync_state: SyncState::default(),
             journal,
             blobs,
             endpoint,
@@ -694,6 +753,33 @@ impl Node {
 
     pub fn endpoint(&self) -> &Endpoint {
         &self.endpoint
+    }
+
+    /// The ping loop tells the node when the next scheduled sync is due, so the Peers page can say "sends in 4 min".
+    pub fn set_sync_schedule(&self, next_ms: i64, interval_ms: u64) {
+        let mut sc = self.sync_state.schedule.lock().unwrap();
+        sc.next_ms = next_ms;
+        sc.interval_ms = interval_ms;
+    }
+
+    /// Announce a "push soon" after `delay` (new local data). Returns a generation; only the latest nudge of a burst should
+    /// act, which it asks with [`Self::nudge_take`] once the delay has passed.
+    pub fn nudge_begin(&self, delay: Duration) -> u64 {
+        let mut sc = self.sync_state.schedule.lock().unwrap();
+        sc.nudge_gen += 1;
+        sc.nudge_at_ms = unix_now_ms() + delay.as_millis() as i64;
+        sc.nudge_gen
+    }
+
+    /// True (and the nudge is cleared) when `gen` is still the latest nudge.
+    pub fn nudge_take(&self, gen: u64) -> bool {
+        let mut sc = self.sync_state.schedule.lock().unwrap();
+        if sc.nudge_gen == gen {
+            sc.nudge_at_ms = 0;
+            true
+        } else {
+            false
+        }
     }
 
     /// This node's endpoint id (what peers know us by).
@@ -1027,8 +1113,16 @@ impl Node {
         Ok(report)
     }
 
-    /// Event-log-only round-trip: timelines converge, media stays deferred.
+    /// Event-log-only round-trip: timelines converge, media stays deferred. Records the attempt (in flight, then how it went)
+    /// for the Peers page.
     pub async fn sync_events_with(&self, addr: &EndpointAddr) -> Result<SyncReport> {
+        let guard = AttemptGuard::begin(&self.sync_state, addr.id.to_string());
+        let result = self.sync_events_with_inner(addr).await;
+        guard.finish(result.as_ref().err().map(|e| format!("{e:#}")));
+        result
+    }
+
+    async fn sync_events_with_inner(&self, addr: &EndpointAddr) -> Result<SyncReport> {
         if self.journal.is_isolated()? {
             anyhow::bail!("this peer is isolated: end isolation before syncing");
         }
@@ -1192,6 +1286,7 @@ impl Node {
                 Some(h) => self.journal.newest_event(Some(h))?,
                 None => None,
             };
+            let attempt = self.sync_state.attempts.lock().unwrap().get(&endpoint_id).cloned().unwrap_or_default();
             out.push(PeerInfo {
                 endpoint_id,
                 device_id,
@@ -1206,6 +1301,9 @@ impl Node {
                 required: self.journal.peer_required(&endpoint_id_for_required)?,
                 stubs_filled: self.journal.peer_stubs_filled(&endpoint_id_for_required),
                 newest_held,
+                syncing: attempt.in_flight > 0,
+                last_attempt_ms: attempt.last_attempt_ms,
+                last_error: attempt.last_error,
             });
         }
         out.sort_by_key(|p| std::cmp::Reverse(p.last_ok_ms));
@@ -1222,6 +1320,10 @@ impl Node {
         for (device_id, recorded_at) in journal.peer_joins()? {
             joins.entry(device_id).or_insert(recorded_at);
         }
+        let sync = {
+            let sc = *self.sync_state.schedule.lock().unwrap();
+            serde_json::json!({"next_ms": sc.next_ms, "interval_ms": sc.interval_ms, "nudge_at_ms": sc.nudge_at_ms})
+        };
         let mut v = serde_json::json!({
             "device_id": journal.device_id(),
             "isolated": journal.is_isolated()?,
@@ -1242,6 +1344,7 @@ impl Node {
             "joins": joins,
             "peers": self.peers().await?,
             "newest_here": journal.newest_event(None)?,
+            "sync": sync,
             "net": journal.net_config(),
             "version": crate::VERSION,
             "git_sha": crate::GIT_SHA,

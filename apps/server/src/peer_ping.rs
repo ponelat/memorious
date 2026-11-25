@@ -35,6 +35,8 @@ pub fn spawn(state: crate::RouterState) -> tokio::task::JoinHandle<()> {
             // Re-resolved every tick — see the matching note in sweeper.rs.
             let snapshot = state.0.read().unwrap().clone();
             ping_once(&snapshot).await;
+            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0);
+            snapshot.node.set_sync_schedule(now + interval_ms as i64, interval_ms);
             tokio::time::sleep(Duration::from_millis(interval_ms)).await;
         }
     })

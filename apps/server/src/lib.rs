@@ -406,6 +406,20 @@ struct CaptureText {
     text: String,
 }
 
+/// New local data: push it to peers about five seconds after the last write (a burst of strokes or captures becomes one
+/// push), instead of leaving it for the next scheduled ping. The Peers page shows the pending push.
+pub(crate) fn nudge_sync(state: &SharedState) {
+    const DELAY: std::time::Duration = std::time::Duration::from_secs(5);
+    let gen = state.node.nudge_begin(DELAY);
+    let st = state.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(DELAY).await;
+        if st.node.nudge_take(gen) {
+            let _ = st.node.sync_saved_peers().await;
+        }
+    });
+}
+
 async fn capture_text(
     State(state): State<SharedState>,
     Json(body): Json<CaptureText>,
@@ -414,7 +428,10 @@ async fn capture_text(
         return err(StatusCode::BAD_REQUEST, "empty text");
     }
     match state.journal().capture_text(&body.text) {
-        Ok(e) => Json(entry_json(&e)).into_response(),
+        Ok(e) => {
+            nudge_sync(&state);
+            Json(entry_json(&e)).into_response()
+        }
         Err(e) => internal(e),
     }
 }
@@ -439,7 +456,10 @@ async fn capture_photo(State(state): State<SharedState>, multipart: Multipart) -
         Err(e) => return internal(e.into()),
     };
     match state.node.capture_blob_with_intent(MediaKind::Photo, jpeg, true).await {
-        Ok(e) => Json(entry_json(&e)).into_response(),
+        Ok(e) => {
+            nudge_sync(&state);
+            Json(entry_json(&e)).into_response()
+        }
         Err(e) => internal(e),
     }
 }
@@ -480,7 +500,10 @@ async fn capture_audio(
         }
     };
     match state.node.capture_audio_with_intent(m4a, audio_kind, true).await {
-        Ok(e) => Json(entry_json(&e)).into_response(),
+        Ok(e) => {
+            nudge_sync(&state);
+            Json(entry_json(&e)).into_response()
+        }
         Err(e) => internal(e),
     }
 }
@@ -514,7 +537,10 @@ async fn capture_video(State(state): State<SharedState>, multipart: Multipart) -
     // No enrichment engine for video: capture without the will-enrich flag so
     // peers don't hold a grace period for an annotation that never comes.
     match state.node.capture_blob(MediaKind::Video, mp4).await {
-        Ok(e) => Json(entry_json(&e)).into_response(),
+        Ok(e) => {
+            nudge_sync(&state);
+            Json(entry_json(&e)).into_response()
+        }
         Err(e) => internal(e),
     }
 }

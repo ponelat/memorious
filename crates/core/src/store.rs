@@ -470,7 +470,7 @@ impl Store {
         match heads {
             Some(heads) => {
                 let mut stmt = conn.prepare(&format!(
-                    "SELECT {cols} FROM events WHERE device_id = ?1 AND seq <= ?2 AND kind = 'capture' ORDER BY recorded_at DESC, event_id DESC LIMIT 1"
+                    "SELECT {cols} FROM events WHERE device_id = ?1 AND seq <= ?2 AND (kind = 'capture' OR (kind = 'ink' AND json_extract(payload, '$.op') = 'stroke')) ORDER BY recorded_at DESC, event_id DESC LIMIT 1"
                 ))?;
                 for (device, head) in heads {
                     for row in stmt.query_map(rusqlite::params![device, *head as i64], row_to_event)? {
@@ -480,7 +480,7 @@ impl Store {
             }
             None => {
                 let mut stmt = conn.prepare(&format!(
-                    "SELECT {cols} FROM events WHERE kind = 'capture' ORDER BY recorded_at DESC, event_id DESC LIMIT 1"
+                    "SELECT {cols} FROM events WHERE kind = 'capture' OR (kind = 'ink' AND json_extract(payload, '$.op') = 'stroke') ORDER BY recorded_at DESC, event_id DESC LIMIT 1"
                 ))?;
                 for row in stmt.query_map([], row_to_event)? {
                     out.push(row?);
@@ -488,6 +488,20 @@ impl Store {
             }
         }
         Ok(out)
+    }
+
+    /// The text of the latest annotation on `target` (a transcript, OCR, a note), if any.
+    pub fn latest_annotation_text(&self, target: &str) -> Result<Option<String>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT json_extract(payload, '$.text') FROM events WHERE kind = 'annotation' AND json_extract(payload, '$.target') = ?1
+             ORDER BY recorded_at DESC, event_id DESC LIMIT 1",
+        )?;
+        let mut rows = stmt.query([target])?;
+        Ok(match rows.next()? {
+            Some(r) => r.get::<_, Option<String>>(0)?,
+            None => None,
+        })
     }
 
     /// Every event of one kind, oldest first.

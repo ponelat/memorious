@@ -34,7 +34,10 @@ pub(crate) async fn append(
     Json(body): Json<AppendBody>,
 ) -> Response {
     match state.journal().ink_append_json(&month, body.ops) {
-        Ok(v) => Json(v).into_response(),
+        Ok(v) => {
+            crate::nudge_sync(&state);
+            Json(v).into_response()
+        }
         Err(e) => err(StatusCode::BAD_REQUEST, &format!("{e:#}")),
     }
 }

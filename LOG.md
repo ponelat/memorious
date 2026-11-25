@@ -734,3 +734,9 @@
 - `PeerInfo.newest_held` (newest capture within the peer's last-reported heads) and `status.newest_here`;
   `GET /api/peers/history` (runs of absolute slots). Web: `PeerCards` replaces the peer map + device rows for peers.
   Chart draws 30-minute buckets from the 5-minute data.
+
+- Newest events now include drawing strokes (point count + a 24-point normalised squiggle) and quote the start of a
+  transcript/OCR annotation for voice/photo/video. Per peer the node tracks in-flight syncs and the last attempt's outcome
+  (`PeerInfo.syncing/last_attempt_ms/last_error`); the ping loop publishes its next run (`status.sync`). The server nudges a
+  push ~5 s after the last local capture or ink write (debounced) instead of waiting for the 15-minute ping, and the card says
+  "N events waiting · sends in X" / "sending now" / "last try failed".

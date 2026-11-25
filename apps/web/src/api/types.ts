@@ -99,6 +99,12 @@ export interface PeerInfo {
   stubs_filled?: number
   /** The newest capture/ink event within the heads it held at last contact — "newest it held". */
   newest_held?: NewestEvent | null
+  /** A sync with it is in flight right now. */
+  syncing?: boolean
+  /** When we last tried to sync with it (worked or not), unix ms. */
+  last_attempt_ms?: number | null
+  /** Why the last attempt failed; null when it worked. */
+  last_error?: string | null
 }
 
 /** A user-visible event, summarized for one line. */
@@ -107,6 +113,9 @@ export interface NewestEvent {
   kind: 'text' | 'photo' | 'voice' | 'music' | 'video' | 'ink' | string
   title: string
   recorded_at: number
+  /** Drawing strokes: point count, and a normalised (0..1) downsample to draw the squiggle with. */
+  points?: number
+  shape?: [number, number][]
 }
 
 /** Runs of absolute 5-minute UTC slot numbers: [start, length]. */
@@ -193,6 +202,8 @@ export interface Status {
   peers?: PeerInfo[]
   /** The newest capture/ink event here — "newest here". */
   newest_here?: NewestEvent | null
+  /** When this device next syncs with its peers: the scheduled ping, and a pending "push soon" after new local data. */
+  sync?: { next_ms: number; interval_ms: number; nudge_at_ms: number }
   net?: NetConfig
   /** This device's own running version (Cargo package version). */
   version?: string

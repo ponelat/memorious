@@ -1413,3 +1413,5 @@ h2 {
 .pc-seg button { min-height: 44px; padding: 0 16px; border: 0; background: var(--pc-bg); font-weight: 650; }
 .pc-seg button[aria-pressed='true'] { background: var(--pc-accent); color: var(--pc-on-accent); }
 .pc button:focus-visible { outline: 3px solid var(--pc-accent); outline-offset: 2px; }
+.pc-ttx { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pc-lp .pc-why { font-weight: 500; color: var(--pc-mute); max-width: 260px; margin-left: auto; }
