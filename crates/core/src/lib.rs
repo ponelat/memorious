@@ -1,3 +1,4 @@
+pub mod alive;
 pub mod api_json;
 pub mod crypto;
 pub mod enrich;
@@ -20,6 +21,7 @@ pub mod media;
 pub mod migrate;
 pub mod node;
 pub mod oauth;
+pub mod peer_view;
 pub mod retention;
 pub mod search;
 #[cfg(feature = "embeddings")]

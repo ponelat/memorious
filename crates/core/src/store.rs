@@ -461,6 +461,35 @@ impl Store {
         Ok(out)
     }
 
+    /// Candidates for "newest user-visible event": the latest capture of each device, limited (when `heads` is
+    /// given) to those at or below that device's head — i.e. what a holder of exactly those heads has.
+    pub fn newest_visible_events(&self, heads: Option<&Heads>) -> Result<Vec<Event>> {
+        let conn = self.conn.lock().unwrap();
+        let cols = "event_id, device_id, seq, recorded_at, kind, payload, will_enrich, extra";
+        let mut out = Vec::new();
+        match heads {
+            Some(heads) => {
+                let mut stmt = conn.prepare(&format!(
+                    "SELECT {cols} FROM events WHERE device_id = ?1 AND seq <= ?2 AND kind = 'capture' ORDER BY recorded_at DESC, event_id DESC LIMIT 1"
+                ))?;
+                for (device, head) in heads {
+                    for row in stmt.query_map(rusqlite::params![device, *head as i64], row_to_event)? {
+                        out.push(row?);
+                    }
+                }
+            }
+            None => {
+                let mut stmt = conn.prepare(&format!(
+                    "SELECT {cols} FROM events WHERE kind = 'capture' ORDER BY recorded_at DESC, event_id DESC LIMIT 1"
+                ))?;
+                for row in stmt.query_map([], row_to_event)? {
+                    out.push(row?);
+                }
+            }
+        }
+        Ok(out)
+    }
+
     /// Every event of one kind, oldest first.
     pub fn events_of_kind(&self, kind: &str) -> Result<Vec<Event>> {
         let conn = self.conn.lock().unwrap();

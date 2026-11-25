@@ -235,6 +235,7 @@ pub fn app(state: RouterState, web_dist: Option<PathBuf>) -> Router {
         .route("/status", get(status))
         .route("/peers/ping", post(ping_peers))
         .route("/peers/required", post(set_peer_required))
+        .route("/peers/history", get(peers_history))
         .route("/media/missing", get(missing_media))
         .route("/media/lost", post(mark_media_lost))
         .route("/isolate", post(isolate))
@@ -778,6 +779,24 @@ async fn status(State(state): State<SharedState>) -> Response {
         Ok(v) => Json(v).into_response(),
         Err(e) => internal(e),
     }
+}
+
+/// `GET /api/peers/history` — per known peer, the last 7 days of alive slots (ours, theirs) and failed-contact slots, as
+/// runs of absolute 5-minute slot numbers (see core `alive.rs`).
+async fn peers_history(State(state): State<SharedState>) -> Response {
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0);
+    let peers = match state.node.peers().await {
+        Ok(p) => p,
+        Err(e) => return internal(e),
+    };
+    let mut out = Vec::new();
+    for p in &peers {
+        match state.journal().peer_history(&p.endpoint_id, now) {
+            Ok(v) => out.push(v),
+            Err(e) => return internal(e),
+        }
+    }
+    Json(json!({"now": now, "slot_ms": memorious_core::alive::SLOT_MS, "peers": out})).into_response()
 }
 
 #[derive(Deserialize)]

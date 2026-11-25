@@ -129,6 +129,10 @@ export const httpApi: JournalApi = {
     return r.pings
   },
 
+  peersHistory() {
+    return json<import('./types').PeersHistory>('/api/peers/history')
+  },
+
   async setPeerRequired(endpointId: string, required: boolean) {
     await request('/api/peers/required', {
       method: 'POST',

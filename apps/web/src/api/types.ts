@@ -97,6 +97,36 @@ export interface PeerInfo {
   required?: boolean
   /** Stubs this peer has filled for us with full events (running total). */
   stubs_filled?: number
+  /** The newest capture/ink event within the heads it held at last contact — "newest it held". */
+  newest_held?: NewestEvent | null
+}
+
+/** A user-visible event, summarized for one line. */
+export interface NewestEvent {
+  event_id: string
+  kind: 'text' | 'photo' | 'voice' | 'music' | 'video' | 'ink' | string
+  title: string
+  recorded_at: number
+}
+
+/** Runs of absolute 5-minute UTC slot numbers: [start, length]. */
+export type SlotRuns = [number, number][]
+
+/** The 7-day window drawn for one peer (core `alive.rs`): when each side was alive and when our contact failed. */
+export interface PeerHistory {
+  endpoint_id: string
+  from: number
+  to: number
+  mine: SlotRuns
+  theirs: SlotRuns
+  linked: SlotRuns
+  failed: SlotRuns
+}
+
+export interface PeersHistory {
+  now: number
+  slot_ms: number
+  peers: PeerHistory[]
 }
 
 export interface TimelineStats {
@@ -161,6 +191,8 @@ export interface Status {
   /** device_id → when it first joined (unix ms), from the peer_join event log. */
   joins?: Record<string, number>
   peers?: PeerInfo[]
+  /** The newest capture/ink event here — "newest here". */
+  newest_here?: NewestEvent | null
   net?: NetConfig
   /** This device's own running version (Cargo package version). */
   version?: string
@@ -329,6 +361,8 @@ export interface JournalApi {
   /** Mark a peer required (default) or optional: the health light only waits on
    * required peers. A local preference of this device — not synced. */
   setPeerRequired(endpointId: string, required: boolean): Promise<void>
+  /** Per-peer alive/contact history for the Peers page (hosts that keep it). */
+  peersHistory?(): Promise<PeersHistory>
   /** Originate a master-password change on this device: re-wraps existing
    * media, re-keys the local database, and starts using it immediately.
    * Every other device must separately call `adoptMasterPassword` once

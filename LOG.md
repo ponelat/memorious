@@ -723,3 +723,14 @@
   never fetched, and the capture/placeholder stay — append-only. A device that still holds the bytes counts them as
   held. `Journal::mark_media_lost` (idempotent; refuses a hash no capture references), `lost_media()`,
   `Node::missing_media()`; server `GET /api/media/missing`, `POST /api/media/lost`.
+
+## 2026-11-25 — Peers page: alive history, link failures, newest-held
+
+- Every device records which UTC 5-minute slots it was alive in (`alive.rs`; heartbeat from `Node::spawn`, every minute) and
+  publishes its last 7 days of slots in the handshake (`alive` on Hello/HelloAck, optional → older peers ignore it). The
+  receiver ORs them into `peer_alive:<endpoint>`, so the first contact after an absence also fills in the history it missed.
+- Local, per peer: `link_ok` / `link_bad` slots (a handshake worked / was attempted and failed). Peer alive ∧ we alive ∧
+  link_bad ⇒ "up but unreachable". Meta only, never events.
+- `PeerInfo.newest_held` (newest capture within the peer's last-reported heads) and `status.newest_here`;
+  `GET /api/peers/history` (runs of absolute slots). Web: `PeerCards` replaces the peer map + device rows for peers.
+  Chart draws 30-minute buckets from the 5-minute data.

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
-import { api, RetentionView, ArchiveExport, ArchiveOptions, AgentKey, DownloadFile, ExportReport, NetConfig, PeerBuild, PeerInfo, PeerPing, Status } from '../api'
-import { agoLabel, edgeKind, MapPeer, PeerMap } from '../components/PeerMap'
+import { api, RetentionView, ArchiveExport, ArchiveOptions, AgentKey, DownloadFile, ExportReport, NetConfig, PeerBuild, PeerHistory, PeerInfo, PeerPing, Status } from '../api'
+import { agoLabel, edgeKind } from '../components/PeerMap'
+import { PeerCards } from '../components/PeerCards'
 import { Appearance, onAppearanceChange, readAppearance, setAppearance } from '../appearance'
 
 function prettySize(bytes: number): string {
@@ -28,9 +29,6 @@ function shortId(id: string): string {
   return `${id.slice(0, 8)}…${id.slice(-4)}`
 }
 
-function trunc(s: string, n: number): string {
-  return s.length > n ? `${s.slice(0, n - 1)}…` : s
-}
 
 /** A row on the devices list: this device, a live peer, or a device we only
  * know from the event log (no direct contact yet). */
@@ -883,11 +881,20 @@ export function StatusView() {
   const [busy, setBusy] = useState(false)
   const [downloads, setDownloads] = useState<DownloadFile[]>([])
 
-  const refresh = () => api.status().then(setStatus).catch(() => setError(true))
+  const [history, setHistory] = useState<PeerHistory[] | undefined>(undefined)
+  const [now, setNow] = useState(() => Date.now())
+
+  const refresh = () => {
+    setNow(Date.now())
+    api.peersHistory?.().then((h) => setHistory(h.peers)).catch(() => {})
+    return api.status().then(setStatus).catch(() => setError(true))
+  }
 
   useEffect(() => {
     refresh()
     api.downloads?.().then(setDownloads).catch(() => {})
+    const t = setInterval(refresh, 30_000)
+    return () => clearInterval(t)
   }, [])
 
   // endpoint_id → outcome of the latest probe round; 'probing' while in flight.
@@ -924,16 +931,6 @@ export function StatusView() {
 
   const names = status.names ?? {}
   const rows = deviceRows(status)
-  const selfName = names[status.device_id] ?? 'this device'
-  const mapPeers: MapPeer[] = (status.peers ?? []).map((peer) => ({
-    key: peer.endpoint_id,
-    name: trunc(peer.device_id ? names[peer.device_id] ?? shortId(peer.device_id) : shortId(peer.endpoint_id), 18),
-    sub:
-      peer.discovery === 'ticket' ? 'via pairing ticket' :
-      peer.discovery === 'inbound' ? 'it found us' :
-      `seen ${agoLabel(peer.last_ok_ms)}`,
-    peer,
-  }))
   const health = status.health
 
   return (
@@ -961,18 +958,24 @@ export function StatusView() {
         </p>
       )}
 
-      {mapPeers.length > 0 && (
-        <>
-          <PeerMap self={trunc(selfName, 18)} selfSub="this device" peers={mapPeers} />
-          <div className="pm-legend">
-            <span className="lan">— LAN</span>
-            <span className="relay">— public relay</span>
-            <span className="internet">— internet</span>
-            <span className="idle">⋯ idle</span>
-            <span className="hint">arrows point the way the connection is opened</span>
+      <PeerCards
+        status={status}
+        history={history}
+        now={now}
+        nameOf={(p) => (p.device_id ? names[p.device_id] ?? shortId(p.device_id) : shortId(p.endpoint_id))}
+        buildText={(p) => buildLabel(p.device_id ? status.builds?.[p.device_id] : undefined)?.text ?? null}
+        onPing={pingPeers}
+        pinging={pings === 'probing'}
+        renderTools={(p) => (
+          <div className="pc-tools">
+            {p.device_id && <NameEditor deviceId={p.device_id} name={names[p.device_id]} onSaved={refresh} />}
+            <div className="pc-seg" role="group" aria-label="required or optional">
+              <button aria-pressed={p.required !== false} onClick={() => api.setPeerRequired(p.endpoint_id, true).then(refresh)}>Required</button>
+              <button aria-pressed={p.required === false} onClick={() => api.setPeerRequired(p.endpoint_id, false).then(refresh)}>Optional</button>
+            </div>
           </div>
-        </>
-      )}
+        )}
+      />
 
       <h3>
         devices
@@ -984,7 +987,7 @@ export function StatusView() {
         )}
       </h3>
       <ul className="devices">
-        {rows.map((row) => (
+        {rows.filter((row) => !row.peer).map((row) => (
           <li key={row.key}>
             <span className="device-line">
               {row.isSelf ? '● ' : '○ '}

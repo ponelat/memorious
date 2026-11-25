@@ -113,6 +113,9 @@ enum Msg {
         /// and records it as collected. Optional for wire compat.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         gaps: Option<Vec<StubRange>>,
+        /// The sender's alive slots (UTC 5-minute slots, last 7 days), see alive.rs. Optional for wire compat.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        alive: Option<crate::alive::Slots>,
     },
     HelloAck {
         heads: Heads,
@@ -126,6 +129,8 @@ enum Msg {
         receive: Option<bool>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         gaps: Option<Vec<StubRange>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        alive: Option<crate::alive::Slots>,
     },
     Event(Event),
     EndEvents,
@@ -260,6 +265,8 @@ pub struct PeerInfo {
     /// Stubs this peer has filled for us (running total).
     #[serde(default)]
     pub stubs_filled: u64,
+    /// The newest user-visible event within the heads it held at last contact — "newest it held".
+    pub newest_held: Option<crate::peer_view::NewestEvent>,
 }
 
 /// Private, loopback, or link-local — "same network" for the status UI.
@@ -568,6 +575,25 @@ impl Node {
             .accept(crate::mcp_quic::MCP_ALPN, crate::mcp_quic::McpProto { journal: journal.clone(), embedder: embedder.clone() })
             .spawn();
 
+        // "Alive" heartbeat for the Peers page: mark this device alive in the current 5-minute slot, now and every minute
+        // while the node exists (the task ends when the journal is dropped).
+        let _ = journal.touch_alive(unix_now_ms());
+        {
+            let weak = Arc::downgrade(&journal);
+            tokio::spawn(async move {
+                let mut tick = tokio::time::interval(Duration::from_secs(60));
+                loop {
+                    tick.tick().await;
+                    match weak.upgrade() {
+                        Some(j) => {
+                            let _ = j.touch_alive(unix_now_ms());
+                        }
+                        None => break,
+                    }
+                }
+            });
+        }
+
         Ok(Self {
             journal,
             blobs,
@@ -668,6 +694,11 @@ impl Node {
 
     pub fn endpoint(&self) -> &Endpoint {
         &self.endpoint
+    }
+
+    /// This node's endpoint id (what peers know us by).
+    pub fn endpoint_id(&self) -> iroh::EndpointId {
+        self.endpoint.id()
     }
 
     /// Our current address, waiting briefly for direct addresses to be discovered.
@@ -1010,6 +1041,7 @@ impl Node {
         let (mut send, mut recv) = conn.open_bi().await?;
 
         let my_addr = self.dialable_addr().await.unwrap_or_else(|_| self.endpoint.addr());
+        let _ = self.journal.touch_alive(unix_now_ms());
         write_msg(
             &mut send,
             &Msg::Hello {
@@ -1021,12 +1053,13 @@ impl Node {
                 stubs: self.journal.wanted_stub_ranges()?,
                 receive: self.journal.is_write_only()?.then_some(false),
                 gaps: self.journal.declared_gaps()?,
+                alive: self.journal.alive_self().ok(),
             },
         )
         .await?;
 
-        let (peer_heads, peer_device, peer_media, peer_stubs, peer_receive, peer_gaps) = match read_msg(&mut recv).await? {
-            Some(Msg::HelloAck { heads, device, media, stubs, receive, gaps }) => (heads, device, media, stubs, receive, gaps),
+        let (peer_heads, peer_device, peer_media, peer_stubs, peer_receive, peer_gaps, peer_alive) = match read_msg(&mut recv).await? {
+            Some(Msg::HelloAck { heads, device, media, stubs, receive, gaps, alive }) => (heads, device, media, stubs, receive, gaps, alive),
             Some(other) => bail!("protocol violation: expected HelloAck, got {other:?}"),
             None => bail!("peer closed during handshake (bad journal secret?)"),
         };
@@ -1077,6 +1110,10 @@ impl Node {
             "ticket",
         )?;
         self.journal.record_stubs_filled(&addr.id.to_string(), report.stubs_filled)?;
+        let _ = self.journal.note_link(&addr.id.to_string(), true, unix_now_ms());
+        if let Some(alive) = &peer_alive {
+            let _ = self.journal.record_peer_alive(&addr.id.to_string(), alive, unix_now_ms());
+        }
         // Converged: the peer now holds exactly our heads.
         self.journal.record_peer_holdings(
             &addr.id.to_string(),
@@ -1151,6 +1188,10 @@ impl Node {
                 None => None,
             };
             let media_missing = holdings.media.as_ref().map(MediaHeld::missing);
+            let newest_held = match &holdings.heads {
+                Some(h) => self.journal.newest_event(Some(h))?,
+                None => None,
+            };
             out.push(PeerInfo {
                 endpoint_id,
                 device_id,
@@ -1164,6 +1205,7 @@ impl Node {
                 media_missing,
                 required: self.journal.peer_required(&endpoint_id_for_required)?,
                 stubs_filled: self.journal.peer_stubs_filled(&endpoint_id_for_required),
+                newest_held,
             });
         }
         out.sort_by_key(|p| std::cmp::Reverse(p.last_ok_ms));
@@ -1199,6 +1241,7 @@ impl Node {
             "names": journal.device_names()?,
             "joins": joins,
             "peers": self.peers().await?,
+            "newest_here": journal.newest_event(None)?,
             "net": journal.net_config(),
             "version": crate::VERSION,
             "git_sha": crate::GIT_SHA,
@@ -1460,7 +1503,7 @@ impl Node {
             match result {
                 Ok(report) => PeerSync { endpoint_id: peer.endpoint_id, ok: true,
                     sent: report.sent, received: report.received, blobs: report.blobs_fetched, error: None },
-                Err(error) => PeerSync { endpoint_id: peer.endpoint_id, ok: false,
+                Err(error) => PeerSync { endpoint_id: { let _ = self.journal.note_link(&peer.endpoint_id, false, unix_now_ms()); peer.endpoint_id }, ok: false,
                     sent: 0, received: 0, blobs: 0, error: Some(format!("{error:#}")) },
             }
         })).await)
@@ -1498,6 +1541,9 @@ impl Node {
             }
             Ok(Err(err)) => ping.error = Some(format!("{err:#}")),
             Err(_) => ping.error = Some(format!("no answer within {}s", timeout.as_secs())),
+        }
+        if !ping.ok {
+            let _ = self.journal.note_link(endpoint_id, false, unix_now_ms());
         }
         ping
     }
@@ -1636,16 +1682,16 @@ impl ProtocolHandler for SyncProto {
         }
         let (mut send, mut recv) = connection.accept_bi().await?;
 
-        let (heads, initiator_addr, initiator_device, initiator_media, initiator_stubs, initiator_receive, initiator_gaps) =
+        let (heads, initiator_addr, initiator_device, initiator_media, initiator_stubs, initiator_receive, initiator_gaps, initiator_alive) =
             match read_msg(&mut recv).await.map_err(acc)? {
-                Some(Msg::Hello { auth, heads, addr, device, media, stubs, receive, gaps }) => {
+                Some(Msg::Hello { auth, heads, addr, device, media, stubs, receive, gaps, alive }) => {
                     if auth != auth_token(self.journal.secret()) {
                         connection.close(VarInt::from(CLOSE_BAD_AUTH), b"bad auth");
                         return Err(AcceptError::from_err(std::io::Error::other(
                             "peer failed journal auth",
                         )));
                     }
-                    (heads, addr.to_addr().map_err(acc)?, device, media, stubs, receive, gaps)
+                    (heads, addr.to_addr().map_err(acc)?, device, media, stubs, receive, gaps, alive)
                 }
                 _ => {
                     return Err(AcceptError::from_err(std::io::Error::other(
@@ -1665,6 +1711,7 @@ impl ProtocolHandler for SyncProto {
                 stubs: self.journal.wanted_stub_ranges().map_err(acc)?,
                 receive: self.journal.is_write_only().map_err(acc)?.then_some(false),
                 gaps: self.journal.declared_gaps().map_err(acc)?,
+                alive: { let _ = self.journal.touch_alive(unix_now_ms()); self.journal.alive_self().ok() },
             },
         )
         .await
@@ -1721,6 +1768,10 @@ impl ProtocolHandler for SyncProto {
             "inbound",
         );
         let _ = self.journal.record_stubs_filled(&connection.remote_id().to_string(), filled);
+        let _ = self.journal.note_link(&connection.remote_id().to_string(), true, unix_now_ms());
+        if let Some(alive) = &initiator_alive {
+            let _ = self.journal.record_peer_alive(&connection.remote_id().to_string(), alive, unix_now_ms());
+        }
         if let Ok(heads) = self.journal.store.heads() {
             let _ = self.journal.record_peer_holdings(
                 &connection.remote_id().to_string(),
