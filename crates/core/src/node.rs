@@ -1310,6 +1310,16 @@ impl Node {
         Ok(out)
     }
 
+    /// The Peers page's 7-day history for every known peer (see `alive.rs`): one shape for every face.
+    pub async fn peers_history(&self) -> Result<serde_json::Value> {
+        let now = unix_now_ms();
+        let mut peers = Vec::new();
+        for p in self.peers().await? {
+            peers.push(self.journal.peer_history(&p.endpoint_id, now)?);
+        }
+        Ok(serde_json::json!({"now": now, "slot_ms": crate::alive::SLOT_MS, "peers": peers}))
+    }
+
     /// The status screen's JSON, one shape for every face (HTTP, Tauri, FFI).
     pub async fn status_json(&self) -> Result<serde_json::Value> {
         let journal = self.journal();

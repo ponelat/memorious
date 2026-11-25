@@ -391,6 +391,7 @@ async fn dispatch(
             }
             node.journal().ink_append_json(period, ops.clone())
         }
+        "peers_history" => node.peers_history().await,
         "missing_media" => Ok(json!({ "missing": node.missing_media().await?, "lost": node.journal().lost_media()? })),
         "mark_media_lost" => {
             let hash = request.params["hash"].as_str().context("missing blob hash")?;

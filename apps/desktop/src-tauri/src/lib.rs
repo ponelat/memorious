@@ -784,6 +784,14 @@ async fn set_device_name<R: tauri::Runtime>(
     Ok(())
 }
 
+/// The Peers page's 7-day alive/contact history per peer.
+#[tauri::command]
+async fn peers_history<R: tauri::Runtime>(app: AppHandle<R>, state: State<'_, NodeState>, daemon: State<'_, DaemonState>) -> Result<serde_json::Value, String> {
+    if let Some(result) = daemon_call(&daemon, "peers_history", json!({})).await { return result.map_err(estr); }
+    let n = node(&app, &state).await.map_err(estr)?;
+    n.peers_history().await.map_err(estr)
+}
+
 /// Mark a peer required (default) or optional for this device's health light.
 #[tauri::command]
 async fn set_peer_required<R: tauri::Runtime>(
@@ -1113,6 +1121,7 @@ pub fn handlers<R: tauri::Runtime>(
         status,
         set_device_name,
         set_peer_required,
+        peers_history,
         set_net_config,
         mint_agent,
         list_agents,

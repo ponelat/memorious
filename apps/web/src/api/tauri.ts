@@ -36,6 +36,10 @@ export const tauriApi: JournalApi = {
     return captureMedia('video', file)
   },
 
+  peersHistory() {
+    return invoke<import('./types').PeersHistory>('peers_history')
+  },
+
   async setPeerRequired(endpointId: string, required: boolean) {
     await invoke('set_peer_required', { endpointId, required })
   },

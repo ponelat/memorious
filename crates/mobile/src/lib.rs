@@ -304,6 +304,11 @@ impl MobileJournal {
         Ok(json!({"entries": out}).to_string())
     }
 
+    /// The Peers page's 7-day alive/contact history per peer (same JSON as `GET /api/peers/history`).
+    pub fn peers_history_json(&self) -> Result<String> {
+        Ok(rt().block_on(self.node.peers_history())?.to_string())
+    }
+
     /// The shared status shape (device, stats, names, peers, net config) —
     /// same JSON the HTTP API and Tauri commands return.
     pub fn status_json(&self) -> Result<String> {
