@@ -174,56 +174,6 @@
         "type": "string"
       },
       "description": "Things that exist on the device but are deliberately not part of the archive (device-local settings, derived search indexes, the master password, peer addresses)."
-    },
-    "stubs": {
-      "type": "object",
-      "description": "Events this device collected (superseded canvas events past its retention window): they leave no row, only these `seq` ranges. An archive from a device that keeps everything has none.",
-      "properties": {
-        "total": {
-          "type": "integer",
-          "minimum": 0
-        },
-        "by_type": {
-          "type": "object",
-          "additionalProperties": {
-            "type": "integer"
-          }
-        },
-        "ranges": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "properties": {
-              "device_id": {
-                "type": "string"
-              },
-              "from_seq": {
-                "type": "integer"
-              },
-              "to_seq": {
-                "type": "integer"
-              },
-              "count": {
-                "type": "integer"
-              },
-              "by": {
-                "type": "string",
-                "description": "event_id of the fold that superseded them"
-              },
-              "was": {
-                "type": "string",
-                "description": "what they were (e.g. ink)"
-              },
-              "first_ms": {
-                "type": "integer"
-              },
-              "last_ms": {
-                "type": "integer"
-              }
-            }
-          }
-        }
-      }
     }
   },
   "additionalProperties": true

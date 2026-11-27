@@ -38,18 +38,6 @@ CREATE TABLE IF NOT EXISTS events (
   local_received_at INTEGER NOT NULL DEFAULT 0,
   UNIQUE(device_id, seq)
 );
--- Events this device COLLECTED (superseded canvas events past its retention window): no row is kept, only the `seq` range they
--- occupied, which fold superseded them, what they were and the time window they cover. Local, never syncs. See supersede.rs.
-CREATE TABLE IF NOT EXISTS collected (
-  device_id TEXT NOT NULL,
-  from_seq  INTEGER NOT NULL,
-  to_seq    INTEGER NOT NULL,
-  by        TEXT NOT NULL DEFAULT '',
-  was       TEXT NOT NULL DEFAULT '',
-  first_ms  INTEGER NOT NULL DEFAULT 0,
-  last_ms   INTEGER NOT NULL DEFAULT 0,
-  PRIMARY KEY (device_id, from_seq)
-);
 CREATE INDEX IF NOT EXISTS idx_events_recorded ON events(recorded_at, event_id);
 CREATE INDEX IF NOT EXISTS idx_events_kind ON events(kind, recorded_at, device_id, seq);
 CREATE VIRTUAL TABLE IF NOT EXISTS events_fts USING fts5(text, event_id UNINDEXED);
@@ -214,60 +202,27 @@ impl Store {
     /// Insert an event received from a peer. Idempotent: an event we already hold is a no-op
     /// (returns false). A seq gap is a protocol violation and errors out.
     pub fn insert_remote(&self, event: &Event) -> Result<bool> {
-        Ok(self.insert_remote_outcome(event)? == RemoteOutcome::New)
-    }
-
-    /// As [`Self::insert_remote`], but says what happened: stored as new, filled a gap we knew we had, or a duplicate.
-    pub fn insert_remote_outcome(&self, event: &Event) -> Result<RemoteOutcome> {
-        self.insert_remote_outcome_with(event, &[])
-    }
-
-    /// As [`Self::insert_remote_outcome`], tolerating the `allowed` gaps the sender declared in the handshake: ranges of its own
-    /// `seq`s it collected and so will not send. Such a gap is recorded here as collected too (so it can be filled later).
-    pub fn insert_remote_outcome_with(&self, event: &Event, allowed: &[StubRange]) -> Result<RemoteOutcome> {
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
         let head: u64 = tx
-            .query_row(
-                "SELECT COALESCE(MAX(s), 0) FROM (SELECT seq AS s FROM events WHERE device_id = ?1 UNION ALL SELECT to_seq AS s FROM collected WHERE device_id = ?1)",
-                [&event.device_id],
-                |r| r.get(0),
-            )
+            .query_row("SELECT COALESCE(MAX(seq), 0) FROM events WHERE device_id = ?1", [&event.device_id], |r| r.get(0))
             .unwrap_or(0);
         if event.seq <= head {
-            let has_row: bool = tx
-                .query_row("SELECT 1 FROM events WHERE device_id = ?1 AND seq = ?2", params![event.device_id, event.seq], |_| Ok(true))
-                .optional()?
-                .unwrap_or(false);
-            // a duplicate — unless this seq is a gap we know we collected or were told about: then it is the full event and fills it
-            if has_row || !remove_collected_seq(&tx, &event.device_id, event.seq)? {
-                return Ok(RemoteOutcome::Duplicate);
-            }
-            insert_event(&tx, event)?;
-            tx.commit()?;
-            return Ok(RemoteOutcome::Filled);
+            return Ok(false);
         }
         if event.seq != head + 1 {
-            // only tolerated if the sender declared the whole jump as collected
-            let covered = |seq: u64| allowed.iter().any(|r| r.device_id == event.device_id && r.from_seq <= seq && seq <= r.to_seq);
-            if !((head + 1)..event.seq).all(covered) {
-                bail!("seq gap for device {}: have head {}, got {}", event.device_id, head, event.seq);
-            }
-            add_collected(&tx, &event.device_id, ((head + 1)..event.seq).map(|seq| (seq, 0)).collect(), "", "")?;
+            bail!("seq gap for device {}: have head {}, got {}", event.device_id, head, event.seq);
         }
         insert_event(&tx, event)?;
         tx.commit()?;
         self.announce(event);
-        Ok(RemoteOutcome::New)
+        Ok(true)
     }
 
     /// Highest seq per device.
     pub fn heads(&self) -> Result<Heads> {
         let conn = self.conn.lock().unwrap();
-        // collected events leave no row but still count as held: a device that collected is not "behind"
-        let mut stmt = conn.prepare(
-            "SELECT device_id, MAX(s) FROM (SELECT device_id, seq AS s FROM events UNION ALL SELECT device_id, to_seq AS s FROM collected) GROUP BY device_id",
-        )?;
+        let mut stmt = conn.prepare("SELECT device_id, MAX(seq) FROM events GROUP BY device_id")?;
         let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, u64>(1)?)))?;
         let mut heads = Heads::new();
         for row in rows {
@@ -349,116 +304,6 @@ impl Store {
         }
         tx.commit()?;
         Ok(n)
-    }
-
-    /// Events that declare they supersede others (a `supersedes` list in an ink payload, or as an extra property anywhere),
-    /// oldest first.
-    pub fn events_declaring_supersedes(&self) -> Result<Vec<Event>> {
-        let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
-            "SELECT event_id, device_id, seq, recorded_at, kind, payload, will_enrich, extra
-             FROM events
-             WHERE json_extract(payload, '$.supersedes') IS NOT NULL OR json_extract(extra, '$.supersedes') IS NOT NULL
-             ORDER BY recorded_at, event_id",
-        )?;
-        let rows = stmt.query_map([], row_to_event)?;
-        let mut out = Vec::new();
-        for row in rows {
-            out.push(row?);
-        }
-        Ok(out)
-    }
-
-    /// What this device has collected: how many events, of what type, and the ranges (with the fold that superseded them and
-    /// the time window they cover), for the detail pages and the archive manifest.
-    pub fn stub_counts(&self) -> Result<StubCounts> {
-        let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare("SELECT device_id, from_seq, to_seq, by, was, first_ms, last_ms FROM collected ORDER BY device_id, from_seq")?;
-        let rows = stmt.query_map([], |r| {
-            Ok(CollectedRange {
-                device_id: r.get(0)?,
-                from_seq: r.get(1)?,
-                to_seq: r.get(2)?,
-                count: 0,
-                by: r.get(3)?,
-                was: r.get(4)?,
-                first_ms: r.get(5)?,
-                last_ms: r.get(6)?,
-            })
-        })?;
-        let mut c = StubCounts::default();
-        for row in rows {
-            let mut r = row?;
-            r.count = r.to_seq - r.from_seq + 1;
-            c.total += r.count;
-            *c.by_type.entry(if r.was.is_empty() { "unknown".into() } else { r.was.clone() }).or_default() += r.count;
-            c.ranges.push(r);
-        }
-        Ok(c)
-    }
-
-    /// The `seq` ranges this device collected (or was told are collected), most compact form, for the handshake.
-    pub fn stub_ranges(&self, max_ranges: usize) -> Result<Vec<StubRange>> {
-        let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare("SELECT device_id, from_seq, to_seq FROM collected ORDER BY device_id, from_seq LIMIT ?1")?;
-        let rows = stmt.query_map([max_ranges as i64], |r| Ok(StubRange { device_id: r.get(0)?, from_seq: r.get(1)?, to_seq: r.get(2)? }))?;
-        let mut out: Vec<StubRange> = Vec::new();
-        for row in rows {
-            let r = row?;
-            match out.last_mut() {
-                Some(l) if l.device_id == r.device_id && l.to_seq + 1 == r.from_seq => l.to_seq = r.to_seq,
-                _ => out.push(r),
-            }
-        }
-        Ok(out)
-    }
-
-    /// Collect events: delete their rows (and full-text rows) and record the `seq` ranges they occupied as collected, with the
-    /// fold that superseded them. Returns how many.
-    pub fn collect_events(&self, events: &[(Event, String)]) -> Result<usize> {
-        let mut conn = self.conn.lock().unwrap();
-        let tx = conn.transaction()?;
-        let mut by_device: std::collections::BTreeMap<String, Vec<(u64, i64, String, String)>> = std::collections::BTreeMap::new();
-        for (e, by) in events {
-            let was = e.payload_json().get("type").and_then(|t| t.as_str()).unwrap_or("").to_string();
-            tx.execute("DELETE FROM events WHERE event_id = ?1", [&e.event_id])?;
-            tx.execute("DELETE FROM events_fts WHERE event_id = ?1", [&e.event_id])?;
-            by_device.entry(e.device_id.clone()).or_default().push((e.seq, e.recorded_at, by.clone(), was));
-        }
-        let n = events.len();
-        for (device, items) in by_device {
-            // one range set per (fold, type) so what a range says about itself stays true
-            let mut groups: std::collections::BTreeMap<(String, String), Vec<(u64, i64)>> = std::collections::BTreeMap::new();
-            for (seq, ms, by, was) in items {
-                groups.entry((by, was)).or_default().push((seq, ms));
-            }
-            for ((by, was), seqs) in groups {
-                add_collected(&tx, &device, seqs, &by, &was)?;
-            }
-        }
-        tx.commit()?;
-        Ok(n)
-    }
-
-    /// Events this device holds IN FULL (not stubs) inside the requested per-device ranges, at most `cap`.
-    pub fn full_events_in_ranges(&self, ranges: &[StubRange], cap: usize) -> Result<Vec<Event>> {
-        let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
-            "SELECT event_id, device_id, seq, recorded_at, kind, payload, will_enrich, extra
-             FROM events WHERE device_id = ?1 AND seq BETWEEN ?2 AND ?3
-             ORDER BY seq",
-        )?;
-        let mut out = Vec::new();
-        for r in ranges {
-            let rows = stmt.query_map(params![r.device_id, r.from_seq, r.to_seq], row_to_event)?;
-            for row in rows {
-                if out.len() >= cap {
-                    return Ok(out);
-                }
-                out.push(row?);
-            }
-        }
-        Ok(out)
     }
 
     /// Candidates for "newest user-visible event": the latest capture of each device, limited (when `heads` is
@@ -876,99 +721,6 @@ fn row_to_event(r: &rusqlite::Row) -> rusqlite::Result<Event> {
         .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
     Event::from_stored(r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, kind, &payload_str, r.get(6)?, r.get::<_, Option<String>>(7)?.as_deref())
         .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))
-}
-
-/// What `insert_remote_outcome` did with an incoming event.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RemoteOutcome {
-    New,
-    /// We held a stub of exactly this event; it now holds the full content.
-    Filled,
-    Duplicate,
-}
-
-/// One run of `seq`s this device collected: which fold superseded them, what they were, and the time window they cover.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
-pub struct CollectedRange {
-    pub device_id: String,
-    pub from_seq: u64,
-    pub to_seq: u64,
-    pub count: u64,
-    pub by: String,
-    pub was: String,
-    pub first_ms: i64,
-    pub last_ms: i64,
-}
-
-/// What this device has collected: how many events, of which original type, and the ranges.
-#[derive(Debug, Default, Clone, PartialEq, Eq, serde::Serialize)]
-pub struct StubCounts {
-    pub total: u64,
-    pub by_type: std::collections::BTreeMap<String, u64>,
-    pub ranges: Vec<CollectedRange>,
-}
-
-/// A contiguous run of one device's events by `seq`.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct StubRange {
-    pub device_id: String,
-    pub from_seq: u64,
-    pub to_seq: u64,
-}
-
-/// Merge `(seq, recorded_at)` pairs into a device's collected ranges (adjacent ranges with the same `by` and `was` join; the time
-/// window widens).
-fn add_collected(tx: &rusqlite::Transaction, device: &str, seqs: Vec<(u64, i64)>, by: &str, was: &str) -> Result<()> {
-    let mut ranges: Vec<(u64, u64, String, String, i64, i64)> = {
-        let mut stmt = tx.prepare("SELECT from_seq, to_seq, by, was, first_ms, last_ms FROM collected WHERE device_id = ?1 ORDER BY from_seq")?;
-        let rows = stmt.query_map([device], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)))?;
-        rows.collect::<std::result::Result<_, _>>()?
-    };
-    for (seq, ms) in seqs {
-        ranges.push((seq, seq, by.to_string(), was.to_string(), ms, ms));
-    }
-    ranges.sort_by_key(|r| r.0);
-    let mut merged: Vec<(u64, u64, String, String, i64, i64)> = Vec::new();
-    for r in ranges {
-        match merged.last_mut() {
-            Some(l) if l.1 + 1 == r.0 && l.2 == r.2 && l.3 == r.3 => {
-                l.1 = r.1;
-                l.4 = if l.4 == 0 { r.4 } else if r.4 == 0 { l.4 } else { l.4.min(r.4) };
-                l.5 = l.5.max(r.5);
-            }
-            _ => merged.push(r),
-        }
-    }
-    tx.execute("DELETE FROM collected WHERE device_id = ?1", [device])?;
-    for (from, to, by, was, first, last) in merged {
-        tx.execute(
-            "INSERT INTO collected (device_id, from_seq, to_seq, by, was, first_ms, last_ms) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![device, from, to, by, was, first, last],
-        )?;
-    }
-    Ok(())
-}
-
-/// Take one `seq` out of the collected ranges (it is being filled with its full event). False if it was not collected.
-fn remove_collected_seq(tx: &rusqlite::Transaction, device: &str, seq: u64) -> Result<bool> {
-    let row: Option<(u64, u64, String, String, i64, i64)> = tx
-        .query_row(
-            "SELECT from_seq, to_seq, by, was, first_ms, last_ms FROM collected WHERE device_id = ?1 AND from_seq <= ?2 AND ?2 <= to_seq",
-            params![device, seq],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
-        )
-        .optional()?;
-    let Some((from, to, by, was, first, last)) = row else { return Ok(false) };
-    tx.execute("DELETE FROM collected WHERE device_id = ?1 AND from_seq = ?2", params![device, from])?;
-    for (a, b) in [(from, seq.wrapping_sub(1)), (seq + 1, to)] {
-        if a <= b && !(seq == from && a == from && b == seq.wrapping_sub(1)) && !(seq == to && a == seq + 1) {
-            tx.execute(
-                "INSERT INTO collected (device_id, from_seq, to_seq, by, was, first_ms, last_ms) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                params![device, a, b, by, was, first, last],
-            )?;
-        }
-    }
-    Ok(true)
 }
 
 pub fn now_ms() -> i64 {

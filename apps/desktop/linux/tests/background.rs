@@ -39,8 +39,8 @@ async fn background_handoff_preserves_identity_and_releases_ownership_on_stop() 
         session
             .request("get_retention", serde_json::json!({}))
             .await
-            .unwrap()["keeps_revisions"],
-        false
+            .unwrap()["policy"]["voice_audio"]["days"],
+        7
     );
     assert_eq!(
         session

@@ -31,13 +31,8 @@ async fn the_archive_is_valid_complete_and_checksummed() {
     let secret = node.capture_blob(MediaKind::Photo, vec![7, 7, 7]).await.unwrap();
     j.redact(&secret.event_id).unwrap();
     j.set_device_name(j.device_id(), "test box").unwrap();
-    let ink1 = j.append_ink("2026-11", json!({ "op": "stroke", "tool": "pen", "seed": 1, "size": 5, "cid": "c1", "pts": [[0, 0, 0.5, 0], [10, 10, 0.5, 0]] })).unwrap();
+    j.append_ink("2026-11", json!({ "op": "stroke", "tool": "pen", "seed": 1, "size": 5, "cid": "c1", "pts": [[0, 0, 0.5, 0], [10, 10, 0.5, 0]] })).unwrap();
     j.append_ink("2026-11", json!({ "op": "undo", "target": "c1", "cid": "c2" })).unwrap();
-    // a snapshot that supersedes the stroke, collected on a device that doesn't keep revisions: the archive then holds a
-    // snapshot, a collected stub and a peer_policy announcement
-    j.set_retention_policy(&memorious_core::retention::RetentionPolicy { collect_without_backup: true, ..memorious_core::retention::RetentionPolicy::PHONE }).unwrap();
-    j.append_ink("2026-11", json!({ "op": "ink_fold", "cid": "s1", "items": [], "supersedes": [{ "id": ink1.event_id }] })).unwrap();
-    assert_eq!(j.collect_superseded_at(memorious_core::store::now_ms() + 31 * 86_400_000).unwrap().events_collected, 1);
     j.ensure_version_seen().unwrap();
     j.ensure_peer_join().unwrap();
 
@@ -62,7 +57,6 @@ async fn the_archive_is_valid_complete_and_checksummed() {
         assert!(kinds.contains(k), "missing {k}");
     }
     assert!(lines.iter().any(|l| l["kind"] == "ink" && l["payload"]["op"] == "undo" && l["payload"]["period"] == "2026-11"));
-    assert!(!lines.iter().any(|l| l["payload"]["type"] == "collected"), "collected events leave no rows, so nothing is exported for them");
     assert!(lines.iter().any(|l| l["event_id"] == text.event_id.as_str() && l["payload"]["text"] == "hello\nworld"));
 
     // manifest validates, its checksums hold, media is decrypted and byte-identical
@@ -70,9 +64,6 @@ async fn the_archive_is_valid_complete_and_checksummed() {
     let mv = jsonschema::validator_for(&serde_json::from_str::<Value>(MANIFEST_SCHEMA).unwrap()).unwrap();
     let errs: Vec<String> = mv.iter_errors(&manifest).map(|e| e.to_string()).collect();
     assert!(errs.is_empty(), "{errs:?}");
-    assert_eq!(manifest["stubs"]["total"], 1);
-    assert_eq!(manifest["stubs"]["ranges"][0]["count"], 1, "the manifest lists what this device collected, as seq ranges");
-    assert!(lines.iter().any(|l| l["kind"] == "infra" && l["payload"]["infra_kind"] == "peer_policy"));
     assert_eq!(manifest["events"]["sha256"], sha(raw.as_bytes()));
     assert_eq!(manifest["events"]["count"], lines.len());
     let ph = photo.blob_hash().unwrap();

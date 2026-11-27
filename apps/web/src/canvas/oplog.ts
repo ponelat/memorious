@@ -5,7 +5,7 @@
  *  has assigned an event id, and a retry is recognised instead of applied twice. Canvas order is
  *  (recorded_at, event_id) — identical on every peer — with this device's unconfirmed ops after everything
  *  confirmed. */
-import type { Ev, Item, Poly, Pt, Tool, Xf } from './ink'
+import type { Ev, Poly, Pt, Tool, Xf } from './ink'
 
 export type OpData =
   | { op: 'stroke'; tool: Tool; seed: number; size: number; opacity?: number; only?: string[]; pts: Pt[] }
@@ -14,8 +14,6 @@ export type OpData =
   | { op: 'delete'; poly: Poly; only?: string[]; ids?: string[] }
   | { op: 'undo'; target: string }
   | { op: 'redo'; target: string }
-  /** A closed period's surviving strokes in one op (docs/CANVAS-SPEC.md, *Folding*): the base of the canvas, replacing the ops it supersedes. */
-  | { op: 'ink_fold'; items: Item[]; supersedes?: unknown[] }
 
 export interface Op {
   cid: string
@@ -25,8 +23,6 @@ export interface Op {
   t: number
   /** Server event id; undefined while pending. */
   eid?: string
-  /** The author device's sequence number for this op (from the journal); undefined while pending. A fold covers ops by it. */
-  seq?: number
   data: OpData
 }
 
@@ -39,8 +35,8 @@ export interface WireRecord {
   data: Record<string, unknown> & { cid?: string }
 }
 
-const KNOWN = new Set(['stroke', 'image', 'move', 'delete', 'undo', 'redo', 'ink_fold'])
-const isDrawable = (d: OpData) => d.op !== 'undo' && d.op !== 'redo' && d.op !== 'ink_fold'
+const KNOWN = new Set(['stroke', 'image', 'move', 'delete', 'undo', 'redo'])
+const isDrawable = (d: OpData) => d.op !== 'undo' && d.op !== 'redo'
 
 const uid = () => (typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`)
 
@@ -139,15 +135,17 @@ export class MonthLog {
   /** Fold server records in. Returns whether anything visible changed. */
   merge(records: WireRecord[]): boolean {
     let changed = false
+    // one index per merge: a period now keeps every op (no folds), and a find() per record made a poll O(n²)
+    const byCid = new Map<string, Op>()
+    for (const o of this.ops) byCid.set(o.cid, o)
     for (const r of records) {
       const raw = r.data ?? {}
       if (typeof raw.op !== 'string' || !KNOWN.has(raw.op)) continue
       const cid = typeof raw.cid === 'string' ? raw.cid : r.event_id // ops from clients that predate cids
-      const have = this.ops.find((o) => o.cid === cid)
+      const have = byCid.get(cid)
       const { cid: _c, ...data } = raw
       void _c
       if (have) {
-        if (r.seq !== undefined) have.seq = r.seq
         if (!have.eid) {
           have.eid = r.event_id
           have.t = r.recorded_at
@@ -156,7 +154,9 @@ export class MonthLog {
         }
         continue
       }
-      this.ops.push({ cid, dev: r.device_id, t: r.recorded_at, eid: r.event_id, seq: r.seq, data: data as OpData })
+      const op: Op = { cid, dev: r.device_id, t: r.recorded_at, eid: r.event_id, data: data as OpData }
+      this.ops.push(op)
+      byCid.set(cid, op)
       changed = true
     }
     if (changed) this.resort()
@@ -168,42 +168,16 @@ export class MonthLog {
     return this.resolve().events
   }
 
-  /** The latest fold in the log (by canvas order), and the ops it covers: those at or below its per-device `seq` bound. */
-  private foldBase(): { items: Item[]; covered: (o: Op) => boolean } | null {
-    let fold: Op | undefined
-    for (const o of this.ops) if (o.data.op === 'ink_fold') fold = o
-    if (!fold || fold.data.op !== 'ink_fold') return null
-    const upTo: Record<string, number> = {}
-    for (const r of fold.data.supersedes ?? []) {
-      const ref = r as { select?: string; up_to?: Record<string, number> }
-      if (ref.select === 'ink' && ref.up_to) for (const [dev, seq] of Object.entries(ref.up_to)) upTo[dev] = Math.max(upTo[dev] ?? 0, seq)
-    }
-    const f = fold
-    return { items: fold.data.items, covered: (o) => o !== f && o.data.op !== 'ink_fold' && o.seq !== undefined && upTo[o.dev] !== undefined && o.seq <= upTo[o.dev] }
-  }
-
   private resolve() {
     if (this.resolved?.v === this.version) return this.resolved
-    const base = this.foldBase()
-    // a fold's items stand in for every op it covers; ops above its bound (drawn later or synced late) fold on top
-    const live = base ? this.ops.filter((o) => !base.covered(o)) : this.ops
     const active = new Map<string, boolean>()
-    for (const it of base?.items ?? []) active.set(it.id, true) // folded items can still be undone / moved / deleted by later ops
-    for (const o of live) if (isDrawable(o.data)) active.set(o.cid, true)
-    for (const o of live) {
+    for (const o of this.ops) if (isDrawable(o.data)) active.set(o.cid, true)
+    for (const o of this.ops) {
       if (o.data.op === 'undo' && active.has(o.data.target)) active.set(o.data.target, false)
       else if (o.data.op === 'redo' && active.has(o.data.target)) active.set(o.data.target, true)
     }
     const events: Ev[] = []
-    for (const it of base?.items ?? []) {
-      const on = active.get(it.id) ?? true
-      events.push(
-        it.tool === 'image'
-          ? { type: 'image', id: it.id, hash: it.hash, rect: it.rect, active: on }
-          : { type: 'stroke', id: it.id, tool: it.tool, seed: it.seed, size: it.size, op: it.op, only: it.only, pts: it.pts, active: on },
-      )
-    }
-    for (const o of live) {
+    for (const o of this.ops) {
       if (!isDrawable(o.data)) continue
       const ev = toEv(o.data, active.get(o.cid) ?? true, o.cid)
       if (ev) events.push(ev)

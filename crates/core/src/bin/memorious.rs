@@ -110,12 +110,6 @@ enum Cmd {
     ExportMd { out: PathBuf },
     /// Encrypt a pre-encryption journal in place (old dir kept as backup).
     MigrateEncrypt,
-    /// Fold canvas periods into `ink_fold` events: the one named by `--period`, or every period that has ended. Adds events, deletes
-    /// nothing (what the folds supersede is kept unless this device's retention policy collects it).
-    FoldInk {
-        #[arg(long)]
-        period: Option<String>,
-    },
     /// Rewrite legacy canvas events (`infra`/`ink`) as first-class `ink` events, in place (ids, authors, seq, timestamps unchanged).
     /// Take an archive (the web status page's "archive" row) first. Idempotent.
     MigrateInk,
@@ -346,25 +340,6 @@ async fn main() -> Result<()> {
             );
             println!("old journal kept at {}", report.backup_dir.display());
             println!("other devices must re-pair (delete their data dir, then `join`)");
-        }
-        Cmd::FoldInk { period } => {
-            let j = open(&pw)?;
-            let folded = match period {
-                Some(p) => j.fold_ink_period(&p)?.into_iter().collect::<Vec<_>>(),
-                None => j.fold_due_periods(memorious_core::store::now_ms(), 15 * 60 * 1000)?,
-            };
-            for e in &folded {
-                let v = serde_json::to_value(e)?;
-                println!(
-                    "folded {} (event {}, seq {}): {} item(s), {} bytes",
-                    v["payload"]["period"],
-                    e.event_id,
-                    e.seq,
-                    v["payload"]["items"].as_array().map(Vec::len).unwrap_or(0),
-                    serde_json::to_vec(e)?.len()
-                );
-            }
-            println!("{} fold(s) written", folded.len());
         }
         Cmd::MigrateInk => {
             let j = open(&pw)?;

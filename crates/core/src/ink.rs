@@ -5,8 +5,8 @@
 //! Riding `EventKind::Infra` means no wire change: every peer on a build that has the lossless
 //! `Unknown` fallback stores and forwards ink it can't interpret, ink is never an entry in the
 //! feed, and the canvas is just a fold over these ops in log order (`recorded_at`, `event_id`).
-//! The core only validates the envelope and stores/serves it; what an op *means* (and how a
-//! period is folded into an `ink_fold`) is the canvas's business, not this module's.
+//! The core only validates the envelope and stores/serves it; what an op *means* is the
+//! canvas's business, not this module's.
 
 use anyhow::{bail, Result};
 use serde_json::Value;
@@ -17,9 +17,6 @@ use crate::journal::Journal;
 /// One op is a stroke's points, an image's rect, a lasso polygon: kilobytes. A megabyte of it
 /// is a bug, not a drawing.
 const MAX_OP_BYTES: usize = 512 * 1024;
-/// An `ink_fold` op holds a whole canvas period's surviving strokes in one event, so it gets a far larger limit (still under the
-/// 16 MB sync frame).
-const MAX_FOLD_BYTES: usize = 12 * 1024 * 1024;
 
 /// A canvas period key: a UTC ISO week `YYYY-Www` (W01-W53, new) or a legacy UTC month `YYYY-MM` (01-12).
 pub fn is_period_key(s: &str) -> bool {
@@ -122,12 +119,11 @@ fn check_op(period: &str, data: &Value) -> Result<()> {
     if !is_period_key(period) {
         bail!("ink period must be YYYY-Www or YYYY-MM, got {period:?}");
     }
-    let Some(op) = data.get("op").and_then(Value::as_str) else {
+    if data.get("op").and_then(Value::as_str).is_none() {
         bail!("an ink event is an object with a string \"op\"");
-    };
-    let max = if op == "ink_fold" { MAX_FOLD_BYTES } else { MAX_OP_BYTES };
-    if serde_json::to_vec(data)?.len() > max {
-        bail!("ink op too large (max {max} bytes)");
+    }
+    if serde_json::to_vec(data)?.len() > MAX_OP_BYTES {
+        bail!("ink op too large (max {MAX_OP_BYTES} bytes)");
     }
     Ok(())
 }

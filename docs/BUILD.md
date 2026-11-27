@@ -283,14 +283,13 @@ in memory and retry; closing waits for them to save. Current-week undo/redo is p
 author. Timeline edits may reach visible earlier periods; deleting there asks for
 confirmation. Image ops without locally available pixels show neutral rectangles.
 
-The shared reader applies the latest `ink_fold` base, skips operations covered by
-its per-device sequence bounds, and keeps late arrivals above those bounds. Unknown
-ops are ignored by the renderer and preserved by the journal. No migration is
+The shared reader folds every op of a period (there is no stored fold). Unknown
+ops (including a legacy `ink_fold`) are ignored by the renderer and preserved by the journal. No migration is
 needed to read legacy ink events. The coverage fixture is generated from the web
 renderer and checks pencil, pen, opacity stacking and layer-specific erasure.
 
-**Settings → Peers & sync** also exposes required/optional peers, retention presets,
-collected-history counts and isolation. Isolation immediately stops sync and forgets
+**Settings → Peers & sync** also exposes required/optional peers, retention presets
+and isolation. Isolation immediately stops sync and forgets
 peers; restart the journal for its new address, then end isolation and pair again.
 In background mode, stop the journal from the tray before reopening it.
 

@@ -118,82 +118,46 @@ describe('MonthLog', () => {
   })
 })
 
-describe('ink_fold: a fold is the base of the canvas and covers the ops it supersedes', () => {
+describe('a legacy ink_fold op (dropped 2026-11-26) is an unknown op: it draws nothing and covers nothing', () => {
   const recs = (eid: string, dev: string, seq: number, t: number, data: Record<string, unknown>): WireRecord => ({ event_id: eid, device_id: dev, seq, recorded_at: t, data })
   const stroke = (cid: string, y: number) => ({ op: 'stroke', cid, tool: 'pen', seed: 1, size: 5, pts: [[0, y, 0.5, 0], [50, y, 0.5, 0]] })
   const item = (id: string, y: number) => ({ id, tool: 'pen', seed: 1, size: 5, pts: [[0, y, 0.5, 0], [50, y, 0.5, 0]] })
-  const fold = (items: unknown[], upTo: Record<string, number>, extra: unknown[] = []) => ({
-    op: 'ink_fold', cid: 'f1', items, supersedes: [{ select: 'ink', period: '2026-W10', up_to: upTo }, ...extra],
-  })
   const ids = (l: MonthLog) => l.events().filter((e) => e.active !== false).map((e) => e.id)
 
-  test('ops covered by the fold are replaced by its items; ops above the bound fold on top', () => {
+  test('the plain ops stay the canvas; the fold is ignored', () => {
     const l = new MonthLog('2026-W10', 'dev-a')
     l.merge([
       recs('e1', 'dev-a', 1, 1, stroke('a', 0)),
       recs('e2', 'dev-a', 2, 2, stroke('b', 10)),
-      recs('e3', 'dev-a', 3, 3, { op: 'undo', target: 'b', cid: 'u' }),
-      recs('e4', 'dev-a', 4, 4, fold([item('a', 0)], { 'dev-a': 3 })), // b was undone, baked out of the fold
-      recs('e5', 'dev-a', 5, 5, stroke('late', 20)),
+      recs('e3', 'dev-a', 3, 3, { op: 'ink_fold', cid: 'f1', items: [item('x', 99)], supersedes: [{ select: 'ink', period: '2026-W10', up_to: { 'dev-a': 3 } }] }),
+      recs('e4', 'dev-a', 4, 4, stroke('late', 20)),
     ])
-    expect(ids(l)).toEqual(['a', 'late'])
-  })
-
-  test('a peer that only has the fold (the ops were collected) draws the same canvas', () => {
-    const l = new MonthLog('2026-W10', 'dev-b')
-    l.merge([recs('e4', 'dev-a', 4, 4, fold([item('a', 0), item('c', 30)], { 'dev-a': 3 })), recs('e5', 'dev-a', 5, 5, stroke('late', 20))])
-    expect(ids(l)).toEqual(['a', 'c', 'late'])
-  })
-
-  test('a later undo can still remove a folded item', () => {
-    const l = new MonthLog('2026-W10', 'dev-b')
-    l.merge([recs('e4', 'dev-a', 4, 4, fold([item('a', 0), item('c', 30)], { 'dev-a': 3 })), recs('e6', 'dev-a', 6, 6, { op: 'undo', target: 'c', cid: 'u2' })])
-    expect(ids(l)).toEqual(['a'])
-  })
-
-  test('the latest fold wins; an op the old fold covered is not resurrected', () => {
-    const l = new MonthLog('2026-W10', 'dev-a')
-    l.merge([
-      recs('e1', 'dev-a', 1, 1, stroke('a', 0)),
-      recs('e2', 'dev-a', 2, 2, fold([item('a', 0)], { 'dev-a': 1 })),
-      recs('e3', 'dev-a', 3, 3, stroke('late', 20)),
-      recs('e4', 'dev-a', 4, 4, fold([item('a', 0), item('late', 20)], { 'dev-a': 3 }, [{ id: 'e2' }])),
-    ])
-    expect(ids(l)).toEqual(['a', 'late'])
-  })
-
-  test('without a fold nothing changes, and ops without a seq (still pending) are never treated as covered', () => {
-    const l = new MonthLog('2026-W10', 'dev-a')
-    l.merge([recs('e2', 'dev-a', 2, 2, fold([item('a', 0)], { 'dev-a': 99 }))])
-    l.add({ op: 'stroke', tool: 'pen', seed: 2, size: 5, pts: [[0, 5, 0.5, 0]] })
-    expect(l.events().filter((e) => e.active !== false).length).toBe(2)
-    expect(l.hasContent).toBe(true)
+    expect(ids(l)).toEqual(['a', 'b', 'late'])
   })
 })
 
-describe('wiping: a delete op written into an earlier, already-folded period', () => {
+describe('wiping: a delete op written into an earlier period', () => {
   const rec = (eid: string, dev: string, seq: number, t: number, data: Record<string, unknown>): WireRecord => ({ event_id: eid, device_id: dev, seq, recorded_at: t, data })
-  const item = (id: string, y: number) => ({ id, tool: 'pen', seed: 1, size: 5, pts: [[0, y, 0.5, 0], [50, y, 0.5, 0]] })
-  const foldOp = { op: 'ink_fold', cid: 'f', items: [item('a', 0), item('b', 100), item('c', 200)], supersedes: [{ select: 'ink', period: '2026-W10', up_to: { 'dev-a': 3 } }] }
+  const stroke = (cid: string, y: number, tool = 'pen', seed = 1) => ({ op: 'stroke', cid, tool, seed, size: 5, pts: [[0, y, 0.5, 0], [50, y, 0.5, 0]] })
+  const base = () => [rec('e1', 'dev-a', 1, 1, stroke('a', 0)), rec('e2', 'dev-a', 2, 2, stroke('b', 100)), rec('e3', 'dev-a', 3, 3, stroke('c', 200))]
   const ids = (l: MonthLog) => fold(l.events()).map((i) => i.id)
 
-  test('the delete folds on top of the fold: ink inside the shape goes, the rest stays', () => {
+  test('the delete folds on top of the ink: what is inside the shape goes, the rest stays', () => {
     const l = new MonthLog('2026-W10', 'dev-b')
-    l.merge([rec('e4', 'dev-a', 4, 4, foldOp), rec('e5', 'dev-b', 1, 5, { op: 'delete', cid: 'w1', poly: [[-10, 90], [60, 90], [60, 110], [-10, 110]] })])
+    l.merge([...base(), rec('e5', 'dev-b', 1, 5, { op: 'delete', cid: 'w1', poly: [[-10, 90], [60, 90], [60, 110], [-10, 110]] })])
     expect(ids(l)).toEqual(['a', 'c'])
   })
 
   test('a delete written locally (still pending, no seq) applies at once', () => {
     const l = new MonthLog('2026-W10', 'dev-b')
-    l.merge([rec('e4', 'dev-a', 4, 4, foldOp)])
+    l.merge(base())
     l.addEvent({ type: 'delete', poly: [[-10, 190], [60, 190], [60, 210], [-10, 210]], active: true } as never)
     expect(ids(l)).toEqual(['a', 'b'])
   })
 
   test('only the visible layers are touched', () => {
     const l = new MonthLog('2026-W10', 'dev-b')
-    const pencil = { id: 'p', tool: 'pencil', seed: 2, size: 5, pts: [[0, 100, 0.5, 0], [50, 100, 0.5, 0]] }
-    l.merge([rec('e4', 'dev-a', 4, 4, { ...foldOp, items: [item('b', 100), pencil] }), rec('e5', 'dev-b', 1, 5, { op: 'delete', cid: 'w2', only: ['pen'], poly: [[-10, 90], [60, 90], [60, 110], [-10, 110]] })])
+    l.merge([rec('e1', 'dev-a', 1, 1, stroke('b', 100)), rec('e2', 'dev-a', 2, 2, stroke('p', 100, 'pencil', 2)), rec('e5', 'dev-b', 1, 5, { op: 'delete', cid: 'w2', only: ['pen'], poly: [[-10, 90], [60, 90], [60, 110], [-10, 110]] })])
     expect(ids(l)).toEqual(['p'])
   })
 })

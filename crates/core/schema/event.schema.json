@@ -128,7 +128,7 @@
     },
     "ink_op": {
       "type": "object",
-      "description": "One canvas drawing op (see docs/CANVAS-SPEC.md). The op fields sit flat in the payload beside `type` and `month`. (Legacy: the same object under payload.data of an `infra` event with infra_kind \"ink\".) An `ink_fold` op carries a period's folded canvas and may list the events it `supersedes`. `op` values not listed here are ops from a newer client: keep, ignore.",
+      "description": "One canvas drawing op (see docs/CANVAS-SPEC.md). The op fields sit flat in the payload beside `type` and `month`. (Legacy: the same object under payload.data of an `infra` event with infra_kind \"ink\".) `op` values not listed here are ops from a newer client: keep, ignore.",
       "required": [
         "op"
       ],
@@ -147,9 +147,6 @@
         "cid": {
           "type": "string",
           "description": "Client-generated id; undo/redo `target` refer to it."
-        },
-        "supersedes": {
-          "$ref": "#/$defs/supersedes"
         }
       },
       "allOf": [
@@ -342,29 +339,6 @@
               }
             }
           }
-        },
-        {
-          "if": {
-            "properties": {
-              "op": {
-                "const": "ink_fold"
-              }
-            },
-            "required": [
-              "op"
-            ]
-          },
-          "then": {
-            "properties": {
-              "items": {
-                "type": "array",
-                "description": "The period's canvas as the fold leaves it: surviving stroke runs (tool, size, opacity, seed, points) and placed images, in draw order, all layers in one event. No eraser strokes and no undo/redo history."
-              },
-              "supersedes": {
-                "$ref": "#/$defs/supersedes"
-              }
-            }
-          }
         }
       ],
       "additionalProperties": true
@@ -547,7 +521,7 @@
             "properties": {
               "infra_kind": {
                 "type": "string",
-                "description": "peer_join | version_seen | key_rewrap | peer_policy | ink (LEGACY home of canvas ops; now the `ink` kind) | anything newer."
+                "description": "peer_join | version_seen | key_rewrap | peer_policy (LEGACY, no longer written) | ink (LEGACY home of canvas ops; now the `ink` kind) | anything newer."
               },
               "target": {
                 "type": "string",
@@ -620,34 +594,6 @@
                   "properties": {
                     "data": {
                       "$ref": "#/$defs/ink_op"
-                    }
-                  }
-                }
-              },
-              {
-                "if": {
-                  "properties": {
-                    "infra_kind": {
-                      "const": "peer_policy"
-                    }
-                  },
-                  "required": [
-                    "infra_kind"
-                  ]
-                },
-                "then": {
-                  "properties": {
-                    "data": {
-                      "type": "object",
-                      "required": [
-                        "keeps_revisions"
-                      ],
-                      "properties": {
-                        "keeps_revisions": {
-                          "type": "boolean",
-                          "description": "Does the device in `target` keep revisions (superseded events)? The latest announcement per device wins."
-                        }
-                      }
                     }
                   }
                 }
@@ -726,38 +672,6 @@
         }
       ],
       "additionalProperties": true
-    },
-    "supersedes": {
-      "type": "array",
-      "description": "Earlier events this event supersedes (a statement about the data, never an instruction to delete: each device's retention policy decides whether it keeps them or collects them down to stubs). Shapes not listed are from a newer client: keep, ignore.",
-      "items": {
-        "type": "object",
-        "properties": {
-          "id": {
-            "type": "string",
-            "description": "event_id of one event"
-          },
-          "select": {
-            "type": "string",
-            "description": "\"ink\" = a month's canvas ops"
-          },
-          "month": {
-            "type": "string",
-            "description": "legacy name of `period`"
-          },
-          "up_to": {
-            "type": "object",
-            "description": "per device_id: highest seq covered (an op above the bound is NOT superseded)",
-            "additionalProperties": {
-              "type": "integer"
-            }
-          },
-          "period": {
-            "type": "string",
-            "description": "canvas period (week YYYY-Www or legacy month YYYY-MM)"
-          }
-        }
-      }
     }
   }
 }

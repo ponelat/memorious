@@ -133,6 +133,16 @@ export const httpApi: JournalApi = {
     return json<import('./types').PeersHistory>('/api/peers/history')
   },
 
+  async acceptKnock(endpointId: string) {
+    await json('/api/knocks/accept', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ endpoint_id: endpointId }) })
+  },
+  async rejectKnock(endpointId: string) {
+    await json('/api/knocks/reject', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ endpoint_id: endpointId }) })
+  },
+  async removePeer(endpointId: string) {
+    await json('/api/peers/remove', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ endpoint_id: endpointId }) })
+  },
+
   async setPeerRequired(endpointId: string, required: boolean) {
     await request('/api/peers/required', {
       method: 'POST',
@@ -334,6 +344,9 @@ export const httpApi: JournalApi = {
       })
       setToken(passcode)
       return { received: 0, blobs: 0 }
+    },
+    async joinProgress() {
+      return (await json<{ progress: { code: string; since_ms: number } | null }>('/api/setup/join-progress')).progress
     },
     async unlock() {
       throw new Error('this server has no locked state to unlock')

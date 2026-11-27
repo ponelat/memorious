@@ -6,12 +6,10 @@ pub mod event;
 pub mod canvas_fold;
 pub mod export_archive;
 pub mod isolate;
-pub mod supersede;
 pub mod export_md;
 pub mod import_v1;
 pub mod infra;
 pub mod ink;
-pub mod ink_fold;
 pub mod journal;
 pub mod local;
 pub mod lost_media;
@@ -27,6 +25,7 @@ pub mod search;
 #[cfg(feature = "embeddings")]
 pub mod embed_local;
 pub mod store;
+pub mod trust;
 
 pub use event::{AudioKind, BlobCrypto, Event, EventKind, MediaKind, Payload};
 pub use journal::{Journal, MediaHeld, PeerHoldings};

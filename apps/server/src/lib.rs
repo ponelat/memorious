@@ -235,12 +235,14 @@ pub fn app(state: RouterState, web_dist: Option<PathBuf>) -> Router {
         .route("/status", get(status))
         .route("/peers/ping", post(ping_peers))
         .route("/peers/required", post(set_peer_required))
+        .route("/peers/remove", post(remove_peer))
+        .route("/knocks/accept", post(accept_knock))
+        .route("/knocks/reject", post(reject_knock))
         .route("/peers/history", get(peers_history))
         .route("/media/missing", get(missing_media))
         .route("/media/lost", post(mark_media_lost))
         .route("/isolate", post(isolate))
         .route("/migrate-ink", post(migrate_ink))
-        .route("/ink/fold", post(fold_ink))
         .route("/retention", get(get_retention).post(set_retention))
         .route("/device-name", post(set_device_name))
         .route("/agents", get(list_agents).post(mint_agent))
@@ -261,6 +263,7 @@ pub fn app(state: RouterState, web_dist: Option<PathBuf>) -> Router {
         .route("/setup/state", get(setup_state))
         .route("/setup/passcode", post(setup_passcode))
         .route("/setup/join", post(setup_join))
+        .route("/setup/join-progress", get(setup_join_progress))
         .layer(DefaultBodyLimit::max(4 * 1024));
     let api = authed.merge(open).with_state(state.clone());
 
@@ -840,6 +843,41 @@ async fn set_peer_required(
     }
 }
 
+#[derive(Deserialize)]
+struct EndpointBody {
+    endpoint_id: String,
+}
+
+/// `POST /api/knocks/accept {endpoint_id}` — the owner tapped accept: let that device in (trust.rs).
+async fn accept_knock(State(state): State<SharedState>, Json(body): Json<EndpointBody>) -> Response {
+    match state.node.accept_knock(&body.endpoint_id) {
+        Ok(()) => Json(json!({"ok": true})).into_response(),
+        Err(e) => internal(e),
+    }
+}
+
+/// `POST /api/knocks/reject {endpoint_id}` — turn a knock away (it may knock again).
+async fn reject_knock(State(state): State<SharedState>, Json(body): Json<EndpointBody>) -> Response {
+    match state.node.reject_knock(&body.endpoint_id) {
+        Ok(()) => Json(json!({"ok": true})).into_response(),
+        Err(e) => internal(e),
+    }
+}
+
+/// `POST /api/peers/remove {endpoint_id}` — forget a peer entirely; if it syncs with us again it is a first knock.
+async fn remove_peer(State(state): State<SharedState>, Json(body): Json<EndpointBody>) -> Response {
+    match state.node.remove_peer(&body.endpoint_id) {
+        Ok(()) => Json(json!({"ok": true})).into_response(),
+        Err(e) => internal(e),
+    }
+}
+
+/// `GET /api/setup/join-progress` — while a join waits for the other device's owner to accept it: `{progress: {code, since_ms}}`
+/// (the code to compare with the knock on that device), else `{progress: null}`.
+async fn setup_join_progress() -> Response {
+    Json(json!({ "progress": memorious_core::node::join_progress() })).into_response()
+}
+
 /// `GET /api/media/missing` — blobs this device still waits for (each with its capture), and those already declared lost.
 async fn missing_media(State(state): State<SharedState>) -> Response {
     match (state.node.missing_media().await, state.journal().lost_media()) {
@@ -992,7 +1030,6 @@ pub async fn reset_journal(state: &AppState) -> Result<Node> {
     let journal = Journal::init(&state.data_dir, &password)?;
     journal.ensure_device_name("web")?;
     journal.ensure_peer_join()?;
-    journal.ensure_peer_policy()?;
     journal.ensure_version_seen()?;
     Node::spawn(journal).await
 }
@@ -1010,15 +1047,11 @@ fn retention_view(state: &SharedState) -> anyhow::Result<serde_json::Value> {
     let j = state.journal();
     Ok(json!({
         "policy": j.retention_policy()?,
-        "keeps_revisions": j.retention_policy()?.keeps_revisions(),
-        "has_backup_peer": j.has_backup_peer()?,
-        "stubs": j.stub_counts()?,
         "presets": { "keep_everything": RetentionPolicy::KEEP_EVERYTHING, "phone": RetentionPolicy::PHONE },
     }))
 }
 
-/// `GET /api/retention` — this device's retention policy (what it keeps), the presets, whether any other peer is known to keep
-/// revisions, and its stub counts.
+/// `GET /api/retention` — this device's retention policy (what it keeps) and the presets.
 async fn get_retention(State(state): State<SharedState>) -> Response {
     match retention_view(&state) {
         Ok(v) => Json(v).into_response(),
@@ -1034,8 +1067,7 @@ struct RetentionBody {
     policy: Option<memorious_core::retention::RetentionPolicy>,
 }
 
-/// `POST /api/retention {preset | policy}` — change what this device keeps. A change announces itself (a `peer_policy` infra event)
-/// so peers learn whether this device keeps revisions.
+/// `POST /api/retention {preset | policy}` — change what this device keeps.
 async fn set_retention(State(state): State<SharedState>, Json(body): Json<RetentionBody>) -> Response {
     use memorious_core::retention::RetentionPolicy;
     let policy = match (body.preset.as_deref(), body.policy) {
@@ -1049,16 +1081,6 @@ async fn set_retention(State(state): State<SharedState>, Json(body): Json<Retent
         return internal(e);
     }
     get_retention(State(state)).await
-}
-
-/// `POST /api/ink/fold` → `{folded: [{period, event_id}]}`: fold every canvas period that has ended (and its grace) into an
-/// `ink_fold` event now, instead of waiting for the periodic pass. Safe to call repeatedly.
-async fn fold_ink(State(state): State<SharedState>) -> Response {
-    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0);
-    match state.journal().fold_due_periods(now, 15 * 60 * 1000) {
-        Ok(evs) => Json(json!({ "folded": evs.iter().map(|e| json!({ "event_id": e.event_id, "seq": e.seq })).collect::<Vec<_>>() })).into_response(),
-        Err(e) => internal(e),
-    }
 }
 
 /// `POST /api/migrate-ink` → `{migrated: n}`: rewrite this peer's legacy `infra`/`ink` canvas events as first-class `ink`

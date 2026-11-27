@@ -1532,15 +1532,7 @@ impl Ui {
                     });
                     select.set_sensitive(true);
                     save2.set_sensitive(select.selected() < 2);
-                    note2.set_text(&format!(
-                        "{} collected events · backup peer: {}",
-                        v["stubs"]["total"],
-                        if v["has_backup_peer"] == true {
-                            "available"
-                        } else {
-                            "not yet announced"
-                        }
-                    ));
+                    note2.set_text("");
                 }
                 Err(e) => note2.set_text(&e),
             },
@@ -2076,7 +2068,7 @@ fn smoke_capture(ui: Rc<Ui>, verify: bool) {
                             rt.block_on(state.as_ref().unwrap().request("get_retention", json!({})))
                         },
                         move |r| {
-                            assert_eq!(r.unwrap()["keeps_revisions"], false);
+                            assert_eq!(r.unwrap()["policy"]["voice_audio"]["days"], 7);
                             glib::timeout_add_local_once(
                                 std::time::Duration::from_millis(250),
                                 move || smoke_close_settings(ui2, ".native-peers-tested"),

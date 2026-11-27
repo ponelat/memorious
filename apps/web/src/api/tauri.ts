@@ -40,6 +40,16 @@ export const tauriApi: JournalApi = {
     return invoke<import('./types').PeersHistory>('peers_history')
   },
 
+  async acceptKnock(endpointId: string) {
+    await invoke('accept_knock', { endpointId })
+  },
+  async rejectKnock(endpointId: string) {
+    await invoke('reject_knock', { endpointId })
+  },
+  async removePeer(endpointId: string) {
+    await invoke('remove_peer', { endpointId })
+  },
+
   async setPeerRequired(endpointId: string, required: boolean) {
     await invoke('set_peer_required', { endpointId, required })
   },
@@ -101,6 +111,7 @@ export const tauriApi: JournalApi = {
   setup: {
     state: () => invoke<'ready' | 'empty' | 'locked'>('setup_state'),
     initFresh: (password: string) => invoke('setup_init', { password }),
+    joinProgress: () => invoke<{ code: string; since_ms: number } | null>('join_progress'),
     joinTicket: (ticket: string, password: string) =>
       invoke<SyncReport>('setup_join', { ticket, password }),
     unlock: (password: string) => invoke('unlock', { password }),

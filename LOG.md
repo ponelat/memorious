@@ -740,3 +740,19 @@
   (`PeerInfo.syncing/last_attempt_ms/last_error`); the ping loop publishes its next run (`status.sync`). The server nudges a
   push ~5 s after the last local capture or ink write (debounced) instead of waiting for the 15-minute ping, and the card says
   "N events waiting · sends in X" / "sending now" / "last try failed".
+
+## 2026-11-26 (ink_fold and supersession removed)
+
+- **Decision (Josh):** `ink_fold` has no real use. Every ink op stays in the log, which is what allows any time-ranged view of the
+  canvas; speed for old periods is a *rendering* cache (lossy raster of periods that are not being edited), never a change to what
+  is stored. Removed: the fold writer (`ink_fold.rs`, `fold-ink` CLI, `POST /api/ink/fold`, the GC-pass auto-fold), the 12 MB
+  fold allowance, and the fold-as-base reader in core (`CanvasLog`), web (`oplog.ts`) and iOS (`OpLog`/`OpWire`). A legacy
+  `ink_fold` in a log is an unknown op: kept, ignored. Nothing real was ever folded (the dev canvas is still the open `2026-11`).
+- **Supersede/collect machinery removed with it** (it had no other producer): `supersede.rs`, the local `collected` table and
+  stub fill, the `stubs`/`gaps` handshake fields (older peers' fields are ignored), `peer_policy` events (no longer written; old
+  ones are inert), `RetentionPolicy.superseded` / `collect_without_backup`, `keeps_revisions` / `has_backup_peer` / `stubs` in the
+  status and retention APIs, the stub rows in the archive manifest, and the web/desktop history details. Retention is now rules
+  1-2 only (transcribed voice audio, redacted media). `insert_remote` is the plain gap-refusing insert again.
+- Perf: `MonthLog.merge` (web) built a find-per-record over all ops (O(n²) per poll, worse now that nothing is folded); it uses
+  one cid index per merge. Resolve no longer filters by a fold bound.
+

@@ -4651,6 +4651,7 @@ dependencies = [
  "iroh-blobs",
  "jsonschema",
  "libc",
+ "memorious-core",
  "n0-future",
  "ort",
  "postcard",

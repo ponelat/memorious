@@ -40,21 +40,6 @@ async fn a_write_only_peer_pushes_its_events_and_pulls_none() {
 }
 
 #[tokio::test]
-async fn a_write_only_peer_announces_that_it_keeps_and_receives_nothing_so_it_is_never_a_backup() {
-    let dir = tempdir().unwrap();
-    let ja = Journal::init(&dir.path().join("a"), "pw").unwrap();
-    let jw = Journal::init_with_secret(&dir.path().join("w"), *ja.secret(), "pw").unwrap();
-    jw.set_write_only(true).unwrap();
-    jw.ensure_peer_policy().unwrap();
-    let e = jw.infra_events("peer_policy").unwrap().pop().unwrap();
-    let v = serde_json::to_value(&e).unwrap();
-    assert_eq!(v["payload"]["data"]["keeps_revisions"], false, "it holds nothing of others, so it is not a backup");
-    assert_eq!(v["payload"]["data"]["receives"], false);
-    ja.store_insert_remote_for_test(&e);
-    assert!(!ja.has_backup_peer().unwrap(), "a write-only peer is not a backup");
-}
-
-#[tokio::test]
 async fn join_write_only_makes_a_peer_without_pulling_the_network() {
     let dir = tempdir().unwrap();
     let ja = Journal::init(&dir.path().join("a"), "pw").unwrap();

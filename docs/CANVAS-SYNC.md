@@ -48,7 +48,9 @@ byte for byte. `crates/core/src/ink.rs` validates the envelope (month, a string 
   stays as a safety net, the full poll (2.5 s / 20 s) takes over while the stream is down, and the stream reconnects with
   backoff (a 45 s silence — the server sends keep-alives every 20 s — counts as down).
 
-## Phase 2 (designed, not built): freeze, snapshot, compact
+## Phase 2 (dropped 2026-11-26): freeze, snapshot, compact
+
+> **Superseded.** An `ink_fold` (the shipped form of this) was built and then removed: keeping every op is what allows any time-range view of the canvas, and old periods will be made cheap to *render* with a lossy raster cache instead. The text below is kept as history.
 
 A month is **frozen** once its UTC window has passed (plus a grace period for peers that were offline). A
 **snapshot** is a merge of that month's ink ops:

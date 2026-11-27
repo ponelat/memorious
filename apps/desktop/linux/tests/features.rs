@@ -54,7 +54,7 @@ async fn native_ink_is_durable_cursor_based_and_outside_the_feed() {
 }
 
 #[tokio::test]
-async fn native_peer_policy_and_isolation_preserve_captures() {
+async fn native_retention_and_isolation_preserve_captures() {
     let dir = tempfile::tempdir().unwrap();
     let app = DesktopJournal::create(dir.path(), "password")
         .await
@@ -69,7 +69,7 @@ async fn native_peer_policy_and_isolation_preserve_captures() {
     app.request("set_retention", json!({"preset":"phone"}))
         .await
         .unwrap();
-    assert_eq!(app.status().await.unwrap()["keeps_revisions"], false);
+    assert_eq!(app.status().await.unwrap()["retention"]["voice_audio"]["days"], 7);
     assert!(app
         .request("set_retention", json!({"preset":"typo"}))
         .await

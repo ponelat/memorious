@@ -1094,7 +1094,7 @@ async fn isolate_over_http_resets_the_node_in_place_and_keeps_the_journal() {
 }
 
 #[tokio::test]
-async fn retention_over_http_changes_what_this_device_keeps_and_announces_it() {
+async fn retention_over_http_changes_what_this_device_keeps() {
     let (_dir, state) = test_state().await;
     let router = app(wrap(state), None);
     let get = || authed(Request::get("/api/retention")).body(Body::empty()).unwrap();
@@ -1103,22 +1103,17 @@ async fn retention_over_http_changes_what_this_device_keeps_and_announces_it() {
     };
 
     let v = body_json(router.clone().oneshot(get()).await.unwrap()).await;
-    assert_eq!(v["keeps_revisions"], true, "the default keeps everything");
-    assert_eq!(v["stubs"]["total"], 0);
+    assert_eq!(v["policy"]["voice_audio"]["mode"], "forever", "the default keeps everything");
 
     let resp = router.clone().oneshot(post(r#"{"preset":"phone"}"#)).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let v = body_json(resp).await;
-    assert_eq!(v["keeps_revisions"], false);
-    assert_eq!(v["policy"]["superseded"]["days"], 30);
-    // announced to the network, and visible in status
+    assert_eq!(v["policy"]["voice_audio"]["days"], 7);
     let st = body_json(router.clone().oneshot(authed(Request::get("/api/status")).body(Body::empty()).unwrap()).await.unwrap()).await;
-    assert_eq!(st["keeps_revisions"], false);
-    let device = st["device_id"].as_str().unwrap();
-    assert_eq!(st["peer_policies"][device], false);
+    assert_eq!(st["retention"]["voice_audio"]["days"], 7);
 
     let resp = router.clone().oneshot(post(r#"{"preset":"keep_everything"}"#)).await.unwrap();
-    assert_eq!(body_json(resp).await["keeps_revisions"], true);
+    assert_eq!(body_json(resp).await["policy"]["voice_audio"]["mode"], "forever");
     assert_eq!(router.clone().oneshot(post(r#"{"preset":"nope"}"#)).await.unwrap().status(), StatusCode::BAD_REQUEST);
     assert_eq!(router.oneshot(post("{}")).await.unwrap().status(), StatusCode::BAD_REQUEST);
 }

@@ -1054,105 +1054,18 @@ pub fn fold_wire_records(records: &[WireRecord]) -> Vec<Item> {
     CanvasLog::from_records("", "", records).items()
 }
 
-/// A canvas with an optional compacted base and the uncovered operation log.
-/// The base is not undoable; subsequent edits retain normal per-author undo.
+/// A canvas: one period's operation log, folded on demand.
 #[derive(Debug, Clone)]
 pub struct CanvasLog {
-    pub base: Vec<Item>,
     pub log: MonthLog,
 }
 impl CanvasLog {
     pub fn from_records(period: &str, me: &str, records: &[WireRecord]) -> Self {
-        let latest = records
-            .iter()
-            .filter(|r| r.data.get("op").and_then(Value::as_str) == Some("ink_fold"))
-            .max_by(|a, b| {
-                a.recorded_at
-                    .partial_cmp(&b.recorded_at)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-                    .then_with(|| a.event_id.cmp(&b.event_id))
-            });
-        let mut bound = HashMap::<String, u64>::new();
-        let mut base = Vec::new();
-        if let Some(r) = latest {
-            base = r
-                .data
-                .get("items")
-                .cloned()
-                .and_then(|v| serde_json::from_value(v).ok())
-                .unwrap_or_default();
-            for selector in r
-                .data
-                .get("supersedes")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-            {
-                if selector["select"] == "ink" {
-                    for (dev, seq) in selector["up_to"].as_object().into_iter().flatten() {
-                        if let Some(seq) = seq.as_u64() {
-                            let b = bound.entry(dev.clone()).or_default();
-                            *b = (*b).max(seq);
-                        }
-                    }
-                }
-            }
-        }
-        let fresh: Vec<_> = records
-            .iter()
-            .filter(|r| {
-                !bound
-                    .get(&r.device_id)
-                    .is_some_and(|b| r.seq.is_some_and(|seq| seq <= *b))
-            })
-            .cloned()
-            .collect();
         let mut log = MonthLog::new(period, me);
-        log.merge(&fresh);
-        Self { base, log }
+        log.merge(records);
+        Self { log }
     }
     pub fn items(&self) -> Vec<Item> {
-        let mut active: HashMap<String, bool> = self
-            .base
-            .iter()
-            .map(|i| (i.id().to_string(), true))
-            .collect();
-        for op in &self.log.ops {
-            match &op.data {
-                OpData::Undo { target } if active.contains_key(target) => {
-                    active.insert(target.clone(), false);
-                }
-                OpData::Redo { target } if active.contains_key(target) => {
-                    active.insert(target.clone(), true);
-                }
-                _ => {}
-            }
-        }
-        let mut events: Vec<Ev> = self
-            .base
-            .iter()
-            .map(|it| {
-                Ev::new(
-                    it.id(),
-                    active.get(it.id()).copied().unwrap_or(true),
-                    match it {
-                        Item::Stroke(s) => OpData::Stroke {
-                            tool: s.tool,
-                            seed: s.seed,
-                            size: s.size,
-                            opacity: s.op,
-                            only: s.only.clone(),
-                            pts: s.pts.clone(),
-                        },
-                        Item::Image(i) => OpData::Image {
-                            hash: i.hash.clone(),
-                            rect: i.rect,
-                        },
-                    },
-                )
-            })
-            .collect();
-        events.extend(self.log.events());
-        fold(&events, &[])
+        fold(&self.log.events(), &[])
     }
 }

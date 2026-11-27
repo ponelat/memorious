@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { api, type SetupApi } from '../api'
 import { BrandHero } from '../components/BrandHero'
 
@@ -121,6 +121,13 @@ function JoinJournal({ setup, onDone, onBack }: { setup: SetupApi; onDone: () =>
   const { busy, error, run } = useRun(onDone)
   const canJoin = !busy && ticket.trim() !== '' && secret !== ''
   const join = () => canJoin && run(() => setup.joinTicket(ticket.trim(), secret, keep))
+  // the other device's owner has to tap accept: show the code to compare with theirs while the join waits
+  const [code, setCode] = useState<string | null>(null)
+  useEffect(() => {
+    if (!busy) { setCode(null); return }
+    const t = setInterval(() => void setup.joinProgress().then((p) => setCode(p?.code ?? null)).catch(() => {}), 1500)
+    return () => clearInterval(t)
+  }, [busy, setup])
 
   return (
     <BrandHero
@@ -147,13 +154,13 @@ function JoinJournal({ setup, onDone, onBack }: { setup: SetupApi; onDone: () =>
         onKeyDown={(e) => e.key === 'Enter' && join()}
       />
       <label className="row">
-        <input type="radio" name="keep" checked={keep === 'everything'} onChange={() => setKeep('everything')} /> keep everything, revisions too
+        <input type="radio" name="keep" checked={keep === 'everything'} onChange={() => setKeep('everything')} /> keep everything
       </label>
       <label className="row">
         <input type="radio" name="keep" checked={keep === 'visible'} onChange={() => setKeep('visible')} /> keep only what's visible
       </label>
       <button disabled={!canJoin} onClick={join}>
-        {busy ? 'joining…' : 'join'}
+        {busy ? (code ? `waiting for approval · ${code}` : 'joining…') : 'join'}
       </button>
       {error && <p className="error">{error}</p>}
       <button className="back" onClick={onBack} disabled={busy}>

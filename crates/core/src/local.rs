@@ -409,6 +409,16 @@ async fn dispatch(
             )?;
             Ok(json!({"ok":true}))
         }
+        "knock_accept" | "knock_reject" | "peer_remove" => {
+            let id = request.params["endpoint_id"].as_str().context("missing endpoint id")?;
+            match request.method.as_str() {
+                "knock_accept" => node.accept_knock(id)?,
+                "knock_reject" => node.reject_knock(id)?,
+                _ => node.remove_peer(id)?,
+            }
+            Ok(json!({"ok": true}))
+        }
+        "join_progress" => Ok(json!({"progress": crate::node::join_progress()})),
         "get_retention" | "set_retention" => {
             use crate::retention::RetentionPolicy;
             let j = node.journal();
@@ -423,7 +433,7 @@ async fn dispatch(
                 j.set_retention_policy(&policy)?;
             }
             Ok(
-                json!({"policy":j.retention_policy()?,"keeps_revisions":j.retention_policy()?.keeps_revisions(),"has_backup_peer":j.has_backup_peer()?,"stubs":j.stub_counts()?,"presets":{"keep_everything":RetentionPolicy::KEEP_EVERYTHING,"phone":RetentionPolicy::PHONE}}),
+                json!({"policy":j.retention_policy()?,"presets":{"keep_everything":RetentionPolicy::KEEP_EVERYTHING,"phone":RetentionPolicy::PHONE}}),
             )
         }
         "isolate" => {

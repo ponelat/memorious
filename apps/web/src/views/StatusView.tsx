@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { api, RetentionView, ArchiveExport, ArchiveOptions, AgentKey, DownloadFile, ExportReport, NetConfig, PeerBuild, PeerHistory, PeerInfo, PeerPing, Status } from '../api'
+import { api, RetentionView, ArchiveExport, ArchiveOptions, AgentKey, DownloadFile, ExportReport, NetConfig, PeerBuild, PeerHistory, Knock, PeerInfo, PeerPing, Status } from '../api'
 import { agoLabel, edgeKind } from '../components/PeerMap'
 import { PeerCards } from '../components/PeerCards'
 import { Appearance, onAppearanceChange, readAppearance, setAppearance } from '../appearance'
@@ -96,9 +96,6 @@ function holdingsLabel(peer: PeerInfo, status: Status): { text: string; behind: 
     }
     if (m.lost) text += ` · ${m.lost} lost for good`
   }
-  const keeps = peer.device_id ? status.peer_policies?.[peer.device_id] : undefined
-  if (keeps !== undefined) text += keeps ? ' · keeps revisions' : ' · visible data only'
-  if ((peer.stubs_filled ?? 0) > 0) text += ` · filled ${peer.stubs_filled} stubs for us`
   return { text, behind }
 }
 
@@ -148,6 +145,30 @@ function RequiredToggle({ peer, onSaved }: { peer: PeerInfo; onSaved: () => void
     >
       {required ? 'required' : 'optional'}
     </button>
+  )
+}
+
+/** Devices at the door: they hold the journal secret (a photographed QR code is enough) but only come in once the owner accepts here.
+ * The code is the one the joining device shows on its own screen: compare before accepting. */
+function KnockList({ knocks, onChanged }: { knocks: Knock[]; onChanged: () => void }) {
+  if (knocks.length === 0) return null
+  return (
+    <>
+      <h3>knocking</h3>
+      <ul className="devices">
+        {knocks.map((k) => (
+          <li key={k.endpoint_id}>
+            <span className="device-line">
+              <strong className="mono">{k.code}</strong>
+              {k.device ? <span className="hint"> · {k.device}</span> : null}
+              <span className="hint"> · {agoLabel(k.last_ms)}</span>
+            </span>
+            <button onClick={() => api.acceptKnock(k.endpoint_id).then(onChanged)}>accept</button>{' '}
+            <button className="ghost" onClick={() => api.rejectKnock(k.endpoint_id).then(onChanged)}>reject</button>
+          </li>
+        ))}
+      </ul>
+    </>
   )
 }
 
@@ -512,14 +533,14 @@ function IsolationRow({ isolated, onChange }: { isolated: boolean; onChange: () 
   )
 }
 
-/** What this device keeps. Superseded canvas events are kept (a backup) or collected to stubs after a window; stubs are counted here. */
+/** What this device keeps: everything, or only what is visible (transcribed voice audio and redacted media are let go after a window). */
 function HistoryRow({ status, onChange }: { status: Status; onChange: () => void }) {
   const [view, setView] = useState<RetentionView | null>(null)
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
   useEffect(() => {
     void api.getRetention!().then(setView).catch(() => {})
-  }, [status.keeps_revisions])
+  }, [status.retention?.voice_audio.mode])
   async function set(preset: 'keep_everything' | 'phone') {
     setBusy(true)
     setErr(null)
@@ -532,24 +553,10 @@ function HistoryRow({ status, onChange }: { status: Status; onChange: () => void
       setBusy(false)
     }
   }
-  const keeps = view?.keeps_revisions ?? status.keeps_revisions ?? true
-  const stubs = status.stubs ?? view?.stubs
-  const days = view && view.policy.superseded.mode === 'after_days' ? view.policy.superseded.days : null
+  const keeps = (view?.policy ?? status.retention)?.voice_audio.mode !== 'after_days'
   return (
     <>
-      <p className="hint">
-        {keeps ? 'keeping everything, including revisions' : `keeping what's visible; superseded drawing history is collected${days ? ` after ${days} days` : ''}`}
-      </p>
-      {!keeps && view && !view.has_backup_peer && <p className="hint">no peer has announced it keeps revisions, so nothing is collected yet</p>}
-      {stubs && stubs.total > 0 ? (
-        <p className="hint">
-          {stubs.total} collected event{stubs.total === 1 ? '' : 's'} ({Object.entries(stubs.by_type).map(([t, n]) => `${n} ${t}`).join(', ')})
-          {stubs.ranges && stubs.ranges.length > 0 ? ` from ${prettyDate(Math.min(...stubs.ranges.map((r) => r.first_ms || Infinity)))} to ${prettyDate(Math.max(...stubs.ranges.map((r) => r.last_ms)))}` : ''} — full copies are not held here
-          {keeps ? '; they fill in from any peer that has them' : ''}
-        </p>
-      ) : (
-        <p className="hint">no stubs</p>
-      )}
+      <p className="hint">{keeps ? 'keeping everything' : 'keeping what’s visible'}</p>
       <button className="ghost" disabled={busy} onClick={() => void set(keeps ? 'phone' : 'keep_everything')}>
         {busy ? '…' : keeps ? 'keep only what’s visible' : 'keep everything'}
       </button>
@@ -958,6 +965,7 @@ export function StatusView() {
         </p>
       )}
 
+      <KnockList knocks={status.knocks ?? []} onChanged={refresh} />
       <PeerCards
         status={status}
         history={history}
@@ -973,6 +981,16 @@ export function StatusView() {
               <button aria-pressed={p.required !== false} onClick={() => api.setPeerRequired(p.endpoint_id, true).then(refresh)}>Required</button>
               <button aria-pressed={p.required === false} onClick={() => api.setPeerRequired(p.endpoint_id, false).then(refresh)}>Optional</button>
             </div>
+            <button
+              className="ghost danger"
+              onClick={() => {
+                if (window.confirm(`Remove ${p.device_id ? names[p.device_id] ?? shortId(p.device_id) : shortId(p.endpoint_id)}?`)) {
+                  void api.removePeer(p.endpoint_id).then(refresh)
+                }
+              }}
+            >
+              remove
+            </button>
           </div>
         )}
       />

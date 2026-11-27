@@ -16,6 +16,9 @@ path = "src/bin/memorious.rs"
 # Local semantic-search embeddings (ONNX via fastembed). Off by default so
 # peers that never run a model (phone, small servers) don't compile or ship it.
 embeddings = ["dep:fastembed", "dep:ort"]
+# TEST BUILDS ONLY (switched on through the dev-dependency on self below): leaves the door open so the many sync tests need not
+# tap accept. A test that is about the door calls `Journal::set_require_approval(true)`. Never enable in a shipped build.
+open-door = []
 
 [dependencies]
 fastembed = { version = "7", optional = true }
@@ -48,6 +51,7 @@ zip = { version = "9.8.2", default-features = false, features = ["deflate"] }
 sha2 = "0.11.1"
 
 [dev-dependencies]
+memorious-core = { path = ".", features = ["open-door"] }
 iroh = "1"
 jsonschema = { version = "0.63.1", default-features = false }
 tempfile = "3"

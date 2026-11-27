@@ -35,6 +35,7 @@ rand = "0.9"
 tower = { version = "0.5", features = ["util"] }
 
 [dev-dependencies]
+memorious-core = { path = "../../crates/core", features = ["open-door"] }
 http-body-util = "0.1"
 image = "0.25"
 tower = { version = "0.5", features = ["util"] }

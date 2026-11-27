@@ -95,8 +95,6 @@ export interface PeerInfo {
   media_missing?: number | null
   /** Whether the health light waits on this peer (default true; a local mark of this device). */
   required?: boolean
-  /** Stubs this peer has filled for us with full events (running total). */
-  stubs_filled?: number
   /** The newest capture/ink event within the heads it held at last contact — "newest it held". */
   newest_held?: NewestEvent | null
   /** A sync with it is in flight right now. */
@@ -174,16 +172,26 @@ export interface AgentKey {
   created_at: number
 }
 
+export interface Knock {
+  endpoint_id: string
+  /** Short code both devices show; compare before accepting. */
+  code: string
+  /** What the knocker called itself — anyone can claim any name, the code is what to trust. */
+  device?: string | null
+  first_ms: number
+  last_ms: number
+}
+
 export interface Status {
   device_id: string
   /** This peer is out of the network: no sync in or out (see isolate). */
   isolated?: boolean
-  /** Collected stubs on this device (superseded canvas events kept as envelopes only) and of which original type. */
-  stubs?: StubCounts
-  /** Does this device keep revisions (superseded events)? False = it collects them after its window. */
-  keeps_revisions?: boolean
-  /** What each device last announced: does it keep revisions? (`peer_policy` events.) */
-  peer_policies?: Record<string, boolean>
+  /** What this device keeps (retention.ts). */
+  retention?: RetentionPolicy
+  /** Devices at the door: they hold the journal secret but are not allowed in until the owner accepts. */
+  knocks?: Knock[]
+  /** This device's own code (what a device waiting to join shows), derived from its endpoint id. */
+  knock_code?: string
   entries: number
   trash: number
   heads: Record<string, number>
@@ -260,19 +268,13 @@ export interface ArchiveExport {
   progress: { events: number; media_done: number; media_total: number; bytes: number } | null
 }
 
-/** What this device keeps (crates/core/src/retention.rs). Superseded = canvas ops a snapshot supersedes. */
-export interface RetentionView {
-  policy: { voice_audio: Retain; redacted: Retain; superseded: Retain; collect_without_backup: boolean }
-  keeps_revisions: boolean
-  /** Some other device has announced it keeps revisions. */
-  has_backup_peer: boolean
-  stubs: StubCounts
+/** What this device keeps (crates/core/src/retention.rs). */
+export interface RetentionPolicy {
+  voice_audio: Retain
+  redacted: Retain
 }
-/** What a device has collected: how many events, of what, and the ranges (with the fold that superseded them and the time window they cover). */
-export interface StubCounts {
-  total: number
-  by_type: Record<string, number>
-  ranges?: { device_id: string; from_seq: number; to_seq: number; count: number; by: string; was: string; first_ms: number; last_ms: number }[]
+export interface RetentionView {
+  policy: RetentionPolicy
 }
 export type Retain = { mode: 'forever' } | { mode: 'after_days'; days: number }
 
@@ -317,6 +319,8 @@ export interface SetupApi {
   initFresh(password: string): Promise<void>
   /** `keep`: what this device keeps, chosen at join (default everything; changeable later in status). */
   joinTicket(ticket: string, password: string, keep?: 'everything' | 'visible'): Promise<SyncReport>
+  /** While a join waits for the other device's owner to accept it: the code both screens show. */
+  joinProgress(): Promise<{ code: string; since_ms: number } | null>
   unlock(password: string): Promise<void>
 }
 
@@ -324,7 +328,7 @@ export interface SetupApi {
 export interface InkRecord {
   event_id: string
   device_id: string
-  /** The author device's sequence number (a fold covers ops by it). */
+  /** The author device's sequence number. */
   seq?: number
   recorded_at: number
   data: Record<string, unknown>
@@ -372,6 +376,11 @@ export interface JournalApi {
   /** Mark a peer required (default) or optional: the health light only waits on
    * required peers. A local preference of this device — not synced. */
   setPeerRequired(endpointId: string, required: boolean): Promise<void>
+  /** A device that has the journal secret knocked: let it in / turn it away. The secret alone is not an invitation (trust.rs). */
+  acceptKnock(endpointId: string): Promise<void>
+  rejectKnock(endpointId: string): Promise<void>
+  /** Forget a peer entirely; if it syncs with us again it is a first knock. */
+  removePeer(endpointId: string): Promise<void>
   /** Per-peer alive/contact history for the Peers page (hosts that keep it). */
   peersHistory?(): Promise<PeersHistory>
   /** Originate a master-password change on this device: re-wraps existing

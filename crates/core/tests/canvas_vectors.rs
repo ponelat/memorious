@@ -196,29 +196,16 @@ fn convenience_fold_from_stored_ops() {
 }
 
 #[test]
-fn wire_reader_uses_latest_fold_and_only_uncovered_ops() {
+fn a_legacy_ink_fold_op_is_an_unknown_op_that_draws_nothing_and_covers_nothing() {
+    // `ink_fold` was dropped (2026-11-26): the period's plain ops are the canvas. A fold that still sits in a log (written by an
+    // earlier build) is kept, ignored — it neither replaces the ops it names nor adds its items.
     let stroke = json!({"op":"stroke","cid":"original","tool":"pen","seed":1,"size":5,"pts":[[0,0,0.5,0],[10,10,0.5,0]]});
     let records: Vec<WireRecord> = serde_json::from_value(json!([
         {"event_id":"a","device_id":"dev-a","seq":1,"recorded_at":1,"data":stroke},
         {"event_id":"b","device_id":"dev-b","seq":1,"recorded_at":2,"data":{"op":"ink_fold","items":[{"id":"folded","tool":"pen","seed":1,"size":5,"pts":[[0,0,0.5,0],[10,10,0.5,0]]}],"supersedes":[{"select":"ink","period":"2026-W48","up_to":{"dev-a":1}}]}},
-        {"event_id":"c","device_id":"dev-a","seq":2,"recorded_at":0,"data":{"op":"stroke","cid":"late","tool":"pen","seed":2,"size":5,"pts":[[20,20,0.5,0]]}},
-        {"event_id":"d","device_id":"dev-a","seq":3,"recorded_at":3,"data":{"op":"future-op"}}
+        {"event_id":"c","device_id":"dev-a","seq":2,"recorded_at":3,"data":{"op":"stroke","cid":"late","tool":"pen","seed":2,"size":5,"pts":[[20,20,0.5,0]]}},
+        {"event_id":"d","device_id":"dev-a","seq":3,"recorded_at":4,"data":{"op":"future-op"}}
     ])).unwrap();
     let items = fold_wire_records(&records);
-    assert_eq!(
-        items.iter().map(Item::id).collect::<Vec<_>>(),
-        vec!["folded", "late"]
-    );
-}
-
-#[test]
-fn fold_base_handles_late_undo_and_legacy_records_without_sequence() {
-    let records:Vec<WireRecord>=serde_json::from_value(json!([
-        {"event_id":"fold","device_id":"dev-b","seq":2,"recorded_at":2,"data":{"op":"ink_fold","items":[{"id":"base","tool":"pen","seed":1,"size":5,"pts":[[1,1,0.5,0]]}],"supersedes":[{"select":"ink","up_to":{"dev-a":1}}]}},
-        {"event_id":"legacy","device_id":"dev-a","recorded_at":1,"data":{"op":"stroke","tool":"pen","size":5,"seed":1,"pts":[[2,2,0.5,0]]}},
-        {"event_id":"undo","device_id":"dev-b","seq":3,"recorded_at":3,"data":{"op":"undo","target":"base"}}
-    ])).unwrap();
-    let items = fold_wire_records(&records);
-    assert_eq!(items.len(), 1);
-    assert_eq!(items[0].id(), "legacy");
+    assert_eq!(items.iter().map(Item::id).collect::<Vec<_>>(), vec!["original", "late"]);
 }

@@ -326,7 +326,6 @@ pub async fn export_archive(node: &Node, sink: &mut dyn ArchiveSink, opts: Archi
             "order": "recorded_at, then event_id",
             "by_kind": by_kind,
         },
-        "stubs": journal.stub_counts()?,
         "schemas": { "event": "schema/event.schema.json", "manifest": "schema/manifest.schema.json" },
         "media": media,
         "media_summary": {

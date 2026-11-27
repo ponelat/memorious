@@ -295,11 +295,9 @@ fn legacy_month_field_is_still_read_as_the_period() {
 }
 
 #[test]
-fn an_ink_fold_op_may_be_far_bigger_than_an_ordinary_op() {
+fn no_op_may_exceed_the_ordinary_size_cap() {
     let (_d, j) = journal();
     let big = "x".repeat(600 * 1024); // over the 512 KB ordinary cap
     assert!(j.append_ink("2026-W48", json!({ "op": "stroke", "cid": "c", "tool": "pen", "seed": 1, "size": 5, "pts": [], "pad": big.clone() })).is_err());
-    assert!(j.append_ink("2026-W48", json!({ "op": "ink_fold", "cid": "f", "items": [], "pad": big })).is_ok());
-    let huge = "x".repeat(13 * 1024 * 1024);
-    assert!(j.append_ink("2026-W48", json!({ "op": "ink_fold", "cid": "g", "items": [], "pad": huge })).is_err(), "even a fold has a limit (12 MB)");
+    assert!(j.append_ink("2026-W48", json!({ "op": "ink_fold", "cid": "f", "items": [], "pad": big })).is_err(), "ink_fold has no special allowance any more");
 }

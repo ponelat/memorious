@@ -31,7 +31,6 @@ impl DesktopJournal {
         journal.ensure_device_name("desktop (Linux)")?;
         journal.ensure_peer_join()?;
         journal.ensure_version_seen()?;
-        journal.ensure_peer_policy()?;
         Ok(Self {
             node: Arc::new(Node::spawn(journal).await?),
             _lock: lock,
@@ -44,7 +43,6 @@ impl DesktopJournal {
         node.journal().ensure_device_name("desktop (Linux)")?;
         node.journal().ensure_peer_join()?;
         node.journal().ensure_version_seen()?;
-        node.journal().ensure_peer_policy()?;
         node.journal()
             .store
             .meta_set("last_peer_ticket", ticket.trim().as_bytes())?;

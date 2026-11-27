@@ -68,7 +68,7 @@ settles or the ops change, then converted to RGBA:
 
 ## 4. The op log
 
-Every drawing action is one **op**, stored as a journal event of kind `ink`: `payload: { type: "ink", period: "YYYY-Www", op, cid, … }` (op fields flat beside `op`; ≤ 512 KB, except `ink_fold`: ≤ 12 MB). Ops never appear in the feed. (Legacy: `infra` events with `infra_kind: "ink"`, `target` = the month, the op under `data`; and `ink` events that carry `month` instead of `period`. All three mean the same.)
+Every drawing action is one **op**, stored as a journal event of kind `ink`: `payload: { type: "ink", period: "YYYY-Www", op, cid, … }` (op fields flat beside `op`; ≤ 512 KB). Ops never appear in the feed. (Legacy: `infra` events with `infra_kind: "ink"`, `target` = the month, the op under `data`; and `ink` events that carry `month` instead of `period`. All three mean the same.)
 
 | `op` | fields |
 |---|---|
@@ -77,7 +77,6 @@ Every drawing action is one **op**, stored as a journal event of kind `ink`: `pa
 | `move` | `poly: [[x,y],…]`, `xf: {dx,dy,s,cx,cy}`, `copy?`, `only?`, `ids?` |
 | `delete` | `poly`, `only?`, `ids?` |
 | `undo` / `redo` | `target` = the `cid` of the op toggled |
-| `ink_fold` | `items: [...]` (surviving strokes/images in draw order), `supersedes: [{select:"ink", period, up_to:{device: seq}}, {id}...]` — see *Folding* |
 
 - **`cid`**: a client-generated unique id (UUID) on every op. Undo/redo refer to it (the event id is unknown until stored), and a
   retried push is recognised by it, so nothing applies twice. Ops from older clients without a `cid` use the `event_id`.
@@ -89,13 +88,9 @@ Every drawing action is one **op**, stored as a journal event of kind `ink`: `pa
 - Unknown `op` values MUST be ignored (not an error) and forwarded untouched.
 - Eraser strokes are ordinary `stroke` ops with `tool: "eraser"`.
 
-### Folding (`ink_fold`)
+### No stored folds
 
-Once a period has ended (plus a grace of ~15 minutes for late-syncing peers) any device may write an **`ink_fold`** op: the period's canvas as the fold leaves it, in one event. `items` are the **surviving strokes and images in draw order**, each stroke with `tool`, `size`, `opacity?`, `seed` and `pts` (clients regenerate the dots, so a fold stays compact). It holds **no eraser strokes** (points an eraser wiped are cut out of the stroke; lightly faded points keep full opacity), **no undo/redo history** and **no per-item times** — anyone who needs the history asks a peer that keeps revisions.
-
-`supersedes` names what the fold makes redundant: the period's ops up to a per-device `seq` bound (`up_to`), and any earlier fold. An op above the bound (drawn offline, synced late) stays live and is folded into the *next* fold, which uses the earlier fold as its base. **Superseding never deletes anything**; each device's retention policy decides whether it keeps the superseded ops or collects them down to stubs (the status page counts them). A reader that has a fold for a period shows the fold's items, then applies only the ops *not* covered by its bound.
-
-Several devices may fold the same period concurrently; the latest fold (by `recorded_at`, then `event_id`) wins and the others are superseded by it.
+A period's canvas is always the fold of **all** its ops (there is no `ink_fold` op: it was dropped 2026-11-26, before any real ink had been folded). Every op stays in the journal, which is what lets any client show any time range of the canvas. An `ink_fold` op that an earlier build wrote is an unknown op: kept, ignored (it draws nothing and covers nothing). Speed for old periods is a *rendering* concern — a client may cache a lossy raster of a period it is not editing — never a change to what is stored.
 
 ## 5. Selection (lasso, rect)
 
@@ -124,7 +119,7 @@ Selecting is **non-destructive and lazy**: it computes *pieces*, and only *movin
 
 **Timeline** (tool `timeline`, key `T`) is a lasso whose selection **reaches every earlier period that is showing**, not just the current one. It behaves like the lasso: the shape's ink in all those periods is selected together (one bounding box, the scale handle, duplicate and delete icons), and you can **move, scale, duplicate or delete** it across time.
 
-- **Move / scale / delete** are written as ordinary `move` / `delete` ops (polygon, `only` = the visible layers, `ids` = exactly that period's selected pieces) into *each period's own log* (earlier periods are read-only on the canvas); the current period's op is undoable like any edit. A fold is the base and the op folds on top, later folds bake it in, and nothing in the journal is removed. Deleting asks for confirmation when it reaches earlier periods, because an edit there cannot be undone from the canvas.
+- **Move / scale / delete** are written as ordinary `move` / `delete` ops (polygon, `only` = the visible layers, `ids` = exactly that period's selected pieces) into *each period's own log* (earlier periods are read-only on the canvas); the current period's op is undoable like any edit. The op folds on top of the period's other ops, and nothing in the journal is removed. Deleting asks for confirmation when it reaches earlier periods, because an edit there cannot be undone from the canvas.
 - **Duplicate** brings the ink in as **new events on the current timeline**: this period's ink as an ordinary copy op, each earlier period's ink as brand-new `stroke` / `image` ops in the *current* period (offset a little), never back into the period it came from. The copies are then the selection.
 - **Hiding the current period** (the period list in options): the current period is not drawn, so the earlier ones show through, at full brightness whatever *dim earlier* says. The timeline tool then selects only earlier ink. Any other tool touching the canvas shows the current period again (nothing is drawn into a period you cannot see). Not remembered across reloads.
 
@@ -171,7 +166,7 @@ Layers and months live together in their own control (chips: pencil / pen / imag
   (1 s … 30 s). Where the engine runs in-process (mobile), poll the local journal at ≈ 2.5 s while the canvas is visible and pull
   immediately after each journal sync.
 - **Device id:** an author's id is the journal's `device_id`; ops made before it was known are claimed by it once learned.
-- Periods are **UTC**. Folding, supersession and stubs: see *Folding* above and `docs/CANVAS-SYNC.md`.
+- Periods are **UTC**.
 
 **Engine interface** (identical JSON on every face): `append(month, ops[]) → {events:[{event_id, recorded_at}]}`,
 `list(period, after) → {device_id, cursor, events:[{event_id, device_id, seq, recorded_at, data}]}`, `months() → {months:[…]}`.

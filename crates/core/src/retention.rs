@@ -48,15 +48,6 @@
 //!    be undone before the bytes go; it counts from local receipt of the
 //!    redact event.
 //!
-//! 3. **Superseded canvas events** (2026-11-24). An `ink_fold` op may list, in `supersedes`, the ops it makes redundant (a
-//!    statement about the data, never an instruction to delete). A device whose `policy.superseded` is `AfterDays(n)` collects
-//!    those events `n` days after it received the fold, down to a **stub** (same envelope, payload `{type:"collected", by,
-//!    was}`; see `supersede.rs`); `Forever` means this device keeps revisions (a backup). Only canvas events can ever be
-//!    collected, whatever an event claims to supersede. Unlike rules 1-2 this drops *events*, not blob bytes, so a device
-//!    announces its choice with a `peer_policy` infra event (`ensure_peer_policy`) and, unless `collect_without_backup`, waits
-//!    until some peer has announced it keeps revisions. A device that keeps revisions asks peers to fill its stubs
-//!    (`node.rs`: the optional `stubs` handshake field).
-//!
 //! Everything else is **kept**, unconditionally:
 //!
 //! - `Music` audio. The recording is the record. It is never transcribed
@@ -125,34 +116,14 @@ pub struct RetentionPolicy {
     pub voice_audio: Retain,
     /// Rule 2: media of redacted entries.
     pub redacted: Retain,
-    /// Rule 3: canvas ops (and older folds) that a later fold supersedes. `Forever` = this device keeps revisions
-    /// (a backup); `AfterDays(n)` = it collects them down to stubs `n` days after it received the superseding fold.
-    /// Absent in policies saved before this rule existed, which read as `Forever`.
-    #[serde(default = "forever")]
-    pub superseded: Retain,
-    /// Collect superseded events even when no peer is known to keep revisions. Off by default: a device that would drop
-    /// revisions waits until some peer has announced (`peer_policy`) that it keeps them.
-    #[serde(default)]
-    pub collect_without_backup: bool,
-}
-
-fn forever() -> Retain {
-    Retain::Forever
 }
 
 impl RetentionPolicy {
-    /// Does a device with this policy keep revisions (superseded events) — i.e. act as a backup of the full history?
-    pub fn keeps_revisions(&self) -> bool {
-        self.superseded == Retain::Forever
-    }
-
     /// The always-on peer's policy, and the default for any device that has
     /// never chosen one: hold every blob forever.
     pub const KEEP_EVERYTHING: RetentionPolicy = RetentionPolicy {
         voice_audio: Retain::Forever,
         redacted: Retain::Forever,
-        superseded: Retain::Forever,
-        collect_without_backup: false,
     };
 
     /// What a phone ships with: a week to re-listen to a transcribed note,
@@ -160,8 +131,6 @@ impl RetentionPolicy {
     pub const PHONE: RetentionPolicy = RetentionPolicy {
         voice_audio: Retain::AfterDays(7),
         redacted: Retain::AfterDays(30),
-        superseded: Retain::AfterDays(30),
-        collect_without_backup: false,
     };
 }
 
@@ -203,8 +172,6 @@ pub enum EvictReason {
     TranscribedVoice,
     /// Rule 2.
     Redacted,
-    /// Rule 3.
-    SupersededInk,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -216,16 +183,6 @@ pub enum Disposition {
 impl Disposition {
     pub fn is_evictable(&self) -> bool {
         matches!(self, Disposition::Evictable(_))
-    }
-}
-
-/// Rule 3, for one canvas event that a fold supersedes: `superseder_local_ms` is when THIS device received the winning
-/// superseding event (local receipt, like every other rule: a fold that synced late must not arrive pre-expired).
-pub fn superseded_disposition(superseder_local_ms: i64, policy: &RetentionPolicy, now_ms: i64) -> Disposition {
-    if policy.superseded.elapsed(superseder_local_ms, now_ms) {
-        Disposition::Evictable(EvictReason::SupersededInk)
-    } else {
-        Disposition::Keep(KeepReason::WithinWindow)
     }
 }
 
@@ -297,10 +254,7 @@ impl Journal {
 
     /// Local meta only — never an event, never synced.
     pub fn set_retention_policy(&self, policy: &RetentionPolicy) -> Result<()> {
-        self.store
-            .meta_set(POLICY_META_KEY, &serde_json::to_vec(policy)?)?;
-        // tell the network whether this device now keeps revisions (an infra event; the latest per device wins)
-        self.ensure_peer_policy()
+        self.store.meta_set(POLICY_META_KEY, &serde_json::to_vec(policy)?)
     }
 
     /// Blob hashes this device may drop right now under `policy`: gathers the
@@ -579,11 +533,9 @@ mod tests {
         drop(j);
         let j = Journal::open(&dir.path().join("j"), "pw").unwrap();
         assert_eq!(j.retention_policy().unwrap(), RetentionPolicy::PHONE);
-        // The policy itself never enters the log. Only the one-bit fact "this device keeps revisions or not" does, as a
-        // `peer_policy` infra event, so peers can tell who is a backup.
+        // The policy itself never enters the log.
         let events = j.store.all_events().unwrap();
-        assert!(events.iter().all(|e| e.kind == EventKind::Annotation || matches!(&e.payload, crate::event::Payload::Infra { infra_kind, .. } if infra_kind == "peer_policy")), "only the journal's own proof and the peer_policy announcement");
-        assert!(events.iter().any(|e| matches!(&e.payload, crate::event::Payload::Infra { infra_kind, .. } if infra_kind == "peer_policy")));
+        assert!(events.iter().all(|e| e.kind == EventKind::Annotation), "only the journal's own proof");
         assert!(!events.iter().any(|e| serde_json::to_string(e).unwrap().contains("voice_audio")), "no windows in the log");
     }
 
@@ -592,13 +544,13 @@ mod tests {
         let s = serde_json::to_string(&RetentionPolicy::PHONE).unwrap();
         assert_eq!(
             s,
-            r#"{"voice_audio":{"mode":"after_days","days":7},"redacted":{"mode":"after_days","days":30},"superseded":{"mode":"after_days","days":30},"collect_without_backup":false}"#
+            r#"{"voice_audio":{"mode":"after_days","days":7},"redacted":{"mode":"after_days","days":30}}"#
         );
         assert_eq!(
             serde_json::from_str::<RetentionPolicy>(&s).unwrap(),
             RetentionPolicy::PHONE
         );
         let f = serde_json::to_string(&RetentionPolicy::KEEP_EVERYTHING).unwrap();
-        assert_eq!(f, r#"{"voice_audio":{"mode":"forever"},"redacted":{"mode":"forever"},"superseded":{"mode":"forever"},"collect_without_backup":false}"#);
+        assert_eq!(f, r#"{"voice_audio":{"mode":"forever"},"redacted":{"mode":"forever"}}"#);
     }
 }

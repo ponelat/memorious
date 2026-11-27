@@ -805,6 +805,25 @@ async fn set_peer_required<R: tauri::Runtime>(
     Ok(())
 }
 
+/// The owner tapped accept / reject on a knock, or removed a peer (trust.rs).
+#[tauri::command]
+async fn accept_knock<R: tauri::Runtime>(app: AppHandle<R>, state: State<'_, NodeState>, endpoint_id: String) -> Result<(), String> {
+    node(&app, &state).await.map_err(estr)?.accept_knock(&endpoint_id).map_err(estr)
+}
+#[tauri::command]
+async fn reject_knock<R: tauri::Runtime>(app: AppHandle<R>, state: State<'_, NodeState>, endpoint_id: String) -> Result<(), String> {
+    node(&app, &state).await.map_err(estr)?.reject_knock(&endpoint_id).map_err(estr)
+}
+#[tauri::command]
+async fn remove_peer<R: tauri::Runtime>(app: AppHandle<R>, state: State<'_, NodeState>, endpoint_id: String) -> Result<(), String> {
+    node(&app, &state).await.map_err(estr)?.remove_peer(&endpoint_id).map_err(estr)
+}
+/// While a join waits for the other device's owner to accept it: the code both screens show.
+#[tauri::command]
+fn join_progress() -> Option<memorious_core::node::JoinProgress> {
+    memorious_core::node::join_progress()
+}
+
 /// Store the network config (relays / public lookup). Applied on relaunch.
 #[tauri::command]
 async fn set_net_config<R: tauri::Runtime>(
@@ -1121,6 +1140,10 @@ pub fn handlers<R: tauri::Runtime>(
         status,
         set_device_name,
         set_peer_required,
+        accept_knock,
+        reject_knock,
+        remove_peer,
+        join_progress,
         peers_history,
         set_net_config,
         mint_agent,

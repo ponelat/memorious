@@ -18,7 +18,7 @@ use std::task::Poll;
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
-use iroh::endpoint::{presets, Connection, RecvStream, SendStream, VarInt};
+use iroh::endpoint::{presets, Connection, ConnectionError, RecvStream, SendStream, VarInt};
 use iroh::protocol::{AcceptError, ProtocolHandler, Router};
 use iroh::{Endpoint, EndpointAddr, SecretKey};
 use iroh_blobs::api::blobs::BlobReader;
@@ -31,7 +31,7 @@ use zeroize::Zeroize;
 
 use crate::event::{AudioKind, Event, MediaKind, Payload};
 use crate::journal::{Journal, MediaHeld, SECRET_LEN};
-use crate::store::{Heads, StubRange};
+use crate::store::Heads;
 
 /// Blob GC cadence for real peers; see retention.rs for what GC may drop.
 pub const DEFAULT_GC_INTERVAL: Duration = Duration::from_secs(10 * 60);
@@ -47,6 +47,42 @@ const AUTH_CONTEXT: &[u8; 32] = b"memorious auth v0 context key 32";
 /// Close code used when the peer fails journal-secret auth.
 const CLOSE_BAD_AUTH: u32 = 1;
 const CLOSE_ISOLATED: u32 = 2;
+/// The peer has the journal secret but is not (yet) allowed in: it was recorded as a knock and told nothing else (trust.rs).
+const CLOSE_KNOCKING: u32 = 3;
+
+/// Raised on the dialling side when the other device answered with a closed door: it has noted our knock and is waiting for its
+/// owner to accept us. `code` is what both screens show so the owner can tell our knock from a stranger's.
+#[derive(Debug)]
+pub struct Knocking {
+    pub code: String,
+}
+impl std::fmt::Display for Knocking {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "waiting for approval: the other device has not accepted this one yet (code {})", self.code)
+    }
+}
+impl std::error::Error for Knocking {}
+
+fn knocked_back(conn: &Connection) -> bool {
+    matches!(conn.close_reason(), Some(ConnectionError::ApplicationClosed(c)) if c.error_code == VarInt::from(CLOSE_KNOCKING))
+}
+
+/// How long a joining device keeps knocking before it gives up.
+const JOIN_WAIT: Duration = Duration::from_secs(10 * 60);
+
+/// A join in progress that the other device has not accepted yet. Process-wide because the join call blocks until it is accepted:
+/// the face polls this to show the code meanwhile.
+#[derive(Debug, Clone, Serialize)]
+pub struct JoinProgress {
+    pub code: String,
+    pub since_ms: i64,
+}
+static JOIN_PROGRESS: Mutex<Option<JoinProgress>> = Mutex::new(None);
+
+/// `Some` while a join waits for the other device's owner to accept it.
+pub fn join_progress() -> Option<JoinProgress> {
+    JOIN_PROGRESS.lock().unwrap().clone()
+}
 const MAX_FRAME: usize = 16 * 1024 * 1024;
 
 /// Postcard-friendly form of `EndpointAddr` (iroh's own serde impl needs
@@ -101,18 +137,10 @@ enum Msg {
         /// what it holds of the events). Optional for wire compat.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         media: Option<MediaHeld>,
-        /// Stubs the sender holds and wants the receiver to fill with full events, if it has them (only a device that keeps
-        /// revisions asks). Optional for wire compat: an older peer ignores it and simply serves nothing extra.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        stubs: Option<Vec<StubRange>>,
         /// `Some(false)`: the sender is a write-only peer and wants no events sent to it. Optional for wire compat (an older
         /// peer ignores it and sends anyway; a write-only peer discards what it didn't ask for).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         receive: Option<bool>,
-        /// `seq` ranges the sender collected and will therefore never send: the receiver tolerates the jump in sequence numbers
-        /// and records it as collected. Optional for wire compat.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        gaps: Option<Vec<StubRange>>,
         /// The sender's alive slots (UTC 5-minute slots, last 7 days), see alive.rs. Optional for wire compat.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         alive: Option<crate::alive::Slots>,
@@ -124,11 +152,7 @@ enum Msg {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         media: Option<MediaHeld>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        stubs: Option<Vec<StubRange>>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
         receive: Option<bool>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        gaps: Option<Vec<StubRange>>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         alive: Option<crate::alive::Slots>,
     },
@@ -142,8 +166,6 @@ pub struct SyncReport {
     pub sent: usize,
     pub received: usize,
     pub blobs_fetched: usize,
-    /// Stubs this sync replaced with their full events.
-    pub stubs_filled: usize,
 }
 
 /// Outcome of syncing one remembered peer. A failure never hides other outcomes.
@@ -262,9 +284,6 @@ pub struct PeerInfo {
     /// Whether the health light waits on this peer (default yes; a local
     /// per-device mark, not synced).
     pub required: bool,
-    /// Stubs this peer has filled for us (running total).
-    #[serde(default)]
-    pub stubs_filled: u64,
     /// The newest user-visible event within the heads it held at last contact — "newest it held".
     pub newest_held: Option<crate::peer_view::NewestEvent>,
     /// A sync with this peer is in flight right now.
@@ -534,6 +553,7 @@ impl Node {
 
     /// `spawn` with an explicit blob-GC cadence (tests use a fast one).
     pub async fn spawn_with_gc_interval(journal: Journal, gc_interval: Duration) -> Result<Self> {
+        journal.grandfather_known_peers()?;
         let journal = Arc::new(journal);
         let fs_store = {
             // Retention: the event log is the only GC root. Before each GC pass
@@ -546,14 +566,6 @@ impl Node {
             let cb: iroh_blobs::store::ProtectCb = Arc::new(move |live: &mut HashSet<Hash>| {
                 let journal = protect_journal.clone();
                 Box::pin(async move {
-                    // fold ended canvas periods into one `ink_fold` event each (a fresh fold supersedes the ops it folded) ...
-                    if let Err(err) = journal.fold_due_periods(unix_now_ms(), 15 * 60 * 1000) {
-                        tracing::warn!("ink fold skipped: {err:#}");
-                    }
-                    // ... then collect: superseded canvas events past this device's window become stubs (supersede.rs)
-                    if let Err(err) = journal.collect_superseded() {
-                        tracing::warn!("superseded: collection skipped: {err:#}");
-                    }
                     match live_blob_hashes(&journal) {
                         Ok(hashes) => {
                             live.extend(hashes);
@@ -704,7 +716,29 @@ impl Node {
     /// The network half of pairing: pull the event log, then prove the master
     /// password by unwrapping one media key from it.
     async fn pull_and_prove(node: &Self, peer_addr: &EndpointAddr) -> Result<SyncReport> {
-        let report = node.sync_events_with(peer_addr).await?;
+        // The other device's owner has to tap accept: keep knocking (publishing the code to compare) until they do.
+        let started = std::time::Instant::now();
+        let report = loop {
+            match node.sync_events_with(peer_addr).await {
+                Ok(r) => break r,
+                Err(e) => match e.downcast_ref::<Knocking>() {
+                    Some(k) if started.elapsed() < JOIN_WAIT => {
+                        {
+                            let mut p = JOIN_PROGRESS.lock().unwrap();
+                            if p.is_none() {
+                                *p = Some(JoinProgress { code: k.code.clone(), since_ms: unix_now_ms() });
+                            }
+                        }
+                        tokio::time::sleep(Duration::from_secs(2)).await;
+                    }
+                    _ => {
+                        *JOIN_PROGRESS.lock().unwrap() = None;
+                        return Err(e);
+                    }
+                },
+            }
+        };
+        *JOIN_PROGRESS.lock().unwrap() = None;
         if !node.journal.prove_password()? {
             bail!(
                 "this journal carries no password proof yet — open it once on the device \
@@ -722,7 +756,6 @@ impl Node {
         let ticket = JournalTicket::decode(ticket)?;
         let journal = Journal::init_with_secret(root, ticket.secret, password)?;
         journal.set_write_only(true)?;
-        journal.ensure_peer_policy()?;
         Self::spawn(journal).await
     }
 
@@ -1144,18 +1177,27 @@ impl Node {
                 addr: AddrWire::from_addr(&my_addr),
                 device: Some(self.journal.device_id().to_string()),
                 media: self.media_held().await.ok(),
-                stubs: self.journal.wanted_stub_ranges()?,
                 receive: self.journal.is_write_only()?.then_some(false),
-                gaps: self.journal.declared_gaps()?,
                 alive: self.journal.alive_self().ok(),
             },
         )
         .await?;
 
-        let (peer_heads, peer_device, peer_media, peer_stubs, peer_receive, peer_gaps, peer_alive) = match read_msg(&mut recv).await? {
-            Some(Msg::HelloAck { heads, device, media, stubs, receive, gaps, alive }) => (heads, device, media, stubs, receive, gaps, alive),
-            Some(other) => bail!("protocol violation: expected HelloAck, got {other:?}"),
-            None => bail!("peer closed during handshake (bad journal secret?)"),
+        let first = read_msg(&mut recv).await;
+        let (peer_heads, peer_device, peer_media, peer_receive, peer_alive) = match first {
+            Ok(Some(Msg::HelloAck { heads, device, media, receive, alive, .. })) => (heads, device, media, receive, alive),
+            other => {
+                // the close code may land a moment after the stream ends
+                let _ = tokio::time::timeout(Duration::from_secs(2), conn.closed()).await;
+                if knocked_back(&conn) {
+                    return Err(Knocking { code: crate::trust::knock_code(&self.endpoint.id().to_string()) }.into());
+                }
+                match other {
+                    Ok(Some(other)) => bail!("protocol violation: expected HelloAck, got {other:?}"),
+                    Ok(None) => bail!("peer closed during handshake (bad journal secret?)"),
+                    Err(e) => return Err(e),
+                }
+            }
         };
 
         // Receive what we're missing.
@@ -1165,11 +1207,11 @@ impl Node {
             match read_msg(&mut recv).await? {
                 // a write-only peer takes nothing in, even from a peer that sends anyway
                 Some(Msg::Event(_)) if write_only => {}
-                Some(Msg::Event(ev)) => match self.journal.store.insert_remote_outcome_with(&ev, peer_gaps.as_deref().unwrap_or(&[]))? {
-                    crate::store::RemoteOutcome::New => report.received += 1,
-                    crate::store::RemoteOutcome::Filled => report.stubs_filled += 1,
-                    crate::store::RemoteOutcome::Duplicate => {}
-                },
+                Some(Msg::Event(ev)) => {
+                    if self.journal.store.insert_remote(&ev)? {
+                        report.received += 1;
+                    }
+                }
                 Some(Msg::EndEvents) => break,
                 Some(other) => bail!("protocol violation: expected Event/EndEvents, got {other:?}"),
                 None => bail!("peer closed mid event stream"),
@@ -1177,11 +1219,7 @@ impl Node {
         }
 
         // Send what the peer is missing.
-        let mut to_send = if peer_receive == Some(false) { Vec::new() } else { self.journal.store.events_missing_from(&peer_heads)? };
-        if let Some(ranges) = peer_stubs.as_ref().filter(|_| peer_receive != Some(false)) {
-            // the peer keeps revisions and holds stubs: give it the full events we still have for them
-            to_send.extend(self.journal.store.full_events_in_ranges(ranges, crate::supersede::FILL_CAP)?);
-        }
+        let to_send = if peer_receive == Some(false) { Vec::new() } else { self.journal.store.events_missing_from(&peer_heads)? };
         for ev in to_send {
             write_msg(&mut send, &Msg::Event(ev)).await?;
             report.sent += 1;
@@ -1197,13 +1235,14 @@ impl Node {
         conn.close(VarInt::from(0u32), b"done");
         // We dial only addresses that came out of a pairing ticket (fresh or
         // remembered) — that's how this peer was discovered.
+        // we chose to dial it and it answered: it is one of ours
+        self.journal.allow_peer(&addr.id.to_string())?;
         self.journal.record_sync_contact(
             &addr.id.to_string(),
             unix_now_ms(),
             peer_device.as_deref(),
             "ticket",
         )?;
-        self.journal.record_stubs_filled(&addr.id.to_string(), report.stubs_filled)?;
         let _ = self.journal.note_link(&addr.id.to_string(), true, unix_now_ms());
         if let Some(alive) = &peer_alive {
             let _ = self.journal.record_peer_alive(&addr.id.to_string(), alive, unix_now_ms());
@@ -1216,6 +1255,22 @@ impl Node {
         )?;
         self.remember_peer_addr(addr);
         Ok(report)
+    }
+
+    /// The owner tapped accept on a knock: let that endpoint in. Its next sync (it keeps knocking) goes through.
+    pub fn accept_knock(&self, endpoint_id: &str) -> Result<()> {
+        self.journal.allow_peer(endpoint_id)
+    }
+
+    pub fn reject_knock(&self, endpoint_id: &str) -> Result<()> {
+        self.journal.reject_knock(endpoint_id)
+    }
+
+    /// Remove a peer: forget it entirely, so it stops being dialled and, if it syncs with us again, it is a first knock.
+    pub fn remove_peer(&self, endpoint_id: &str) -> Result<()> {
+        self.journal.remove_peer(endpoint_id)?;
+        self.sync_state.attempts.lock().unwrap().remove(endpoint_id);
+        Ok(())
     }
 
     /// Known sync peers with their device mapping, last contact, and (when
@@ -1299,7 +1354,6 @@ impl Node {
                 media: holdings.media,
                 media_missing,
                 required: self.journal.peer_required(&endpoint_id_for_required)?,
-                stubs_filled: self.journal.peer_stubs_filled(&endpoint_id_for_required),
                 newest_held,
                 syncing: attempt.in_flight > 0,
                 last_attempt_ms: attempt.last_attempt_ms,
@@ -1338,10 +1392,9 @@ impl Node {
             "device_id": journal.device_id(),
             "isolated": journal.is_isolated()?,
             "write_only": journal.is_write_only()?,
-            "stubs": journal.stub_counts()?,
+            "knocks": journal.knocks(unix_now_ms())?,
+            "knock_code": crate::trust::knock_code(&self.endpoint.id().to_string()),
             "retention": journal.retention_policy()?,
-            "keeps_revisions": journal.retention_policy()?.keeps_revisions(),
-            "peer_policies": journal.peer_policies()?,
             "entries": timeline.entries,
             "trash": journal.trash()?.len(),
             "heads": journal.store.heads()?,
@@ -1783,6 +1836,11 @@ impl<P: ProtocolHandler> ProtocolHandler for Gated<P> {
             connection.close(VarInt::from(CLOSE_ISOLATED), b"isolated");
             return Err(AcceptError::from_err(std::io::Error::other("this peer is isolated")));
         }
+        // media is for peers that are in, same as events
+        if !self.journal.is_peer_allowed(&connection.remote_id().to_string()).unwrap_or(false) {
+            connection.close(VarInt::from(CLOSE_KNOCKING), b"knocking");
+            return Err(AcceptError::from_err(std::io::Error::other("this peer is not allowed in")));
+        }
         self.inner.accept(connection).await
     }
 }
@@ -1795,16 +1853,16 @@ impl ProtocolHandler for SyncProto {
         }
         let (mut send, mut recv) = connection.accept_bi().await?;
 
-        let (heads, initiator_addr, initiator_device, initiator_media, initiator_stubs, initiator_receive, initiator_gaps, initiator_alive) =
+        let (heads, initiator_addr, initiator_device, initiator_media, initiator_receive, initiator_alive) =
             match read_msg(&mut recv).await.map_err(acc)? {
-                Some(Msg::Hello { auth, heads, addr, device, media, stubs, receive, gaps, alive }) => {
+                Some(Msg::Hello { auth, heads, addr, device, media, receive, alive, .. }) => {
                     if auth != auth_token(self.journal.secret()) {
                         connection.close(VarInt::from(CLOSE_BAD_AUTH), b"bad auth");
                         return Err(AcceptError::from_err(std::io::Error::other(
                             "peer failed journal auth",
                         )));
                     }
-                    (heads, addr.to_addr().map_err(acc)?, device, media, stubs, receive, gaps, alive)
+                    (heads, addr.to_addr().map_err(acc)?, device, media, receive, alive)
                 }
                 _ => {
                     return Err(AcceptError::from_err(std::io::Error::other(
@@ -1812,6 +1870,15 @@ impl ProtocolHandler for SyncProto {
                     )))
                 }
             };
+
+        // The secret got this peer to the door; whether it comes in is the owner's call (trust.rs). A stranger is recorded as a
+        // knock and told nothing: no heads, no events, no media tally.
+        let remote = connection.remote_id().to_string();
+        if !self.journal.is_peer_allowed(&remote).map_err(acc)? {
+            let _ = self.journal.record_knock(&remote, initiator_device.as_deref(), unix_now_ms());
+            connection.close(VarInt::from(CLOSE_KNOCKING), b"knocking");
+            return Ok(());
+        }
 
         let my_heads = self.journal.store.heads().map_err(acc)?;
         let my_media = media_held(&self.blobs, &self.journal).await.ok();
@@ -1821,9 +1888,7 @@ impl ProtocolHandler for SyncProto {
                 heads: my_heads,
                 device: Some(self.journal.device_id().to_string()),
                 media: my_media,
-                stubs: self.journal.wanted_stub_ranges().map_err(acc)?,
                 receive: self.journal.is_write_only().map_err(acc)?.then_some(false),
-                gaps: self.journal.declared_gaps().map_err(acc)?,
                 alive: { let _ = self.journal.touch_alive(unix_now_ms()); self.journal.alive_self().ok() },
             },
         )
@@ -1831,15 +1896,12 @@ impl ProtocolHandler for SyncProto {
         .map_err(acc)?;
         let i_am_write_only = self.journal.is_write_only().map_err(acc)?;
 
-        // Send the initiator what it's missing (plus full events for any stubs it asked to have filled).
-        let mut to_send = if initiator_receive == Some(false) {
+        // Send the initiator what it's missing.
+        let to_send = if initiator_receive == Some(false) {
             Vec::new() // the initiator is write-only
         } else {
             self.journal.store.events_missing_from(&heads).map_err(acc)?
         };
-        if let Some(ranges) = initiator_stubs.as_ref().filter(|_| initiator_receive != Some(false)) {
-            to_send.extend(self.journal.store.full_events_in_ranges(ranges, crate::supersede::FILL_CAP).map_err(acc)?);
-        }
         for ev in to_send {
             write_msg(&mut send, &Msg::Event(ev))
                 .await
@@ -1850,14 +1912,11 @@ impl ProtocolHandler for SyncProto {
             .map_err(acc)?;
 
         // Receive what we're missing.
-        let mut filled = 0usize;
         loop {
             match read_msg(&mut recv).await.map_err(acc)? {
                 Some(Msg::Event(_)) if i_am_write_only => {} // a write-only peer takes nothing in
                 Some(Msg::Event(ev)) => {
-                    if self.journal.store.insert_remote_outcome_with(&ev, initiator_gaps.as_deref().unwrap_or(&[])).map_err(acc)? == crate::store::RemoteOutcome::Filled {
-                        filled += 1;
-                    }
+                    self.journal.store.insert_remote(&ev).map_err(acc)?;
                 }
                 Some(Msg::EndEvents) => break,
                 _ => {
@@ -1880,7 +1939,6 @@ impl ProtocolHandler for SyncProto {
             initiator_device.as_deref(),
             "inbound",
         );
-        let _ = self.journal.record_stubs_filled(&connection.remote_id().to_string(), filled);
         let _ = self.journal.note_link(&connection.remote_id().to_string(), true, unix_now_ms());
         if let Some(alive) = &initiator_alive {
             let _ = self.journal.record_peer_alive(&connection.remote_id().to_string(), alive, unix_now_ms());
