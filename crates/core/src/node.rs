@@ -153,6 +153,36 @@ impl Drop for AskGuard {
         *JOIN_PROGRESS.lock().unwrap() = None;
     }
 }
+/// Where a joining device's network identity (its iroh endpoint key) is kept between attempts: next to the data dir, because the
+/// dir itself is thrown away when an attempt fails. The other peer keys its knock — and, once accepted, its allowance — by this
+/// identity, so every retry has to arrive as the SAME endpoint: one knock, no second approval, no second peer. It is deleted
+/// when the join succeeds (the journal owns the key from then on) and when the device is reset (a new device, a new identity).
+pub fn join_identity_path(root: &Path) -> std::path::PathBuf {
+    let mut n = root.as_os_str().to_owned();
+    n.push(".join-identity");
+    std::path::PathBuf::from(n)
+}
+
+/// Forget the kept identity: the next join arrives as a new endpoint.
+pub fn forget_join_identity(root: &Path) {
+    let _ = std::fs::remove_file(join_identity_path(root));
+}
+
+/// Make `journal` use the kept identity, creating (and keeping) one the first time. `create` = false only applies one that exists.
+pub fn apply_join_identity(journal: &Journal, root: &Path, create: bool) -> Result<()> {
+    let path = join_identity_path(root);
+    let key: [u8; 32] = match std::fs::read(&path) {
+        Ok(b) => b.as_slice().try_into().map_err(|_| anyhow::anyhow!("malformed kept identity"))?,
+        Err(_) if create => {
+            let k = SecretKey::generate().to_bytes();
+            std::fs::write(&path, k).context("keep the join identity")?;
+            k
+        }
+        Err(_) => return Ok(()),
+    };
+    journal.store.meta_set("endpoint_secret", &key)
+}
+
 const MAX_FRAME: usize = 16 * 1024 * 1024;
 
 /// Postcard-friendly form of `EndpointAddr` (iroh's own serde impl needs
@@ -761,6 +791,10 @@ impl Node {
         let ticket = JournalTicket::decode(ticket)?;
         let peer_addr = ticket.addr()?;
         let journal = Journal::init_with_secret(root, ticket.secret, password)?;
+        if let Err(e) = apply_join_identity(&journal, root, true) {
+            Journal::discard_created(root);
+            return Err(e);
+        }
         // From here on a failure must not leave the half-made journal behind:
         // `init_with_secret` refuses to run over an existing db.sqlite, so a
         // peer that was unreachable (or a mistyped password) would otherwise
@@ -774,7 +808,10 @@ impl Node {
             }
         };
         match Self::pull_and_prove(&node, &peer_addr).await {
-            Ok(report) => Ok((node, report)),
+            Ok(report) => {
+                forget_join_identity(root); // the journal owns the key now
+                Ok((node, report))
+            }
             Err(e) => {
                 node.shutdown().await;
                 Journal::discard_created(root);

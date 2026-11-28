@@ -318,7 +318,7 @@ export interface SetupApi {
   state(): Promise<'ready' | 'empty' | 'locked'>
   initFresh(password: string): Promise<void>
   /** `keep`: what this device keeps, chosen at join (default everything; changeable later in status). */
-  joinTicket(ticket: string, password: string, keep?: 'everything' | 'visible'): Promise<SyncReport>
+  joinTicket(ticket: string, password: string, keep?: 'everything' | 'visible', masterPassword?: string): Promise<SyncReport>
   /** While a join waits for the other peer (off, or its owner has to accept): what it waits on, the code both screens show, and
    *  when pinging stops. */
   joinProgress(): Promise<JoinAsk | null>

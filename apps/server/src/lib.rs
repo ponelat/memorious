@@ -1024,15 +1024,43 @@ async fn adopt_master_password(
 pub async fn reset_journal(state: &AppState) -> Result<Node> {
     state.node.shutdown_ref().await;
     std::fs::remove_dir_all(&state.data_dir).context("delete data dir")?;
-    let password = std::env::var("MEMORIOUS_PASSWORD")
-        .ok()
-        .filter(|p| !p.is_empty())
-        .context("MEMORIOUS_PASSWORD not set in this process's environment")?;
+    // completely blank: a new identity, and back to the operator's configured master password
+    memorious_core::node::forget_join_identity(&state.data_dir);
+    forget_master_password(&state.data_dir);
+    let password = master_password(&state.data_dir).context("MEMORIOUS_PASSWORD not set in this process's environment")?;
     let journal = Journal::init(&state.data_dir, &password)?;
     journal.ensure_device_name("web")?;
     journal.ensure_peer_join()?;
     journal.ensure_version_seen()?;
     Node::spawn(journal).await
+}
+
+/// A master password chosen at join (the web client joined a journal whose password is not the one in the environment) is kept
+/// next to the data dir, owner-only, so a restart can open the journal again. Reset removes it.
+pub fn master_password_path(data_dir: &std::path::Path) -> PathBuf {
+    let mut n = data_dir.as_os_str().to_owned();
+    n.push(".master-password");
+    PathBuf::from(n)
+}
+
+/// The master password this server opens its journal with: the one kept at join, else `MEMORIOUS_PASSWORD`.
+pub fn master_password(data_dir: &std::path::Path) -> Option<String> {
+    std::fs::read_to_string(master_password_path(data_dir))
+        .ok()
+        .map(|s| s.trim_end_matches('\n').to_string())
+        .filter(|p| !p.is_empty())
+        .or_else(|| std::env::var("MEMORIOUS_PASSWORD").ok().filter(|p| !p.is_empty()))
+}
+
+fn forget_master_password(data_dir: &std::path::Path) {
+    let _ = std::fs::remove_file(master_password_path(data_dir));
+}
+
+fn keep_master_password(data_dir: &std::path::Path, password: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut f = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(master_password_path(data_dir))?;
+    f.write_all(password.as_bytes())
 }
 
 fn join_policy(keep: Option<&str>) -> memorious_core::retention::RetentionPolicy {
@@ -1234,6 +1262,10 @@ struct SetupJoinBody {
     /// or `"visible"` (only what is visible; superseded canvas events are collected after a window). Changeable later.
     #[serde(default)]
     keep: Option<String>,
+    /// The master password of the journal being joined, when it is not the one this server is configured with. Kept (owner-only)
+    /// if the join works, so the server can reopen the journal after a restart.
+    #[serde(default)]
+    password: Option<String>,
     /// Set explicitly right after joining rather than left to arrive with
     /// the rest of the synced log — same belt-and-braces reasoning as the
     /// EC2 peers' compose entrypoint (`docs/DEPLOY.md`): this device is
@@ -1283,7 +1315,7 @@ async fn setup_join(State(router_state): State<RouterState>, Json(body): Json<Se
     if body.passcode.is_empty() {
         return err(StatusCode::BAD_REQUEST, "choose a passcode");
     }
-    if std::env::var("MEMORIOUS_PASSWORD").ok().filter(|p| !p.is_empty()).is_none() {
+    if master_password(&current.data_dir).is_none() && body.password.as_deref().unwrap_or("").is_empty() {
         return internal(anyhow::anyhow!("MEMORIOUS_PASSWORD not set in this process's environment"));
     }
     {
@@ -1304,7 +1336,9 @@ async fn setup_join(State(router_state): State<RouterState>, Json(body): Json<Se
 }
 
 async fn run_join(router_state: &RouterState, current: &Arc<AppState>, body: SetupJoinBody) -> std::result::Result<(), String> {
-    let password = std::env::var("MEMORIOUS_PASSWORD").unwrap_or_default();
+    // the typed master password if there is one, else the one this server is configured with
+    let typed = body.password.clone().filter(|p| !p.is_empty());
+    let password = typed.clone().or_else(|| master_password(&current.data_dir)).unwrap_or_default();
     current.node.shutdown_ref().await;
     std::fs::remove_dir_all(&current.data_dir).map_err(|e| format!("clear the old journal before joining: {e}"))?;
     let joined = Node::join_from_ticket(&current.data_dir, &body.ticket, &password).await;
@@ -1313,7 +1347,13 @@ async fn run_join(router_state: &RouterState, current: &Arc<AppState>, body: Set
         Err(e) => {
             // The old journal is gone; leave a blank working one so the page does not break, and say why the join failed.
             let _ = swap_blank(router_state, current).await;
-            return Err(format!("{e:#}"));
+            let msg = format!("{e:#}");
+            return Err(if msg.contains("master password doesn't match") {
+                // the other peer has already accepted this device (and will not ask again: the identity is kept)
+                "Wrong master password for that journal. Retype it and join again.".to_string()
+            } else {
+                msg
+            });
         }
     };
     for step in [
@@ -1327,6 +1367,15 @@ async fn run_join(router_state: &RouterState, current: &Arc<AppState>, body: Set
             node.shutdown_ref().await;
             let _ = swap_blank(router_state, current).await;
             return Err(format!("{e:#}"));
+        }
+    }
+    // opened with a password other than the configured one: keep it, so a restart can reopen this journal
+    if let Some(p) = &typed {
+        let configured = std::env::var("MEMORIOUS_PASSWORD").ok();
+        if configured.as_deref() == Some(p.as_str()) { forget_master_password(&current.data_dir) } else if let Err(e) = keep_master_password(&current.data_dir, p) {
+            node.shutdown_ref().await;
+            let _ = swap_blank(router_state, current).await;
+            return Err(format!("keep the master password: {e}"));
         }
     }
     install(router_state, current, node);
@@ -1343,8 +1392,10 @@ fn install(router_state: &RouterState, current: &Arc<AppState>, node: Node) {
 /// A new empty journal (no passcode, no peers, new identity) in the data dir, swapped in.
 async fn swap_blank(router_state: &RouterState, current: &Arc<AppState>) -> Result<()> {
     let _ = std::fs::remove_dir_all(&current.data_dir);
-    let password = std::env::var("MEMORIOUS_PASSWORD").ok().filter(|p| !p.is_empty()).context("MEMORIOUS_PASSWORD not set")?;
+    let password = master_password(&current.data_dir).context("MEMORIOUS_PASSWORD not set")?;
     let journal = Journal::init(&current.data_dir, &password)?;
+    // still the same device to the peer it is asking: keep the identity of the attempt that just failed
+    memorious_core::node::apply_join_identity(&journal, &current.data_dir, false)?;
     journal.ensure_device_name("web")?;
     journal.ensure_peer_join()?;
     journal.ensure_version_seen()?;

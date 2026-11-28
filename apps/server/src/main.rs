@@ -33,9 +33,8 @@ async fn main() -> Result<()> {
     let downloads_dir = std::env::var_os("DOWNLOADS_DIR").map(PathBuf::from);
     // Headless peer: no keychain, no prompt — the password comes from the
     // environment (systemd credential / process-compose env file).
-    let password = std::env::var("MEMORIOUS_PASSWORD")
-        .ok()
-        .filter(|p| !p.is_empty())
+    // (a master password chosen when the web client joined a journal is kept next to the data dir and wins)
+    let password = memorious_server::master_password(&data)
         .context("MEMORIOUS_PASSWORD env var required (master password)")?;
 
     let journal = if data.join("db.sqlite").exists() {

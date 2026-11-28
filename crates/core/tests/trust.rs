@@ -164,3 +164,39 @@ async fn a_joining_device_waits_showing_its_code_until_the_owner_accepts() {
     assert!(memorious_core::node::join_progress().is_none(), "nothing is pending any more");
     b.shutdown().await;
 }
+
+#[tokio::test]
+async fn retrying_a_join_after_a_wrong_password_is_the_same_device_not_a_second_knock() {
+    let _one_at_a_time = ASKING.lock().await;
+    let dir = tempdir().unwrap();
+    let ja = strict(&dir.path().join("a"));
+    ja.capture_text("hello").unwrap();
+    let a = std::sync::Arc::new(Node::spawn(ja).await.unwrap());
+    let ticket = a.ticket().unwrap();
+    let b_root = dir.path().join("b");
+
+    // the owner accepts whoever knocks, once
+    let owner = a.clone();
+    let tapper = tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            if let Some(k) = owner.journal().knocks(memorious_core::store::now_ms()).unwrap().first().cloned() {
+                owner.accept_knock(&k.endpoint_id).unwrap();
+                return;
+            }
+        }
+    });
+    let first = Node::pair_from_ticket(&b_root, &ticket, "not-the-password").await;
+    tapper.await.unwrap();
+    let err = first.err().expect("a wrong master password must not join");
+    assert!(format!("{err:#}").contains("master password"), "{err:#}");
+    let id_after_failure = std::fs::read(memorious_core::node::join_identity_path(&b_root)).unwrap();
+
+    // second attempt, right password: same endpoint, already allowed — no new knock, nobody has to accept again
+    let (b, _) = Node::pair_from_ticket(&b_root, &ticket, "pw").await.unwrap();
+    assert!(a.journal().knocks(memorious_core::store::now_ms()).unwrap().is_empty(), "no second knock");
+    assert_eq!(b.journal().list().unwrap().len(), 1);
+    assert_eq!(b.journal().store.meta_get("endpoint_secret").unwrap().unwrap(), id_after_failure, "same identity");
+    assert!(!memorious_core::node::join_identity_path(&b_root).exists(), "the journal owns the key now");
+    b.shutdown().await;
+}

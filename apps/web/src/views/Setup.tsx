@@ -118,10 +118,11 @@ function NewJournal({ setup, onDone, onBack }: { setup: SetupApi; onDone: () => 
 function JoinJournal({ setup, onDone, onBack }: { setup: SetupApi; onDone: () => void; onBack: () => void }) {
   const [ticket, setTicket] = useState('')
   const [secret, setSecret] = useState('')
+  const [master, setMaster] = useState('')
   const [keep, setKeep] = useState<'everything' | 'visible'>('everything')
   const { busy, error, run } = useRun(onDone)
   const canJoin = !busy && ticket.trim() !== '' && secret !== ''
-  const join = () => canJoin && run(() => setup.joinTicket(ticket.trim(), secret, keep))
+  const join = () => canJoin && run(() => setup.joinTicket(ticket.trim(), secret, keep, master))
   // while the join waits: what it waits on, the code to compare on the other peer, and until when it keeps asking
   const [ask, setAsk] = useState<JoinAsk | null>(null)
   useEffect(() => {
@@ -155,6 +156,14 @@ function JoinJournal({ setup, onDone, onBack }: { setup: SetupApi; onDone: () =>
         onChange={(e) => setSecret(e.target.value)}
         onKeyDown={(e) => e.key === 'Enter' && join()}
       />
+      {web && (
+        <input
+          type="password"
+          placeholder="master password (blank = the server's)"
+          value={master}
+          onChange={(e) => setMaster(e.target.value)}
+        />
+      )}
       <label className="row">
         <input type="radio" name="keep" checked={keep === 'everything'} onChange={() => setKeep('everything')} /> keep everything
       </label>
