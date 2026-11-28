@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { api, type SetupApi } from '../api'
+import type { JoinAsk } from '../api/types'
 import { BrandHero } from '../components/BrandHero'
 
 type Route = 'choose' | 'new' | 'join'
@@ -28,7 +29,7 @@ export function Setup({ setup, onDone }: { setup: SetupApi; onDone: () => void }
     >
       <div className="hero-stack">
         <button onClick={() => setRoute('new')}>{web ? 'use this journal' : 'start a new journal'}</button>
-        <button onClick={() => setRoute('join')}>join from another device</button>
+        <button onClick={() => setRoute('join')}>join a peer</button>
       </div>
     </BrandHero>
   )
@@ -73,7 +74,7 @@ function NewJournal({ setup, onDone, onBack }: { setup: SetupApi; onDone: () => 
       headline={web ? 'Choose a\npasscode.' : 'Choose a\nmaster password.'}
       subline={
         web
-          ? 'This unlocks the journal in a browser. Anyone who runs this server can reset it if you forget.'
+          ? 'Unlocks this journal in a browser.'
           : 'It encrypts everything. There is no reset and no recovery. Lose it and the journal is gone.'
       }
     >
@@ -121,26 +122,27 @@ function JoinJournal({ setup, onDone, onBack }: { setup: SetupApi; onDone: () =>
   const { busy, error, run } = useRun(onDone)
   const canJoin = !busy && ticket.trim() !== '' && secret !== ''
   const join = () => canJoin && run(() => setup.joinTicket(ticket.trim(), secret, keep))
-  // the other device's owner has to tap accept: show the code to compare with theirs while the join waits
-  const [code, setCode] = useState<string | null>(null)
+  // while the join waits: what it waits on, the code to compare on the other peer, and until when it keeps asking
+  const [ask, setAsk] = useState<JoinAsk | null>(null)
   useEffect(() => {
-    if (!busy) { setCode(null); return }
-    const t = setInterval(() => void setup.joinProgress().then((p) => setCode(p?.code ?? null)).catch(() => {}), 1500)
+    if (!busy) { setAsk(null); return }
+    const t = setInterval(() => void setup.joinProgress().then(setAsk).catch(() => {}), 1500)
     return () => clearInterval(t)
   }, [busy, setup])
+  const until = ask?.until_ms ? new Date(ask.until_ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : null
+  const status = !ask
+    ? null
+    : ask.state === 'knocking'
+      ? `Accept ${ask.code} on the other peer.${until ? ` Asking until ${until}.` : ''}`
+      : `Can't reach it yet.${until ? ` Asking until ${until}.` : ''} Open it and accept ${ask.code}.`
 
   return (
     <BrandHero
-      headline={'Join from\nanother device.'}
-      subline={
-        web
-          ? 'On the other device, open sync and copy its pairing ticket. This server already has that ' +
-            "journal's master password (set by whoever runs it) — pick a passcode to open it in a browser."
-          : "On the other device, open sync and copy its pairing ticket. Use that journal's master password."
-      }
+      headline={'Join a peer.'}
+      subline={web ? 'Paste an invite, then choose a passcode.' : "Paste an invite and that journal's master password."}
     >
       <textarea
-        placeholder="pairing ticket"
+        placeholder="invite"
         rows={3}
         autoFocus
         value={ticket}
@@ -160,8 +162,10 @@ function JoinJournal({ setup, onDone, onBack }: { setup: SetupApi; onDone: () =>
         <input type="radio" name="keep" checked={keep === 'visible'} onChange={() => setKeep('visible')} /> keep only what's visible
       </label>
       <button disabled={!canJoin} onClick={join}>
-        {busy ? (code ? `waiting for approval · ${code}` : 'joining…') : 'join'}
+        {busy ? 'asking…' : 'join'}
       </button>
+      {busy && status && <p>{status}</p>}
+      {busy && setup.joinCancel && <button className="back" onClick={() => void setup.joinCancel?.()}>stop asking</button>}
       {error && <p className="error">{error}</p>}
       <button className="back" onClick={onBack} disabled={busy}>
         back

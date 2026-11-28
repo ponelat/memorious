@@ -264,6 +264,7 @@ pub fn app(state: RouterState, web_dist: Option<PathBuf>) -> Router {
         .route("/setup/passcode", post(setup_passcode))
         .route("/setup/join", post(setup_join))
         .route("/setup/join-progress", get(setup_join_progress))
+        .route("/setup/join-cancel", post(setup_join_cancel))
         .layer(DefaultBodyLimit::max(4 * 1024));
     let api = authed.merge(open).with_state(state.clone());
 
@@ -875,7 +876,7 @@ async fn remove_peer(State(state): State<SharedState>, Json(body): Json<Endpoint
 /// `GET /api/setup/join-progress` — while a join waits for the other device's owner to accept it: `{progress: {code, since_ms}}`
 /// (the code to compare with the knock on that device), else `{progress: null}`.
 async fn setup_join_progress() -> Response {
-    Json(json!({ "progress": memorious_core::node::join_progress() })).into_response()
+    Json(json!({ "progress": memorious_core::node::join_progress(), "job": job_json() })).into_response()
 }
 
 /// `GET /api/media/missing` — blobs this device still waits for (each with its capture), and those already declared lost.
@@ -1196,6 +1197,9 @@ struct SetupStateBody {
 
 /// "empty" (no passcode yet — offer setup) or "ready" (normal login).
 async fn setup_state(State(state): State<SharedState>) -> Response {
+    if matches!(*JOIN_JOB.lock().unwrap(), JoinJob::Running) {
+        return Json(SetupStateBody { state: "empty" }).into_response(); // the old journal is gone, the new one not there yet
+    }
     match state.journal().active_passcode_hash() {
         Ok(None) => Json(SetupStateBody { state: "empty" }).into_response(),
         Ok(Some(_)) => Json(SetupStateBody { state: "ready" }).into_response(),
@@ -1237,30 +1241,80 @@ struct SetupJoinBody {
     passcode: String,
 }
 
-/// Replace this peer's empty/orphaned journal with a synced copy of an
-/// existing one — the browser-driven equivalent of `memorious --data <dir>
-/// join <ticket>`. Swaps a brand new `AppState` (new `Node`, new identity)
-/// into the running server; a request already in flight against the old
-/// journal finishes against it, the next one sees the new one. Concurrent
-/// captures against the peer being replaced mid-join aren't guarded against
-/// beyond that — acceptable because this only ever runs against an empty,
-/// just-reset journal nobody is using yet.
+/// Where a web join stands. A join waits up to 15 minutes for the other peer (it may be off, its owner has to accept), far
+/// longer than a browser request should stay open, so `POST /setup/join` only starts it and the page polls
+/// `GET /setup/join-progress` (which carries this) until it is done or failed.
+#[derive(Clone, Debug, PartialEq)]
+enum JoinJob {
+    Idle,
+    Running,
+    Done,
+    Failed(String),
+}
+static JOIN_JOB: StdMutex<JoinJob> = StdMutex::new(JoinJob::Idle);
+
+fn job_json() -> serde_json::Value {
+    match &*JOIN_JOB.lock().unwrap() {
+        JoinJob::Idle => json!({"state": "idle"}),
+        JoinJob::Running => json!({"state": "running"}),
+        JoinJob::Done => json!({"state": "done"}),
+        JoinJob::Failed(e) => json!({"state": "failed", "error": e}),
+    }
+}
+
+/// Start replacing this peer's empty journal with a synced copy of an existing one — the browser-driven equivalent of
+/// `memorious --data <dir> join <ticket>`. Returns at once (202); progress and the outcome are on `join-progress`. Idempotent:
+/// a second call while one runs changes nothing (no second knock). A ticket that does not decode is refused before anything
+/// is touched; any later failure leaves a blank, working journal (not a half-deleted one), ready to try again.
 async fn setup_join(State(router_state): State<RouterState>, Json(body): Json<SetupJoinBody>) -> Response {
     let current = router_state.0.read().unwrap().clone();
+    {
+        let job = JOIN_JOB.lock().unwrap();
+        if *job == JoinJob::Running {
+            return (StatusCode::ACCEPTED, Json(json!({"ok": true, "already": true}))).into_response();
+        }
+    }
     if let Err(resp) = ensure_unprovisioned(&current) {
         return resp;
     }
-    let password = match std::env::var("MEMORIOUS_PASSWORD").ok().filter(|p| !p.is_empty()) {
-        Some(p) => p,
-        None => return internal(anyhow::anyhow!("MEMORIOUS_PASSWORD not set in this process's environment")),
-    };
-    current.node.shutdown_ref().await;
-    if let Err(e) = std::fs::remove_dir_all(&current.data_dir).context("clear the old journal before joining") {
-        return internal(e);
+    if let Err(e) = memorious_core::node::JournalTicket::decode(&body.ticket) {
+        return err(StatusCode::BAD_REQUEST, &format!("not a valid invite: {e:#}"));
     }
-    let (node, _report) = match Node::join_from_ticket(&current.data_dir, &body.ticket, &password).await {
-        Ok(pair) => pair,
-        Err(e) => return err(StatusCode::BAD_REQUEST, &format!("{e:#}")),
+    if body.passcode.is_empty() {
+        return err(StatusCode::BAD_REQUEST, "choose a passcode");
+    }
+    if std::env::var("MEMORIOUS_PASSWORD").ok().filter(|p| !p.is_empty()).is_none() {
+        return internal(anyhow::anyhow!("MEMORIOUS_PASSWORD not set in this process's environment"));
+    }
+    {
+        let mut job = JOIN_JOB.lock().unwrap();
+        if *job == JoinJob::Running {
+            return (StatusCode::ACCEPTED, Json(json!({"ok": true, "already": true}))).into_response();
+        }
+        *job = JoinJob::Running;
+    }
+    tokio::spawn(async move {
+        let outcome = run_join(&router_state, &current, body).await;
+        *JOIN_JOB.lock().unwrap() = match outcome {
+            Ok(()) => JoinJob::Done,
+            Err(e) => JoinJob::Failed(e),
+        };
+    });
+    (StatusCode::ACCEPTED, Json(json!({"ok": true}))).into_response()
+}
+
+async fn run_join(router_state: &RouterState, current: &Arc<AppState>, body: SetupJoinBody) -> std::result::Result<(), String> {
+    let password = std::env::var("MEMORIOUS_PASSWORD").unwrap_or_default();
+    current.node.shutdown_ref().await;
+    std::fs::remove_dir_all(&current.data_dir).map_err(|e| format!("clear the old journal before joining: {e}"))?;
+    let joined = Node::join_from_ticket(&current.data_dir, &body.ticket, &password).await;
+    let node = match joined {
+        Ok((node, _report)) => node,
+        Err(e) => {
+            // The old journal is gone; leave a blank working one so the page does not break, and say why the join failed.
+            let _ = swap_blank(router_state, current).await;
+            return Err(format!("{e:#}"));
+        }
     };
     for step in [
         node.journal().ensure_device_name("web"),
@@ -1270,13 +1324,37 @@ async fn setup_join(State(router_state): State<RouterState>, Json(body): Json<Se
         node.journal().set_passcode(&body.passcode).map(|_| ()),
     ] {
         if let Err(e) = step {
-            return internal(e);
+            node.shutdown_ref().await;
+            let _ = swap_blank(router_state, current).await;
+            return Err(format!("{e:#}"));
         }
     }
+    install(router_state, current, node);
+    Ok(())
+}
+
+/// Put a new node in place of the running one (new `AppState`; a request already in flight finishes against the old one).
+fn install(router_state: &RouterState, current: &Arc<AppState>, node: Node) {
     let mut new_state = AppState::new(node, current.downloads_dir.clone(), current.data_dir.clone());
     new_state.embedder = current.embedder.clone(); // the opt-in is per process, not per journal
-    let new_state = Arc::new(new_state);
-    *router_state.0.write().unwrap() = new_state;
+    *router_state.0.write().unwrap() = Arc::new(new_state);
+}
+
+/// A new empty journal (no passcode, no peers, new identity) in the data dir, swapped in.
+async fn swap_blank(router_state: &RouterState, current: &Arc<AppState>) -> Result<()> {
+    let _ = std::fs::remove_dir_all(&current.data_dir);
+    let password = std::env::var("MEMORIOUS_PASSWORD").ok().filter(|p| !p.is_empty()).context("MEMORIOUS_PASSWORD not set")?;
+    let journal = Journal::init(&current.data_dir, &password)?;
+    journal.ensure_device_name("web")?;
+    journal.ensure_peer_join()?;
+    journal.ensure_version_seen()?;
+    install(router_state, current, Node::spawn(journal).await?);
+    Ok(())
+}
+
+/// `POST /api/setup/join-cancel` — stop asking the other peer.
+async fn setup_join_cancel() -> Response {
+    memorious_core::node::cancel_ask();
     Json(json!({"ok": true})).into_response()
 }
 

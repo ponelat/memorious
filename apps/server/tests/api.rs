@@ -488,6 +488,7 @@ async fn downloads_are_listed_and_publicly_fetchable() {
 
 #[tokio::test]
 async fn server_peer_converges_with_core_peer() {
+    let _env_guard = lock_env(); // a running join (process-wide) would make this pairing "already asking"
     let (_d, state) = test_state().await;
 
     // Capture on the server over "HTTP" (direct handler call).
@@ -903,6 +904,7 @@ async fn reset_over_http_lands_on_a_fresh_unprovisioned_journal() {
 
 #[tokio::test]
 async fn setup_passcode_only_works_before_one_is_set() {
+    let _env_guard = lock_env(); // setup/state answers "empty" while a join runs (process-wide)
     // (setup/passcode never touches MEMORIOUS_PASSWORD — only reset/join do,
     // since only they have to re-open or re-join a journal from scratch.)
     let dir = tempfile::tempdir().unwrap();
@@ -953,6 +955,68 @@ async fn setup_passcode_only_works_before_one_is_set() {
     assert_eq!(body_json(resp).await["state"], "ready");
 }
 
+/// Poll `join-progress` until the join job reaches `state` (the join runs in the background).
+async fn wait_join(router: &axum::Router, state: &str) -> serde_json::Value {
+    for _ in 0..200 {
+        let resp = router.clone().oneshot(Request::get("/api/setup/join-progress").body(Body::empty()).unwrap()).await.unwrap();
+        let v = body_json(resp).await;
+        if v["job"]["state"] == state {
+            return v;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    panic!("join never reached {state}");
+}
+
+#[tokio::test]
+async fn a_failed_join_leaves_a_blank_working_client_not_a_broken_one() {
+    let _env_guard = lock_env();
+    std::env::set_var("MEMORIOUS_PASSWORD", "pw");
+    let dir = tempfile::tempdir().unwrap();
+    // a peer that is gone: its ticket is valid but nobody answers
+    let peer = Node::spawn(Journal::init(&dir.path().join("peer"), "pw").unwrap()).await.unwrap();
+    let ticket = peer.ticket().unwrap();
+    peer.shutdown().await;
+
+    let data_dir = dir.path().join("server");
+    let journal = Journal::init(&data_dir, "pw").unwrap();
+    let state = Arc::new(AppState::new(Node::spawn(journal).await.unwrap(), None, data_dir));
+    let router = app(wrap(state), None);
+    let join = |body: String| {
+        router.clone().oneshot(Request::post("/api/setup/join").header(header::CONTENT_TYPE, "application/json").body(Body::from(body)).unwrap())
+    };
+
+    // garbage is refused before anything is touched
+    let bad = join(r#"{"ticket":"nonsense","passcode":"x"}"#.into()).await.unwrap();
+    assert_eq!(bad.status(), StatusCode::BAD_REQUEST);
+
+    let body = format!(r#"{{"ticket":"{ticket}","passcode":"sesame"}}"#);
+    assert_eq!(join(body.clone()).await.unwrap().status(), StatusCode::ACCEPTED);
+    // asking again while it runs is a no-op, not a second request
+    let again = join(body).await.unwrap();
+    assert_eq!(again.status(), StatusCode::ACCEPTED);
+    assert_eq!(body_json(again).await["already"], true);
+
+    // the user gives up once the request is out
+    while memorious_core::node::join_progress().is_none() {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    router.clone().oneshot(Request::post("/api/setup/join-cancel").body(Body::empty()).unwrap()).await.unwrap();
+    let v = wait_join(&router, "failed").await;
+    assert_eq!(v["job"]["error"], "cancelled");
+
+    // still a working, blank, unprovisioned client: setup can proceed without a restart
+    let resp = router.clone().oneshot(Request::get("/api/setup/state").body(Body::empty()).unwrap()).await.unwrap();
+    assert_eq!(body_json(resp).await["state"], "empty");
+    let resp = router
+        .clone()
+        .oneshot(Request::post("/api/setup/passcode").header(header::CONTENT_TYPE, "application/json").body(Body::from(r#"{"passcode":"sesame"}"#)).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    std::env::remove_var("MEMORIOUS_PASSWORD");
+}
+
 #[tokio::test]
 async fn setup_join_pairs_with_an_existing_journal_and_sets_a_passcode() {
     let _env_guard = lock_env();
@@ -980,7 +1044,8 @@ async fn setup_join_pairs_with_an_existing_journal_and_sets_a_passcode() {
         )
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK, "{:?}", body_json(resp).await);
+    assert_eq!(resp.status(), StatusCode::ACCEPTED, "{:?}", body_json(resp).await);
+    wait_join(&router, "done").await;
 
     // Immediately usable, no restart: the new passcode works, and the
     // joined journal's entry is there.

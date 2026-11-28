@@ -791,7 +791,20 @@ impl Node {
         let guard = AskGuard::begin(crate::trust::knock_code(&self.endpoint.id().to_string()))?;
         let started = std::time::Instant::now();
         loop {
-            match self.sync_events_with(addr).await {
+            // an attempt can take 10s to give up on an offline peer: watch for "stop asking" meanwhile
+            let attempt = self.sync_events_with(addr);
+            tokio::pin!(attempt);
+            let result = loop {
+                tokio::select! {
+                    r = &mut attempt => break r,
+                    _ = tokio::time::sleep(Duration::from_millis(200)) => {
+                        if ASK_CANCEL.load(std::sync::atomic::Ordering::SeqCst) {
+                            bail!("cancelled");
+                        }
+                    }
+                }
+            };
+            match result {
                 Ok(r) => return Ok(r),
                 Err(e) => {
                     let state = if e.downcast_ref::<Knocking>().is_some() {

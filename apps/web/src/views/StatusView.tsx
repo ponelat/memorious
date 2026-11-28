@@ -744,7 +744,6 @@ function ResetRow() {
   const [confirming, setConfirming] = useState(false)
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
-  const [done, setDone] = useState(false)
   const web = api.needsAuth
 
   async function reset() {
@@ -752,24 +751,11 @@ function ResetRow() {
     setErr(null)
     try {
       await api.resetDevice!()
-      if (web) {
-        setDone(true)
-      } else {
-        window.dispatchEvent(new Event('journal:reset'))
-      }
+      window.dispatchEvent(new Event('journal:reset')) // back to first run: a blank client, no restart needed
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e))
       setBusy(false)
     }
-  }
-
-  if (done) {
-    return (
-      <p>
-        Journal deleted. This server is exiting — an operator needs to bring it back up and
-        re-pair it (or set a new passcode) before anyone can log in here again.
-      </p>
-    )
   }
 
   if (!confirming) {
@@ -780,7 +766,7 @@ function ResetRow() {
         </button>
         <p className="hint">
           {web
-            ? "deletes this server's copy and takes it offline. other devices keep theirs."
+            ? "deletes this server's copy: passcode, data and peers. other devices keep theirs."
             : "deletes this computer's copy. other devices keep theirs."}
         </p>
       </>
@@ -790,9 +776,8 @@ function ResetRow() {
     <>
       <p>
         {web
-          ? "Delete this server's copy of the journal and take it offline? Other devices keep theirs. " +
-            'Anything captured here and not yet synced is lost. Nobody can log in here again until an ' +
-            'operator brings the server back up and re-pairs it (or sets a new passcode). There is no undo.'
+          ? "Delete this server's journal, passcode and peers? Other devices keep theirs. " +
+            'Anything captured here and not yet synced is lost. It becomes a blank client that whoever opens it can set up or join a peer with. There is no undo.'
           : 'Delete this computer’s copy of the journal? Other devices keep theirs. Anything captured ' +
             'here and not yet synced is lost. There is no undo.'}
       </p>

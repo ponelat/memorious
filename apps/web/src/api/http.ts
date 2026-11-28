@@ -312,6 +312,7 @@ export const httpApi: JournalApi = {
     } catch {
       // deliberately swallowed — see above
     }
+    setToken(null) // the old passcode means nothing to the blank journal that replaced it
   },
 
   logout() {
@@ -336,17 +337,34 @@ export const httpApi: JournalApi = {
       })
       setToken(passcode)
     },
+    /** Starts the join on the server (it keeps asking the other peer for up to 15 minutes, so this is not one long request) and
+     *  polls until it is done; a failure throws with the server's reason and leaves a blank client to try again. */
     async joinTicket(ticket: string, passcode: string, keep?: 'everything' | 'visible'): Promise<SyncReport> {
       await json('/api/setup/join', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ticket, passcode, keep }),
       })
+      for (;;) {
+        await new Promise((r) => setTimeout(r, 1500))
+        let job: { state: string; error?: string } | undefined
+        try {
+          job = (await json<{ job: { state: string; error?: string } }>('/api/setup/join-progress')).job
+        } catch {
+          continue // a blip while the server swaps journals; keep polling
+        }
+        if (job?.state === 'done') break
+        if (job?.state === 'failed') throw new Error(job.error ?? 'join failed')
+        if (job?.state === 'idle') throw new Error('join stopped')
+      }
       setToken(passcode)
       return { received: 0, blobs: 0 }
     },
     async joinProgress() {
-      return (await json<{ progress: { code: string; since_ms: number } | null }>('/api/setup/join-progress')).progress
+      return (await json<{ progress: import('./types').JoinAsk | null }>('/api/setup/join-progress')).progress
+    },
+    async joinCancel() {
+      await json('/api/setup/join-cancel', { method: 'POST' })
     },
     async unlock() {
       throw new Error('this server has no locked state to unlock')

@@ -319,8 +319,11 @@ export interface SetupApi {
   initFresh(password: string): Promise<void>
   /** `keep`: what this device keeps, chosen at join (default everything; changeable later in status). */
   joinTicket(ticket: string, password: string, keep?: 'everything' | 'visible'): Promise<SyncReport>
-  /** While a join waits for the other device's owner to accept it: the code both screens show. */
-  joinProgress(): Promise<{ code: string; since_ms: number } | null>
+  /** While a join waits for the other peer (off, or its owner has to accept): what it waits on, the code both screens show, and
+   *  when pinging stops. */
+  joinProgress(): Promise<JoinAsk | null>
+  /** Stop asking the other peer (a join in progress ends with an error). Web only. */
+  joinCancel?(): Promise<void>
   unlock(password: string): Promise<void>
 }
 
@@ -444,4 +447,13 @@ export interface DownloadFile {
   name: string
   size: number
   url: string
+}
+
+export interface JoinAsk {
+  code: string
+  since_ms: number
+  until_ms?: number
+  /** "unreachable" (the other peer is off / not reachable yet) or "knocking" (it has our request, its owner has to accept). */
+  state?: 'unreachable' | 'knocking'
+  attempts?: number
 }
