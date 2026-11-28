@@ -71,28 +71,28 @@ function NewJournal({ setup, onDone, onBack }: { setup: SetupApi; onDone: () => 
 
   return (
     <BrandHero
-      headline={web ? 'Choose a\npasscode.' : 'Choose a\nmaster password.'}
+      headline={web ? 'Choose a\nweb password.' : 'Choose a\nmaster password.'}
       subline={
         web
-          ? 'Unlocks this journal in a browser.'
+          ? 'For this web client.'
           : 'It encrypts everything. There is no reset and no recovery. Lose it and the journal is gone.'
       }
     >
       <input
         type="password"
-        placeholder={web ? 'passcode' : 'master password'}
+        placeholder={web ? 'web password' : 'master password'}
         autoFocus
         value={password}
         onChange={(e) => setPassword(e.target.value)}
       />
       <input
         type="password"
-        placeholder={web ? 'repeat passcode' : 'repeat password'}
+        placeholder={web ? 'repeat web password' : 'repeat password'}
         value={confirm}
         onChange={(e) => setConfirm(e.target.value)}
         onKeyDown={(e) => e.key === 'Enter' && create()}
       />
-      {confirm !== '' && confirm !== password && <p className="error">{web ? "passcodes don't match" : "passwords don't match"}</p>}
+      {confirm !== '' && confirm !== password && <p className="error">{"passwords don't match"}</p>}
       {!web && (
         <label className="hero-check">
           <input type="checkbox" checked={saved} onChange={(e) => setSaved(e.target.checked)} />
@@ -140,7 +140,7 @@ function JoinJournal({ setup, onDone, onBack }: { setup: SetupApi; onDone: () =>
   return (
     <BrandHero
       headline={'Join a peer.'}
-      subline={web ? 'Paste an invite, then choose a passcode.' : "Paste an invite and that journal's master password."}
+      subline={web ? 'Paste an invite.' : "Paste an invite and that journal's master password."}
     >
       <textarea
         placeholder="invite"
@@ -149,19 +149,31 @@ function JoinJournal({ setup, onDone, onBack }: { setup: SetupApi; onDone: () =>
         value={ticket}
         onChange={(e) => setTicket(e.target.value)}
       />
-      <input
-        type="password"
-        placeholder={web ? 'passcode' : 'master password'}
-        value={secret}
-        onChange={(e) => setSecret(e.target.value)}
-        onKeyDown={(e) => e.key === 'Enter' && join()}
-      />
-      {web && (
+      {web ? (
+        <>
+          <input
+            type="password"
+            placeholder="web password"
+            value={secret}
+            onChange={(e) => setSecret(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && join()}
+          />
+          <p className="hint">For this web client.</p>
+          <input
+            type="password"
+            placeholder="encryption passcode"
+            value={master}
+            onChange={(e) => setMaster(e.target.value)}
+          />
+          <p className="hint">Decrypts the journal's data. Blank uses the server's.</p>
+        </>
+      ) : (
         <input
           type="password"
-          placeholder="master password (blank = the server's)"
-          value={master}
-          onChange={(e) => setMaster(e.target.value)}
+          placeholder="master password"
+          value={secret}
+          onChange={(e) => setSecret(e.target.value)}
+          onKeyDown={(e) => e.key === 'Enter' && join()}
         />
       )}
       <label className="row">

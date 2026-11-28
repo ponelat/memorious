@@ -445,7 +445,7 @@ function AgentsRow() {
           <>
             <p>
               <strong>directly</strong> — in claude.ai (or any client with remote MCP + OAuth), add a custom connector
-              with this URL. It will ask for this journal’s browser passcode; changing the passcode signs it out.
+              with this URL. It will ask for this journal’s web password; changing the web password signs it out.
             </p>
             <div className="net-actions">
               <code className="agent-url">{directUrl}</code>
@@ -731,7 +731,7 @@ function LogoutRow() {
       <button className="ghost" onClick={() => api.logout!()}>
         log out
       </button>
-      <p className="hint">forgets the passcode saved in this browser. the journal is untouched.</p>
+      <p className="hint">forgets the web password saved in this browser. the journal is untouched.</p>
     </>
   )
 }
@@ -766,7 +766,7 @@ function ResetRow() {
         </button>
         <p className="hint">
           {web
-            ? "deletes this server's copy: passcode, data and peers. other devices keep theirs."
+            ? "deletes this server's copy: web password, data and peers. other devices keep theirs."
             : "deletes this computer's copy. other devices keep theirs."}
         </p>
       </>
@@ -776,7 +776,7 @@ function ResetRow() {
     <>
       <p>
         {web
-          ? "Delete this server's journal, passcode and peers? Other devices keep theirs. " +
+          ? "Delete this server's journal, web password and peers? Other devices keep theirs. " +
             'Anything captured here and not yet synced is lost. It becomes a blank client that whoever opens it can set up or join a peer with. There is no undo.'
           : 'Delete this computer’s copy of the journal? Other devices keep theirs. Anything captured ' +
             'here and not yet synced is lost. There is no undo.'}

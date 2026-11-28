@@ -14,7 +14,7 @@ export function Login({ onSubmit }: { onSubmit: (passcode: string) => Promise<bo
     setError(null)
     try {
       const ok = await onSubmit(passcode)
-      if (!ok) setError('wrong passcode')
+      if (!ok) setError('wrong web password')
     } catch {
       setError('could not reach the journal')
     } finally {
@@ -23,12 +23,12 @@ export function Login({ onSubmit }: { onSubmit: (passcode: string) => Promise<bo
   }
 
   return (
-    <BrandHero headline={'One place\nto capture.'} subline="Enter the passcode for this journal.">
+    <BrandHero headline={'One place\nto capture.'} subline="Enter the web password.">
       <form className="hero-form" onSubmit={submit}>
         <input
           type="password"
           autoFocus
-          placeholder="passcode"
+          placeholder="web password"
           value={passcode}
           onChange={(e) => setPasscode(e.target.value)}
         />
