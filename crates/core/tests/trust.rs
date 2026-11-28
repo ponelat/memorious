@@ -45,14 +45,14 @@ fn a_stranger_is_not_allowed_until_accepted_and_a_removed_peer_is_a_stranger_aga
 }
 
 #[test]
-fn knocks_expire_after_a_day_repeat_knocks_collapse_and_the_list_is_capped() {
+fn knocks_expire_when_not_refreshed_repeat_knocks_collapse_and_the_list_is_capped() {
     let d = tempdir().unwrap();
     let j = strict(&d.path().join("j"));
     j.record_knock("p", None, 0).unwrap();
     j.record_knock("p", Some("name"), 500).unwrap();
     let k = j.knocks(600).unwrap();
     assert_eq!((k.len(), k[0].first_ms, k[0].last_ms, k[0].device.as_deref()), (1, 0, 500, Some("name")));
-    assert!(j.knocks(25 * 3_600_000).unwrap().is_empty(), "a day later it is forgotten");
+    assert!(j.knocks(500 + memorious_core::trust::KNOCK_TTL_MS + 1).unwrap().is_empty(), "a knock nobody refreshes is forgotten");
     for i in 0..40 {
         j.record_knock(&format!("spam-{i}"), None, 10_000 + i).unwrap();
     }
@@ -110,8 +110,36 @@ async fn a_peer_with_the_secret_gets_nothing_until_the_owner_accepts_and_removal
     b.shutdown().await;
 }
 
+/// The ask-to-join state is process-wide, so tests that drive it must not overlap.
+static ASKING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+#[tokio::test]
+async fn asking_twice_pings_once_and_leaves_one_knock() {
+    let _one_at_a_time = ASKING.lock().await;
+    let dir = tempdir().unwrap();
+    let a = std::sync::Arc::new(Node::spawn(strict(&dir.path().join("a"))).await.unwrap());
+    let ticket = memorious_core::node::JournalTicket::decode(&a.ticket().unwrap()).unwrap();
+    let addr = ticket.addr().unwrap();
+    let b = std::sync::Arc::new(Node::spawn(Journal::init_with_secret(&dir.path().join("b"), ticket.secret, "pw").unwrap()).await.unwrap());
+
+    let first = { let (b, addr) = (b.clone(), addr.clone()); tokio::spawn(async move { b.ask_to_join(&addr).await }) };
+    // wait until the first request has been noticed by the other side
+    while memorious_core::node::join_progress().map_or(true, |p| p.state != memorious_core::node::AskState::Knocking) {
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    let second = b.ask_to_join(&addr).await;
+    assert!(second.unwrap_err().downcast_ref::<memorious_core::node::AlreadyAsking>().is_some(), "a second ask does not start a second loop");
+    assert_eq!(a.journal().knocks(memorious_core::store::now_ms()).unwrap().len(), 1, "one endpoint, one knock");
+
+    let k = a.journal().knocks(memorious_core::store::now_ms()).unwrap()[0].clone();
+    a.accept_knock(&k.endpoint_id).unwrap();
+    first.await.unwrap().unwrap();
+    assert!(memorious_core::node::join_progress().is_none());
+}
+
 #[tokio::test]
 async fn a_joining_device_waits_showing_its_code_until_the_owner_accepts() {
+    let _one_at_a_time = ASKING.lock().await;
     let dir = tempdir().unwrap();
     let ja = strict(&dir.path().join("a"));
     ja.capture_text("hello").unwrap();

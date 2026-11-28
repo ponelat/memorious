@@ -63,25 +63,95 @@ impl std::fmt::Display for Knocking {
 }
 impl std::error::Error for Knocking {}
 
+/// A failed attempt that is just "the other device is not there (yet)": worth retrying while asking to join.
+fn is_unreachable(e: &anyhow::Error) -> bool {
+    let m = format!("{e:#}");
+    m.contains("peer unreachable") || m.contains("connect to peer")
+}
+
 fn knocked_back(conn: &Connection) -> bool {
     matches!(conn.close_reason(), Some(ConnectionError::ApplicationClosed(c)) if c.error_code == VarInt::from(CLOSE_KNOCKING))
 }
 
-/// How long a joining device keeps knocking before it gives up.
-const JOIN_WAIT: Duration = Duration::from_secs(10 * 60);
+/// How long a device keeps asking another one to let it in (knocking, or waiting for it to come online) before it gives up.
+pub const ASK_WAIT: Duration = Duration::from_secs(15 * 60);
+/// Pause between two attempts while asking.
+const ASK_RETRY: Duration = Duration::from_secs(3);
 
-/// A join in progress that the other device has not accepted yet. Process-wide because the join call blocks until it is accepted:
-/// the face polls this to show the code meanwhile.
+/// What the asking device is waiting on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AskState {
+    /// The other device is not reachable (off, asleep, no network): we keep trying until it comes up.
+    Unreachable,
+    /// The other device answered and has our knock; its owner has to open it and accept.
+    Knocking,
+}
+
+/// A request to be let in by another device, still being pinged. Process-wide: there is one at a time, and the face polls this
+/// to tell the owner what is going on (and, once the other side has our knock, the code to compare there).
 #[derive(Debug, Clone, Serialize)]
 pub struct JoinProgress {
     pub code: String,
     pub since_ms: i64,
+    /// When we stop pinging (`since_ms` + [`ASK_WAIT`]).
+    pub until_ms: i64,
+    pub state: AskState,
+    pub attempts: u32,
 }
 static JOIN_PROGRESS: Mutex<Option<JoinProgress>> = Mutex::new(None);
+static ASK_CANCEL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// `Some` while a join waits for the other device's owner to accept it.
+/// `Some` while a request to join waits for the other device (to come online, or for its owner to accept).
 pub fn join_progress() -> Option<JoinProgress> {
     JOIN_PROGRESS.lock().unwrap().clone()
+}
+
+/// Stop asking (the owner changed their mind). The loop ends within one retry pause.
+pub fn cancel_ask() {
+    ASK_CANCEL.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// Raised when a request to join is already being pinged: asking twice must not make a second knock.
+#[derive(Debug)]
+pub struct AlreadyAsking;
+impl std::fmt::Display for AlreadyAsking {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "already asking this device to accept this one — open it and accept")
+    }
+}
+impl std::error::Error for AlreadyAsking {}
+
+/// Held while a request is being pinged, so a second tap / retry / background sync cannot start another loop.
+struct AskGuard;
+impl AskGuard {
+    fn begin(code: String) -> Result<Self> {
+        let mut p = JOIN_PROGRESS.lock().unwrap();
+        if p.is_some() {
+            return Err(AlreadyAsking.into());
+        }
+        ASK_CANCEL.store(false, std::sync::atomic::Ordering::SeqCst);
+        let now = unix_now_ms();
+        *p = Some(JoinProgress {
+            code,
+            since_ms: now,
+            until_ms: now + ASK_WAIT.as_millis() as i64,
+            state: AskState::Unreachable,
+            attempts: 0,
+        });
+        Ok(Self)
+    }
+    fn note(&self, state: AskState) {
+        if let Some(p) = JOIN_PROGRESS.lock().unwrap().as_mut() {
+            p.state = state;
+            p.attempts += 1;
+        }
+    }
+}
+impl Drop for AskGuard {
+    fn drop(&mut self) {
+        *JOIN_PROGRESS.lock().unwrap() = None;
+    }
 }
 const MAX_FRAME: usize = 16 * 1024 * 1024;
 
@@ -713,32 +783,44 @@ impl Node {
         }
     }
 
+    /// Keep asking the device at `addr` to let this one in, for up to [`ASK_WAIT`]: it may be off (we retry until it is reachable)
+    /// and its owner has to open it and tap accept (it holds our knock meanwhile). Idempotent: one loop at a time per process, a
+    /// second call fails with [`AlreadyAsking`] rather than knocking again; and every attempt comes from this node's one endpoint,
+    /// which the other side keys its knock by, so it only ever holds one. Returns the first sync report that goes through.
+    pub async fn ask_to_join(&self, addr: &EndpointAddr) -> Result<SyncReport> {
+        let guard = AskGuard::begin(crate::trust::knock_code(&self.endpoint.id().to_string()))?;
+        let started = std::time::Instant::now();
+        loop {
+            match self.sync_events_with(addr).await {
+                Ok(r) => return Ok(r),
+                Err(e) => {
+                    let state = if e.downcast_ref::<Knocking>().is_some() {
+                        AskState::Knocking
+                    } else if is_unreachable(&e) {
+                        AskState::Unreachable
+                    } else {
+                        return Err(e);
+                    };
+                    guard.note(state);
+                    if ASK_CANCEL.load(std::sync::atomic::Ordering::SeqCst) {
+                        bail!("cancelled");
+                    }
+                    if started.elapsed() >= ASK_WAIT {
+                        return Err(match state {
+                            AskState::Knocking => anyhow::anyhow!("not accepted within 15 minutes: open the other device and accept this one, then try again"),
+                            AskState::Unreachable => e.context("the other device never came online within 15 minutes"),
+                        });
+                    }
+                    tokio::time::sleep(ASK_RETRY).await;
+                }
+            }
+        }
+    }
+
     /// The network half of pairing: pull the event log, then prove the master
     /// password by unwrapping one media key from it.
     async fn pull_and_prove(node: &Self, peer_addr: &EndpointAddr) -> Result<SyncReport> {
-        // The other device's owner has to tap accept: keep knocking (publishing the code to compare) until they do.
-        let started = std::time::Instant::now();
-        let report = loop {
-            match node.sync_events_with(peer_addr).await {
-                Ok(r) => break r,
-                Err(e) => match e.downcast_ref::<Knocking>() {
-                    Some(k) if started.elapsed() < JOIN_WAIT => {
-                        {
-                            let mut p = JOIN_PROGRESS.lock().unwrap();
-                            if p.is_none() {
-                                *p = Some(JoinProgress { code: k.code.clone(), since_ms: unix_now_ms() });
-                            }
-                        }
-                        tokio::time::sleep(Duration::from_secs(2)).await;
-                    }
-                    _ => {
-                        *JOIN_PROGRESS.lock().unwrap() = None;
-                        return Err(e);
-                    }
-                },
-            }
-        };
-        *JOIN_PROGRESS.lock().unwrap() = None;
+        let report = node.ask_to_join(peer_addr).await?;
         if !node.journal.prove_password()? {
             bail!(
                 "this journal carries no password proof yet — open it once on the device \

@@ -24,8 +24,9 @@ const ALLOWED: &str = "peer_allowed:";
 const KNOCK: &str = "knock:";
 const REQUIRE_APPROVAL: &str = "trust_require_approval";
 const GRANDFATHERED: &str = "trust_grandfathered";
-/// A knock nobody answers is forgotten after a day.
-pub const KNOCK_TTL_MS: i64 = 24 * 3_600_000;
+/// A knock is re-sent every few seconds while the knocker waits (up to 15 minutes, `node::ASK_WAIT`); one not refreshed for 20
+/// minutes has been given up on, so it is forgotten rather than offered for acceptance.
+pub const KNOCK_TTL_MS: i64 = 20 * 60_000;
 /// At most this many pending knocks are kept (a flood of strangers cannot grow the list without bound).
 pub const MAX_KNOCKS: usize = 20;
 
@@ -99,7 +100,7 @@ impl Journal {
         Ok(())
     }
 
-    /// The knocks still waiting for an answer (those older than a day are dropped), newest first.
+    /// The knocks still waiting for an answer (those not refreshed within `KNOCK_TTL_MS` are dropped), newest first.
     pub fn knocks(&self, now_ms: i64) -> Result<Vec<Knock>> {
         let mut out = Vec::new();
         for (key, value) in self.store.meta_scan(KNOCK)? {

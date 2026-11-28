@@ -102,10 +102,38 @@ pub fn init_fresh(dir: String, password: String) -> Result<Arc<MobileJournal>> {
     Ok(Arc::new(MobileJournal { node }))
 }
 
-/// While a join waits for the other device's owner to accept it: the code both screens show, else nil. Cheap, any thread.
+/// A request to be let in by another device that is still being pinged (for up to 15 minutes).
+#[derive(uniffi::Record)]
+pub struct AskProgress {
+    /// The code both screens show, to compare before accepting.
+    pub code: String,
+    /// "unreachable" (the other device is off / not reachable yet) or "knocking" (it has our knock, its owner has to accept).
+    pub state: String,
+    pub since_ms: i64,
+    /// When pinging stops.
+    pub until_ms: i64,
+    pub attempts: u32,
+}
+
+/// While a request to join waits for the other device: what it is waiting on and until when, else nil. Cheap, any thread.
 #[uniffi::export]
-pub fn join_progress() -> Option<String> {
-    memorious_core::node::join_progress().map(|p| p.code)
+pub fn join_progress() -> Option<AskProgress> {
+    memorious_core::node::join_progress().map(|p| AskProgress {
+        code: p.code,
+        state: match p.state {
+            memorious_core::node::AskState::Unreachable => "unreachable".into(),
+            memorious_core::node::AskState::Knocking => "knocking".into(),
+        },
+        since_ms: p.since_ms,
+        until_ms: p.until_ms,
+        attempts: p.attempts,
+    })
+}
+
+/// Stop asking another device to accept this one.
+#[uniffi::export]
+pub fn cancel_join() {
+    memorious_core::node::cancel_ask();
 }
 
 /// Join an existing journal from a pairing ticket. Pairing pulls the event log
@@ -452,7 +480,15 @@ impl MobileJournal {
             });
         }
         let addr = t.addr().map_err(JournalError::from)?;
-        let report = rt().block_on(self.node.sync_with(&addr))?;
+        // A device this one has never been let in by is asked for 15 minutes (it may be off; its owner has to accept) rather than
+        // failing at once; the app shows the progress. Asking twice does not knock twice (`AlreadyAsking`).
+        let first_contact = !journal.is_peer_allowed(&addr.id.to_string()).map_err(JournalError::from)?;
+        let report = rt().block_on(async {
+            if first_contact {
+                self.node.ask_to_join(&addr).await?;
+            }
+            self.node.sync_with(&addr).await
+        })?;
         journal
             .store
             .meta_set(LAST_PEER_TICKET, ticket_str.as_bytes())
