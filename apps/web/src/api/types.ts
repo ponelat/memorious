@@ -323,6 +323,8 @@ export interface SetupApi {
    *  when pinging stops. */
   joinProgress(): Promise<JoinAsk | null>
   /** Stop asking the other peer (a join in progress ends with an error). Web only. */
+  /** The page was reloaded while a join was running on the server: wait for it (false if none was). Web only. */
+  joinResume?(): Promise<boolean>
   joinCancel?(): Promise<void>
   /** Answer a join that was accepted and waits for the encryption passcode. Web only. */
   joinPasscode?(passcode: string): Promise<void>

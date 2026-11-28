@@ -19,9 +19,16 @@ const web = api.needsAuth
  * phone. */
 export function Setup({ setup, onDone }: { setup: SetupApi; onDone: () => void }) {
   const [route, setRoute] = useState<Route>('choose')
+  // a join already running on the server (this page was reloaded): go back to it instead of starting over
+  const [resuming, setResuming] = useState(false)
+  useEffect(() => {
+    void setup.joinProgress().then((p) => { if (p) { setResuming(true); setRoute('join') } }).catch(() => {})
+    void setup.joinResume?.().then((was) => { if (was) onDone() }).catch(() => setResuming(false))
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- once per mount: onDone changes identity on every parent render
+  }, [setup])
 
   if (route === 'new') return <NewJournal setup={setup} onDone={onDone} onBack={() => setRoute('choose')} />
-  if (route === 'join') return <JoinJournal setup={setup} onDone={onDone} onBack={() => setRoute('choose')} />
+  if (route === 'join') return <JoinJournal setup={setup} onDone={onDone} onBack={() => setRoute('choose')} resuming={resuming} />
   return (
     <BrandHero
       headline={'One place\nto capture.'}
@@ -115,13 +122,14 @@ function NewJournal({ setup, onDone, onBack }: { setup: SetupApi; onDone: () => 
  * to decrypt). Server: the master password for the joined journal is
  * already sitting in this box's MEMORIOUS_PASSWORD — pasting the ticket is
  * the whole ask, and the second field just picks a fresh browser passcode. */
-function JoinJournal({ setup, onDone, onBack }: { setup: SetupApi; onDone: () => void; onBack: () => void }) {
+function JoinJournal({ setup, onDone, onBack, resuming }: { setup: SetupApi; onDone: () => void; onBack: () => void; resuming?: boolean }) {
   const [ticket, setTicket] = useState('')
   const [secret, setSecret] = useState('')
   const [master, setMaster] = useState('')
   const [sending, setSending] = useState(false)
   const [keep, setKeep] = useState<'everything' | 'visible'>('everything')
-  const { busy, error, run } = useRun(onDone)
+  const { busy: running, error, run } = useRun(onDone)
+  const busy = running || !!resuming
   const canJoin = !busy && ticket.trim() !== '' && secret !== ''
   const join = () => canJoin && run(() => setup.joinTicket(ticket.trim(), secret, keep))
   // while the join waits: what it waits on, the code to compare on the other peer, and until when it keeps asking

@@ -359,6 +359,19 @@ impl Journal {
         }
     }
 
+    /// What the proof check looked at, for the log when a password does not match: every proof annotation (newest first) as
+    /// `device:age-in-hours`, and how many events other devices wrote.
+    pub fn proof_report(&self) -> String {
+        let now = crate::store::now_ms();
+        let proofs = self.password_proofs().unwrap_or_default();
+        let list: Vec<String> = proofs
+            .iter()
+            .map(|e| format!("{}{}:{}h", if e.device_id == self.device_id { "self-" } else { "" }, &e.device_id[..e.device_id.len().min(12)], (now - e.recorded_at) / 3_600_000))
+            .collect();
+        let others = self.store.all_events().map(|v| v.iter().filter(|e| e.device_id != self.device_id).count()).unwrap_or(0);
+        format!("{} proofs [{}], {} events from other devices", proofs.len(), list.join(", "), others)
+    }
+
     /// The journal's published proof (any device's, latest), if one exists.
     pub fn password_proof(&self) -> Result<Option<BlobCrypto>> {
         self.password_proofs()?.first().map(Self::parse_proof).transpose()

@@ -70,6 +70,22 @@ async function saveResponse(resp: Response, filename: string): Promise<void> {
   setTimeout(() => URL.revokeObjectURL(url), 60_000)
 }
 
+/** Poll the server's join job until it is done; a failure throws with the server's reason. */
+async function waitForJoin(): Promise<void> {
+  for (;;) {
+    await new Promise((r) => setTimeout(r, 1500))
+    let job: { state: string; error?: string } | undefined
+    try {
+      job = (await json<{ job: { state: string; error?: string } }>('/api/setup/join-progress')).job
+    } catch {
+      continue // a blip while the server swaps journals; keep polling
+    }
+    if (job?.state === 'done') return
+    if (job?.state === 'failed') throw new Error(job.error ?? 'join failed')
+    if (job?.state === 'idle') throw new Error('join stopped')
+  }
+}
+
 export const httpApi: JournalApi = {
   getRetention: () => json('/api/retention'),
   setRetention: (preset) => json('/api/retention', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ preset }) }),
@@ -345,20 +361,16 @@ export const httpApi: JournalApi = {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ticket, passcode, keep }),
       })
-      for (;;) {
-        await new Promise((r) => setTimeout(r, 1500))
-        let job: { state: string; error?: string } | undefined
-        try {
-          job = (await json<{ job: { state: string; error?: string } }>('/api/setup/join-progress')).job
-        } catch {
-          continue // a blip while the server swaps journals; keep polling
-        }
-        if (job?.state === 'done') break
-        if (job?.state === 'failed') throw new Error(job.error ?? 'join failed')
-        if (job?.state === 'idle') throw new Error('join stopped')
-      }
+      await waitForJoin()
       setToken(passcode)
       return { received: 0, blobs: 0 }
+    },
+    /** A join that is already running on the server (the page was reloaded): wait for it. Returns whether one was running. */
+    async joinResume(): Promise<boolean> {
+      const p = await json<{ job: { state: string } }>('/api/setup/join-progress')
+      if (p.job?.state !== 'running') return false
+      await waitForJoin()
+      return true
     },
     async joinProgress() {
       return (await json<{ progress: import('./types').JoinAsk | null }>('/api/setup/join-progress')).progress

@@ -949,7 +949,10 @@ impl Node {
                 "this journal carries no password proof yet — open it once on the device \
                  that created it (with a current build), then join again"
             ),
-            Err(e) if format!("{e:#}").contains("master password doesn't match") => Err(WrongPasscode.into()),
+            Err(e) if format!("{e:#}").contains("master password doesn't match") => {
+                tracing::warn!("join: master password does not match — {}", node.journal.proof_report());
+                Err(WrongPasscode.into())
+            }
             Err(e) => Err(e),
         }
     }

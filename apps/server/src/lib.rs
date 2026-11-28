@@ -290,7 +290,13 @@ pub fn app(state: RouterState, web_dist: Option<PathBuf>) -> Router {
                 .fallback(tower_http::services::ServeFile::new(index)),
         );
     }
+    // The page itself (index.html) must be re-checked on every load: without this a browser keeps showing the previous build after a
+    // deploy ("the button does nothing"). Hashed assets under /assets are fine either way (their names change with their content).
     app.layer(SetResponseHeaderLayer::if_not_present(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("no-cache"),
+    ))
+    .layer(SetResponseHeaderLayer::if_not_present(
         header::CONTENT_SECURITY_POLICY,
         HeaderValue::from_static(CSP),
     ))
