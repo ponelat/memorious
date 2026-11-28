@@ -86,6 +86,9 @@ pub enum AskState {
     Unreachable,
     /// The other device answered and has our knock; its owner has to open it and accept.
     Knocking,
+    /// Accepted, and the journal's data is here, but the master password tried does not decrypt it: waiting for the right one
+    /// (`provide_passcode`). Nothing is asked of the other device again.
+    NeedsPasscode,
 }
 
 /// A request to be let in by another device, still being pinged. Process-wide: there is one at a time, and the face polls this
@@ -98,14 +101,32 @@ pub struct JoinProgress {
     pub until_ms: i64,
     pub state: AskState,
     pub attempts: u32,
+    /// With `NeedsPasscode`: a password was already tried and was wrong (false = none was tried yet, e.g. the server's default).
+    pub wrong_passcode: bool,
 }
 static JOIN_PROGRESS: Mutex<Option<JoinProgress>> = Mutex::new(None);
+static PASSCODE: Mutex<Option<String>> = Mutex::new(None);
 static ASK_CANCEL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// `Some` while a request to join waits for the other device (to come online, or for its owner to accept).
 pub fn join_progress() -> Option<JoinProgress> {
     JOIN_PROGRESS.lock().unwrap().clone()
 }
+
+/// Answer a join that is waiting in `NeedsPasscode` with the journal's master password.
+pub fn provide_passcode(passcode: String) {
+    *PASSCODE.lock().unwrap() = Some(passcode);
+}
+
+/// A join reached the journal's data but the master password tried does not decrypt it (internal: becomes `NeedsPasscode`).
+#[derive(Debug)]
+struct WrongPasscode;
+impl std::fmt::Display for WrongPasscode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "master password doesn't match this journal")
+    }
+}
+impl std::error::Error for WrongPasscode {}
 
 /// Stop asking (the owner changed their mind). The loop ends within one retry pause.
 pub fn cancel_ask() {
@@ -138,8 +159,17 @@ impl AskGuard {
             until_ms: now + ASK_WAIT.as_millis() as i64,
             state: AskState::Unreachable,
             attempts: 0,
+            wrong_passcode: false,
         });
         Ok(Self)
+    }
+    /// Waiting for the master password; the 15 minutes start over (a person is typing).
+    fn needs_passcode(&self, wrong: bool) {
+        if let Some(p) = JOIN_PROGRESS.lock().unwrap().as_mut() {
+            p.state = AskState::NeedsPasscode;
+            p.wrong_passcode = wrong;
+            p.until_ms = unix_now_ms() + ASK_WAIT.as_millis() as i64;
+        }
     }
     fn note(&self, state: AskState) {
         if let Some(p) = JOIN_PROGRESS.lock().unwrap().as_mut() {
@@ -166,6 +196,19 @@ pub fn join_identity_path(root: &Path) -> std::path::PathBuf {
 /// Forget the kept identity: the next join arrives as a new endpoint.
 pub fn forget_join_identity(root: &Path) {
     let _ = std::fs::remove_file(join_identity_path(root));
+}
+
+/// The kept identity, created (and kept) the first time.
+pub fn load_join_identity(root: &Path) -> Result<[u8; 32]> {
+    let path = join_identity_path(root);
+    match std::fs::read(&path) {
+        Ok(b) => b.as_slice().try_into().map_err(|_| anyhow::anyhow!("malformed kept identity")),
+        Err(_) => {
+            let k = SecretKey::generate().to_bytes();
+            std::fs::write(&path, k).context("keep the join identity")?;
+            Ok(k)
+        }
+    }
 }
 
 /// Make `journal` use the kept identity, creating (and keeping) one the first time. `create` = false only applies one that exists.
@@ -788,34 +831,59 @@ impl Node {
         ticket: &str,
         password: &str,
     ) -> Result<(Self, SyncReport)> {
+        let (node, report, _) = Self::pair_from_ticket_prompting(root, ticket, password, true).await?;
+        Ok((node, report))
+    }
+
+    /// [`Self::pair_from_ticket`], but a master password that does not decrypt the journal is not the end of the join: once the
+    /// other device has accepted this one, progress moves to `NeedsPasscode` and the join waits for `provide_passcode` (retrying
+    /// costs no new knock and no new approval: the identity is kept and the other device already allows it). `password_is_a_guess`
+    /// = the first password came from a person (so a mismatch is "wrong"), not from a default. Also returns the password that
+    /// worked. One join at a time per process, decided before anything on disk is touched.
+    pub async fn pair_from_ticket_prompting(
+        root: &Path,
+        ticket: &str,
+        password: &str,
+        password_is_a_guess: bool,
+    ) -> Result<(Self, SyncReport, String)> {
         let ticket = JournalTicket::decode(ticket)?;
         let peer_addr = ticket.addr()?;
-        let journal = Journal::init_with_secret(root, ticket.secret, password)?;
-        if let Err(e) = apply_join_identity(&journal, root, true) {
-            Journal::discard_created(root);
-            return Err(e);
-        }
-        // From here on a failure must not leave the half-made journal behind:
-        // `init_with_secret` refuses to run over an existing db.sqlite, so a
-        // peer that was unreachable (or a mistyped password) would otherwise
-        // turn every retry into "journal already exists" and, on next launch,
-        // into an empty journal that asks to be unlocked.
-        let node = match Self::spawn(journal).await {
-            Ok(node) => node,
-            Err(e) => {
+        let key = load_join_identity(root)?;
+        let guard = AskGuard::begin(crate::trust::knock_code(&SecretKey::from_bytes(&key).public().to_string()))?;
+        let mut password = password.to_string();
+        let mut wrong = password_is_a_guess;
+        loop {
+            let journal = Journal::init_with_secret(root, ticket.secret, &password)?;
+            // From here on a failure must not leave the half-made journal behind: `init_with_secret` refuses to run over an
+            // existing db.sqlite, so a peer that was unreachable (or a mistyped password) would otherwise turn every retry
+            // into "journal already exists" and, on next launch, into an empty journal that asks to be unlocked.
+            if let Err(e) = apply_join_identity(&journal, root, true) {
                 Journal::discard_created(root);
                 return Err(e);
             }
-        };
-        match Self::pull_and_prove(&node, &peer_addr).await {
-            Ok(report) => {
-                forget_join_identity(root); // the journal owns the key now
-                Ok((node, report))
-            }
-            Err(e) => {
-                node.shutdown().await;
-                Journal::discard_created(root);
-                Err(e)
+            let node = match Self::spawn(journal).await {
+                Ok(node) => node,
+                Err(e) => {
+                    Journal::discard_created(root);
+                    return Err(e);
+                }
+            };
+            match Self::ask_and_prove(&node, &peer_addr, &guard).await {
+                Ok(report) => {
+                    forget_join_identity(root); // the journal owns the key now
+                    return Ok((node, report, password));
+                }
+                Err(e) if e.downcast_ref::<WrongPasscode>().is_some() => {
+                    node.shutdown().await;
+                    Journal::discard_created(root);
+                    password = Self::wait_for_passcode(&guard, wrong).await?;
+                    wrong = true;
+                }
+                Err(e) => {
+                    node.shutdown().await;
+                    Journal::discard_created(root);
+                    return Err(e);
+                }
             }
         }
     }
@@ -826,6 +894,10 @@ impl Node {
     /// which the other side keys its knock by, so it only ever holds one. Returns the first sync report that goes through.
     pub async fn ask_to_join(&self, addr: &EndpointAddr) -> Result<SyncReport> {
         let guard = AskGuard::begin(crate::trust::knock_code(&self.endpoint.id().to_string()))?;
+        self.ask_loop(addr, &guard).await
+    }
+
+    async fn ask_loop(&self, addr: &EndpointAddr, guard: &AskGuard) -> Result<SyncReport> {
         let started = std::time::Instant::now();
         loop {
             // an attempt can take 10s to give up on an offline peer: watch for "stop asking" meanwhile
@@ -858,7 +930,7 @@ impl Node {
                     if started.elapsed() >= ASK_WAIT {
                         return Err(match state {
                             AskState::Knocking => anyhow::anyhow!("not accepted within 15 minutes: open the other device and accept this one, then try again"),
-                            AskState::Unreachable => e.context("the other device never came online within 15 minutes"),
+                            AskState::Unreachable | AskState::NeedsPasscode => e.context("the other device never came online within 15 minutes"),
                         });
                     }
                     tokio::time::sleep(ASK_RETRY).await;
@@ -867,17 +939,38 @@ impl Node {
         }
     }
 
-    /// The network half of pairing: pull the event log, then prove the master
-    /// password by unwrapping one media key from it.
-    async fn pull_and_prove(node: &Self, peer_addr: &EndpointAddr) -> Result<SyncReport> {
-        let report = node.ask_to_join(peer_addr).await?;
-        if !node.journal.prove_password()? {
-            bail!(
+    /// The network half of pairing: ask until accepted and pull the event log, then prove the master password by unwrapping a
+    /// key from it. A password that does not match is [`WrongPasscode`], not a failure of the join.
+    async fn ask_and_prove(node: &Self, peer_addr: &EndpointAddr, guard: &AskGuard) -> Result<SyncReport> {
+        let report = node.ask_loop(peer_addr, guard).await?;
+        match node.journal.prove_password() {
+            Ok(true) => Ok(report),
+            Ok(false) => bail!(
                 "this journal carries no password proof yet — open it once on the device \
                  that created it (with a current build), then join again"
-            );
+            ),
+            Err(e) if format!("{e:#}").contains("master password doesn't match") => Err(WrongPasscode.into()),
+            Err(e) => Err(e),
         }
-        Ok(report)
+    }
+
+    /// Wait for the owner to type the master password (`provide_passcode`), up to 15 minutes.
+    async fn wait_for_passcode(guard: &AskGuard, wrong: bool) -> Result<String> {
+        *PASSCODE.lock().unwrap() = None;
+        guard.needs_passcode(wrong);
+        let started = std::time::Instant::now();
+        loop {
+            if let Some(p) = PASSCODE.lock().unwrap().take() {
+                return Ok(p);
+            }
+            if ASK_CANCEL.load(std::sync::atomic::Ordering::SeqCst) {
+                bail!("cancelled");
+            }
+            if started.elapsed() >= ASK_WAIT {
+                bail!("no master password entered within 15 minutes");
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
     }
 
     /// Join a network as a **write-only** peer: a full peer in code that pulls nothing. It takes the ticket's journal secret (and
@@ -898,7 +991,18 @@ impl Node {
         ticket: &str,
         password: &str,
     ) -> Result<(Self, SyncReport)> {
-        let (node, mut report) = Self::pair_from_ticket(root, ticket, password).await?;
+        let (node, report, _) = Self::join_from_ticket_prompting(root, ticket, password, true).await?;
+        Ok((node, report))
+    }
+
+    /// [`Self::join_from_ticket`] over [`Self::pair_from_ticket_prompting`]: also returns the master password that worked.
+    pub async fn join_from_ticket_prompting(
+        root: &Path,
+        ticket: &str,
+        password: &str,
+        password_is_a_guess: bool,
+    ) -> Result<(Self, SyncReport, String)> {
+        let (node, mut report, used) = Self::pair_from_ticket_prompting(root, ticket, password, password_is_a_guess).await?;
         let peer_addr = JournalTicket::decode(ticket)?.addr()?;
         report.blobs_fetched = fetch_missing_blobs(
             &node.endpoint,
@@ -909,7 +1013,7 @@ impl Node {
         )
         .await
         .context("fetch blobs")?;
-        Ok((node, report))
+        Ok((node, report, used))
     }
 
     pub fn journal(&self) -> &Journal {

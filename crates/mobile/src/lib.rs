@@ -113,6 +113,8 @@ pub struct AskProgress {
     /// When pinging stops.
     pub until_ms: i64,
     pub attempts: u32,
+    /// With "needs_passcode": a password was tried and was wrong (false: none tried yet).
+    pub wrong_passcode: bool,
 }
 
 /// While a request to join waits for the other device: what it is waiting on and until when, else nil. Cheap, any thread.
@@ -120,14 +122,22 @@ pub struct AskProgress {
 pub fn join_progress() -> Option<AskProgress> {
     memorious_core::node::join_progress().map(|p| AskProgress {
         code: p.code,
+        wrong_passcode: p.wrong_passcode,
         state: match p.state {
             memorious_core::node::AskState::Unreachable => "unreachable".into(),
             memorious_core::node::AskState::Knocking => "knocking".into(),
+            memorious_core::node::AskState::NeedsPasscode => "needs_passcode".into(),
         },
         since_ms: p.since_ms,
         until_ms: p.until_ms,
         attempts: p.attempts,
     })
+}
+
+/// Answer a join that is waiting for the journal's master password ("needs_passcode").
+#[uniffi::export]
+pub fn provide_join_passcode(passcode: String) {
+    memorious_core::node::provide_passcode(passcode);
 }
 
 /// Stop asking another device to accept this one.

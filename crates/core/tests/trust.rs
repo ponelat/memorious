@@ -166,7 +166,8 @@ async fn a_joining_device_waits_showing_its_code_until_the_owner_accepts() {
 }
 
 #[tokio::test]
-async fn retrying_a_join_after_a_wrong_password_is_the_same_device_not_a_second_knock() {
+async fn a_wrong_master_password_after_accept_waits_for_the_right_one_without_a_second_knock() {
+    use memorious_core::node::{join_progress, provide_passcode, AskState};
     let _one_at_a_time = ASKING.lock().await;
     let dir = tempdir().unwrap();
     let ja = strict(&dir.path().join("a"));
@@ -175,28 +176,52 @@ async fn retrying_a_join_after_a_wrong_password_is_the_same_device_not_a_second_
     let ticket = a.ticket().unwrap();
     let b_root = dir.path().join("b");
 
-    // the owner accepts whoever knocks, once
+    // the owner accepts the one knock; then, once the joiner says it needs the passcode, a person types the right one
     let owner = a.clone();
-    let tapper = tokio::spawn(async move {
+    let person = tokio::spawn(async move {
+        let mut accepted = false;
+        let mut knocks_seen = 0;
         loop {
-            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-            if let Some(k) = owner.journal().knocks(memorious_core::store::now_ms()).unwrap().first().cloned() {
+            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+            let ks = owner.journal().knocks(memorious_core::store::now_ms()).unwrap();
+            knocks_seen = knocks_seen.max(ks.len());
+            if let (false, Some(k)) = (accepted, ks.first()) {
                 owner.accept_knock(&k.endpoint_id).unwrap();
-                return;
+                accepted = true;
+            }
+            if let Some(p) = join_progress() {
+                if p.state == AskState::NeedsPasscode {
+                    assert!(p.wrong_passcode, "a typed password that failed is reported as wrong");
+                    provide_passcode("pw".into());
+                    return knocks_seen;
+                }
             }
         }
     });
-    let first = Node::pair_from_ticket(&b_root, &ticket, "not-the-password").await;
-    tapper.await.unwrap();
-    let err = first.err().expect("a wrong master password must not join");
-    assert!(format!("{err:#}").contains("master password"), "{err:#}");
-    let id_after_failure = std::fs::read(memorious_core::node::join_identity_path(&b_root)).unwrap();
-
-    // second attempt, right password: same endpoint, already allowed — no new knock, nobody has to accept again
-    let (b, _) = Node::pair_from_ticket(&b_root, &ticket, "pw").await.unwrap();
-    assert!(a.journal().knocks(memorious_core::store::now_ms()).unwrap().is_empty(), "no second knock");
+    let (b, _, used) = Node::pair_from_ticket_prompting(&b_root, &ticket, "not-the-password", true).await.unwrap();
+    let knocks_seen = person.await.unwrap();
+    assert_eq!(used, "pw");
+    assert_eq!(knocks_seen, 1, "one knock in total, however many passwords were tried");
+    assert!(a.journal().knocks(memorious_core::store::now_ms()).unwrap().is_empty());
     assert_eq!(b.journal().list().unwrap().len(), 1);
-    assert_eq!(b.journal().store.meta_get("endpoint_secret").unwrap().unwrap(), id_after_failure, "same identity");
     assert!(!memorious_core::node::join_identity_path(&b_root).exists(), "the journal owns the key now");
+    assert!(join_progress().is_none());
     b.shutdown().await;
 }
+
+#[tokio::test]
+async fn a_second_join_is_refused_before_it_touches_the_first_ones_journal() {
+    let _one_at_a_time = ASKING.lock().await;
+    let dir = tempdir().unwrap();
+    let a = Node::spawn(strict(&dir.path().join("a"))).await.unwrap();
+    let ticket = a.ticket().unwrap();
+    let b_root = dir.path().join("b");
+    let first = { let (r, t) = (b_root.clone(), ticket.clone()); tokio::spawn(async move { Node::pair_from_ticket(&r, &t, "pw").await }) };
+    while join_progress_none() { tokio::time::sleep(std::time::Duration::from_millis(50)).await; }
+    let second = Node::pair_from_ticket(&b_root, &ticket, "pw").await;
+    assert!(second.err().unwrap().downcast_ref::<memorious_core::node::AlreadyAsking>().is_some());
+    memorious_core::node::cancel_ask();
+    let _ = first.await.unwrap();
+}
+
+fn join_progress_none() -> bool { memorious_core::node::join_progress().is_none() }

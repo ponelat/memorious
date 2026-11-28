@@ -339,11 +339,11 @@ export const httpApi: JournalApi = {
     },
     /** Starts the join on the server (it keeps asking the other peer for up to 15 minutes, so this is not one long request) and
      *  polls until it is done; a failure throws with the server's reason and leaves a blank client to try again. */
-    async joinTicket(ticket: string, passcode: string, keep?: 'everything' | 'visible', masterPassword?: string): Promise<SyncReport> {
+    async joinTicket(ticket: string, passcode: string, keep?: 'everything' | 'visible'): Promise<SyncReport> {
       await json('/api/setup/join', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ticket, passcode, keep, password: masterPassword || undefined }),
+        body: JSON.stringify({ ticket, passcode, keep }),
       })
       for (;;) {
         await new Promise((r) => setTimeout(r, 1500))
@@ -362,6 +362,13 @@ export const httpApi: JournalApi = {
     },
     async joinProgress() {
       return (await json<{ progress: import('./types').JoinAsk | null }>('/api/setup/join-progress')).progress
+    },
+    async joinPasscode(passcode: string) {
+      await json('/api/setup/join-passcode', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ passcode }),
+      })
     },
     async joinCancel() {
       await json('/api/setup/join-cancel', { method: 'POST' })

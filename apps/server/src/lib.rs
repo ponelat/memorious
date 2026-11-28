@@ -265,6 +265,7 @@ pub fn app(state: RouterState, web_dist: Option<PathBuf>) -> Router {
         .route("/setup/join", post(setup_join))
         .route("/setup/join-progress", get(setup_join_progress))
         .route("/setup/join-cancel", post(setup_join_cancel))
+        .route("/setup/join-passcode", post(setup_join_passcode))
         .layer(DefaultBodyLimit::max(4 * 1024));
     let api = authed.merge(open).with_state(state.clone());
 
@@ -1341,19 +1342,16 @@ async fn run_join(router_state: &RouterState, current: &Arc<AppState>, body: Set
     let password = typed.clone().or_else(|| master_password(&current.data_dir)).unwrap_or_default();
     current.node.shutdown_ref().await;
     std::fs::remove_dir_all(&current.data_dir).map_err(|e| format!("clear the old journal before joining: {e}"))?;
-    let joined = Node::join_from_ticket(&current.data_dir, &body.ticket, &password).await;
-    let node = match joined {
-        Ok((node, _report)) => node,
+    // the server's own password is tried first, silently; if it does not decrypt that journal the join waits (accepted already)
+    // for the encryption passcode to be typed (`setup_join_passcode`) instead of failing and starting over
+    let joined = Node::join_from_ticket_prompting(&current.data_dir, &body.ticket, &password, typed.is_some()).await;
+    let (node, used) = match joined {
+        Ok((node, _report, used)) => (node, used),
         Err(e) => {
             // The old journal is gone; leave a blank working one so the page does not break, and say why the join failed.
             let _ = swap_blank(router_state, current).await;
             let msg = format!("{e:#}");
-            return Err(if msg.contains("master password doesn't match") {
-                // the other peer has already accepted this device (and will not ask again: the identity is kept)
-                "Wrong master password for that journal. Retype it and join again.".to_string()
-            } else {
-                msg
-            });
+            return Err(msg);
         }
     };
     for step in [
@@ -1370,7 +1368,8 @@ async fn run_join(router_state: &RouterState, current: &Arc<AppState>, body: Set
         }
     }
     // opened with a password other than the configured one: keep it, so a restart can reopen this journal
-    if let Some(p) = &typed {
+    {
+        let p = &used;
         let configured = std::env::var("MEMORIOUS_PASSWORD").ok();
         if configured.as_deref() == Some(p.as_str()) { forget_master_password(&current.data_dir) } else if let Err(e) = keep_master_password(&current.data_dir, p) {
             node.shutdown_ref().await;
@@ -1401,6 +1400,21 @@ async fn swap_blank(router_state: &RouterState, current: &Arc<AppState>) -> Resu
     journal.ensure_version_seen()?;
     install(router_state, current, Node::spawn(journal).await?);
     Ok(())
+}
+
+#[derive(Deserialize)]
+struct JoinPasscodeBody {
+    passcode: String,
+}
+
+/// `POST /api/setup/join-passcode {passcode}` — the encryption passcode (the journal's master password) for a join that was
+/// accepted but is waiting for it (`progress.state == "needs_passcode"`).
+async fn setup_join_passcode(Json(body): Json<JoinPasscodeBody>) -> Response {
+    if !matches!(*JOIN_JOB.lock().unwrap(), JoinJob::Running) {
+        return err(StatusCode::CONFLICT, "no join is waiting for a passcode");
+    }
+    memorious_core::node::provide_passcode(body.passcode);
+    Json(json!({"ok": true})).into_response()
 }
 
 /// `POST /api/setup/join-cancel` — stop asking the other peer.

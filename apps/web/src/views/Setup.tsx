@@ -119,10 +119,11 @@ function JoinJournal({ setup, onDone, onBack }: { setup: SetupApi; onDone: () =>
   const [ticket, setTicket] = useState('')
   const [secret, setSecret] = useState('')
   const [master, setMaster] = useState('')
+  const [sending, setSending] = useState(false)
   const [keep, setKeep] = useState<'everything' | 'visible'>('everything')
   const { busy, error, run } = useRun(onDone)
   const canJoin = !busy && ticket.trim() !== '' && secret !== ''
-  const join = () => canJoin && run(() => setup.joinTicket(ticket.trim(), secret, keep, master))
+  const join = () => canJoin && run(() => setup.joinTicket(ticket.trim(), secret, keep))
   // while the join waits: what it waits on, the code to compare on the other peer, and until when it keeps asking
   const [ask, setAsk] = useState<JoinAsk | null>(null)
   useEffect(() => {
@@ -131,11 +132,17 @@ function JoinJournal({ setup, onDone, onBack }: { setup: SetupApi; onDone: () =>
     return () => clearInterval(t)
   }, [busy, setup])
   const until = ask?.until_ms ? new Date(ask.until_ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : null
-  const status = !ask
+  const needsPasscode = ask?.state === 'needs_passcode'
+  const status = !ask || needsPasscode
     ? null
     : ask.state === 'knocking'
       ? `Accept ${ask.code} on the other peer.${until ? ` Asking until ${until}.` : ''}`
       : `Can't reach it yet.${until ? ` Asking until ${until}.` : ''} Open it and accept ${ask.code}.`
+  const sendPasscode = async () => {
+    if (master === '' || sending) return
+    setSending(true)
+    try { await setup.joinPasscode?.(master); setMaster('') } finally { setSending(false) }
+  }
 
   return (
     <BrandHero
@@ -159,13 +166,6 @@ function JoinJournal({ setup, onDone, onBack }: { setup: SetupApi; onDone: () =>
             onKeyDown={(e) => e.key === 'Enter' && join()}
           />
           <p className="hint">For this web client.</p>
-          <input
-            type="password"
-            placeholder="encryption passcode"
-            value={master}
-            onChange={(e) => setMaster(e.target.value)}
-          />
-          <p className="hint">Decrypts the journal's data. Blank uses the server's.</p>
         </>
       ) : (
         <input
@@ -186,6 +186,21 @@ function JoinJournal({ setup, onDone, onBack }: { setup: SetupApi; onDone: () =>
         {busy ? 'asking…' : 'join'}
       </button>
       {busy && status && <p>{status}</p>}
+      {busy && needsPasscode && (
+        <>
+          <p>{ask?.wrong_passcode ? 'Accepted. Wrong encryption passcode, try again.' : 'Accepted. Enter the encryption passcode.'}</p>
+          <input
+            type="password"
+            placeholder="encryption passcode"
+            autoFocus
+            value={master}
+            onChange={(e) => setMaster(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && void sendPasscode()}
+          />
+          <p className="hint">Decrypts the journal's data.</p>
+          <button disabled={master === '' || sending} onClick={() => void sendPasscode()}>continue</button>
+        </>
+      )}
       {busy && setup.joinCancel && <button className="back" onClick={() => void setup.joinCancel?.()}>stop asking</button>}
       {error && <p className="error">{error}</p>}
       <button className="back" onClick={onBack} disabled={busy}>
